@@ -1,0 +1,287 @@
+#include "AutoRocketJump.h"
+
+#include "../../Simulation/ProjectileSimulation/ProjectileSimulation.h"
+#include "../../Simulation/MovementSimulation/MovementSimulation.h"
+
+bool CAutoRocketJump::ShouldRun(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
+{
+	if (!pLocal->IsAlive() || pLocal->IsAGhost()
+		|| !pWeapon
+		|| I::EngineVGui->IsGameUIVisible()
+		|| m_iFrame == -1 && pCmd->weaponselect)
+		return false;
+
+	return true;
+}
+
+bool CAutoRocketJump::SetAngles(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
+{
+	m_vAngles = pCmd->viewangles;
+	if (!Vars::Misc::Movement::AutoRocketJump.Value)
+		return true;
+
+	ProjectileInfo tProjInfo = {};
+	if (!F::ProjSim.GetInfo(pLocal, pWeapon, {}, tProjInfo, ProjSimEnum::NoRandomAngles)
+		|| !F::ProjSim.Initialize(tProjInfo, false))
+		return false;
+
+	Vec3 vOrigin = pLocal->m_vecOrigin();
+	Vec3 vLocalPos = pLocal->GetShootPos();
+	Vec3 vOffset = tProjInfo.m_vPos - vLocalPos; vOffset.x = 0; //vOffset.y *= -1;
+
+	Vec3 vPoint;
+	if (pLocal->IsOnGround())
+	{
+		float flOffset = sqrtf(2 * powf(vOffset.y, 2.f) + powf(vOffset.z, 2.f));
+		Vec3 vWishVel = { pCmd->forwardmove, pCmd->sidemove, 0.f }, vDir;
+		if (vWishVel.IsZero())
+			vDir = { 0.f, m_vAngles.y, 0.f };
+		else
+		{
+			Vec3 vWishAng = Math::VectorAngles(vWishVel);
+			vDir = { 0.f, m_vAngles.y - vWishAng.y, 0.f };
+		}
+		Vec3 vForward; Math::AngleVectors(vDir, &vForward);
+		vPoint = pLocal->m_vecOrigin() - vForward * flOffset;
+	}
+	else
+	{
+		//float flOffset = pLocal->m_vecMaxs().x;
+		float flOffset = sqrtf(2 * powf(vOffset.y, 2.f) + powf(vOffset.z, 2.f));
+		bool bShouldReturn = true;
+		MoveStorage tMoveStorage;
+		if (F::MoveSim.Initialize(pLocal, tMoveStorage, false))
+		{
+			for (int n = 1; n < 10; n++)
+			{
+				F::MoveSim.RunTick(tMoveStorage);
+				if (!pLocal->IsOnGround() || pLocal->IsSwimming())
+					continue;
+
+				Vec3 vForward = tMoveStorage.m_MoveData.m_vecVelocity.Normalized2D();
+				vPoint = tMoveStorage.m_MoveData.m_vecAbsOrigin - vForward * flOffset; //- Vec3(0, 0, 20);
+				bShouldReturn = false;
+				break;
+			}
+		}
+		F::MoveSim.Restore(tMoveStorage);
+		if (bShouldReturn)
+			return false;
+	}
+
+	float flPitch, flYaw;
+	{	// basic trajectory pass
+		Vec3 vAngleTo = Math::CalcAngle(vLocalPos, vPoint);
+		m_vAngles.x = flPitch = vAngleTo.x, m_vAngles.y = flYaw = vAngleTo.y;
+	}
+
+	if (!F::ProjSim.GetInfo(pLocal, pWeapon, { flPitch, flYaw, 0 }, tProjInfo, ProjSimEnum::Redirect | ProjSimEnum::NoRandomAngles))
+		return false;
+
+	{	// correct yaw
+		Vec3 vShootPos = (tProjInfo.m_vPos - vLocalPos).To2D();
+		Vec3 vTarget = vPoint - vLocalPos;
+		Vec3 vForward; Math::AngleVectors(tProjInfo.m_vAng, &vForward); vForward.Normalize2D();
+		float flB = 2 * (vShootPos.x * vForward.x + vShootPos.y * vForward.y);
+		float flC = vShootPos.Length2DSqr() - vTarget.Length2DSqr();
+		auto vSolutions = Math::SolveQuadratic(1.f, flB, flC);
+		if (!vSolutions.empty())
+		{
+			vShootPos += vForward * vSolutions.front();
+			m_vAngles.y = flYaw - (Math::Rad2Deg(atan2(vShootPos.y, vShootPos.x)) - flYaw);
+			flYaw = Math::Rad2Deg(atan2(vShootPos.y, vShootPos.x));
+		}
+	}
+
+	{	// correct pitch
+		Vec3 vShootPos = Math::RotatePoint(tProjInfo.m_vPos - vLocalPos, {}, { 0, -flYaw, 0 }); vShootPos.y = 0;
+		Vec3 vTarget = Math::RotatePoint(vPoint - vLocalPos, {}, { 0, -flYaw, 0 });
+		Vec3 vForward; Math::AngleVectors(tProjInfo.m_vAng - Vec3(0, flYaw, 0), &vForward); vForward.y = 0; vForward.Normalize();
+		float flB = 2 * (vShootPos.x * vForward.x + vShootPos.z * vForward.z);
+		float flC = (powf(vShootPos.x, 2) + powf(vShootPos.z, 2)) - (powf(vTarget.x, 2) + powf(vTarget.z, 2));
+		auto vSolutions = Math::SolveQuadratic(1.f, flB, flC);
+		if (!vSolutions.empty())
+		{
+			vShootPos += vForward * vSolutions.front();
+			m_vAngles.x = flPitch - (Math::Rad2Deg(atan2(-vShootPos.z, vShootPos.x)) - flPitch);
+		}
+	}
+
+	return true;
+}
+
+void CAutoRocketJump::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
+{
+	if (!ShouldRun(pLocal, pWeapon, pCmd))
+	{
+		m_iFrame = -1;
+		return;
+	}
+
+	static bool bStaticGrounded = false;
+	bool bLastGrounded = bStaticGrounded;
+	bool bCurrGrounded = bStaticGrounded = pLocal->m_hGroundEntity();
+	if (m_iFrame == -1)
+	{
+		bool bDuck = pLocal->IsDucking();
+		if ((bCurrGrounded ? bDuck || I::GlobalVars->curtime < pLocal->m_flDuckTimer() : !bDuck))
+			return;
+	}
+
+	bool bValidWeapon = false, bBeggars = pWeapon->m_iItemDefinitionIndex() == Soldier_m_TheBeggarsBazooka;
+	{
+		switch (pWeapon->GetWeaponID())
+		{
+		case TF_WEAPON_ROCKETLAUNCHER:
+		case TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT:
+		case TF_WEAPON_PARTICLE_CANNON: bValidWeapon = true;
+		}
+	}
+
+	if (bValidWeapon && m_iFrame == -1 && (bCurrGrounded && bBeggars ? G::Attacking == 1 : G::CanPrimaryAttack || G::Reloading)
+		&& SetAngles(pLocal, pWeapon, pCmd))
+	{
+		bool bWillHit = false;
+		if (Vars::Misc::Movement::AutoRocketJump.Value || Vars::Misc::Movement::AutoCTap.Value)
+		{
+			MoveStorage tMoveStorage;
+			ProjectileInfo tProjInfo = {};
+
+			bool bProjSimSetup = F::ProjSim.GetInfo(pLocal, pWeapon, m_vAngles, tProjInfo, ProjSimEnum::Redirect | ProjSimEnum::InitCheck | ProjSimEnum::NoRandomAngles) && F::ProjSim.Initialize(tProjInfo);
+			bool bMoveSimSetup = F::MoveSim.Initialize(pLocal, tMoveStorage, false); // do move sim after to not mess with proj sim
+			if (bMoveSimSetup && bProjSimSetup)
+			{
+				int iSkip = bCurrGrounded ? Vars::Misc::Movement::AutoRocketJumpSkipGround.Value : Vars::Misc::Movement::AutoRocketJumpSkipAir.Value;
+
+				CGameTrace trace = {};
+				CTraceFilterCollideable filter = {};
+				filter.pSkip = pLocal;
+
+				Vec3 vNew = F::ProjSim.GetOrigin();
+				for (int n = 1; n < 10; n++)
+				{
+					F::MoveSim.RunTick(tMoveStorage);
+					if (n <= iSkip || n == 1 && G::Reloading)
+						continue;
+
+					F::ProjSim.RunTick(tProjInfo);
+
+					Vec3 vOld = vNew; vNew = F::ProjSim.GetOrigin();
+					SDK::Trace(vOld, vNew, MASK_SOLID, &filter, &trace);
+					if (trace.DidHit())
+					{
+						if (!pLocal->IsOnGround() || pLocal->IsSwimming())
+							break;
+
+						auto fWillHit = [](CTFPlayer* pLocal, const Vec3& vOrigin, const Vec3& vPoint)
+						{
+							const Vec3 vOriginal = pLocal->GetAbsOrigin();
+							pLocal->SetAbsOrigin(vOrigin);
+							Vec3 vPos; pLocal->m_Collision()->CalcNearestPoint(vPoint, &vPos);
+							pLocal->SetAbsOrigin(vOriginal);
+
+							float flRadiusSqr = powf(TF_ROCKET_RADIUS_FOR_RJS, 2);
+							return vPoint.DistToSqr(vPos) < flRadiusSqr && SDK::VisPosWorld(pLocal, pLocal, vPoint, vOrigin + pLocal->m_vecViewOffset(), MASK_SHOT);
+						};
+
+						bWillHit = fWillHit(pLocal, tMoveStorage.m_MoveData.m_vecAbsOrigin, trace.endpos + trace.plane.normal);
+						if (bWillHit)
+						{
+							m_iDelay = n;
+							if (Vars::Misc::Movement::AutoRocketJumpTimingOffset.Value && n > Vars::Misc::Movement::AutoRocketJumpApplyAbove.Value)
+								m_iDelay = std::max(m_iDelay + Vars::Misc::Movement::AutoRocketJumpTimingOffset.Value, 0);
+
+							if (G::CanPrimaryAttack)
+							{
+								SDK::Output("Auto jump", std::format("Ticks to hit: {} ({})", m_iDelay, n).c_str(), { 255, 0, 0 }, Vars::Debug::Logging.Value);
+								if (Vars::Debug::Info.Value)
+								{
+									G::PathStorage.clear(); G::BoxStorage.clear(); G::LineStorage.clear();
+									tProjInfo.m_vPath.push_back(trace.endpos + trace.plane.normal);
+
+									G::PathStorage.emplace_back(tMoveStorage.m_vPath, I::GlobalVars->curtime + 5.f, Color_t(255, 255, 255), Vars::Visuals::Path::StyleEnum::Line);
+									G::BoxStorage.emplace_back(tMoveStorage.m_MoveData.m_vecAbsOrigin, pLocal->m_vecMins(), pLocal->m_vecMaxs(), Vec3(), I::GlobalVars->curtime + 5.f, Color_t(255, 255, 255), Color_t(0, 0, 0, 0), true);
+									G::PathStorage.emplace_back(tProjInfo.m_vPath, I::GlobalVars->curtime + 5.f, Color_t(255, 150, 150), Vars::Visuals::Path::StyleEnum::Line);
+									G::BoxStorage.emplace_back(tProjInfo.m_vPath.back(), Vec3::Get(-1), Vec3::Get(1), Vec3() /*Math::VectorAngles(trace.plane.normal)*/, I::GlobalVars->curtime + 5.f, Color_t(255, 150, 150), Color_t(0, 0, 0, 0), true);
+								}
+							}
+						}
+
+						break;
+					}
+
+					// this will just prevent shooting speedshots when projectile isn't fast enough
+					//if (!bCurrGrounded && !bLastGround && bCurGround)
+					//	break;
+				}
+			}
+			F::MoveSim.Restore(tMoveStorage);
+		}
+
+		if (bWillHit)
+		{
+			if (bCurrGrounded && bCurrGrounded == bLastGrounded)
+				m_iFrame = 0;
+			else if (!bCurrGrounded)
+				m_iFrame = m_iDelay = 0;
+
+			if (m_iFrame != -1)
+			{
+				m_bFull = Vars::Misc::Movement::AutoRocketJump.Value;
+				m_iChoke = bCurrGrounded ? Vars::Misc::Movement::AutoRocketJumpChokeGrounded.Value : Vars::Misc::Movement::AutoRocketJumpChokeAir.Value;
+
+				if (G::Reloading)
+				{
+					m_iFrame = -1;
+					if (!bBeggars)
+						pCmd->buttons |= IN_ATTACK;
+					else
+						pCmd->buttons &= ~IN_ATTACK;
+				}
+			}
+		}
+	}
+
+	if (m_iFrame != -1)
+	{
+		m_iFrame++;
+		pCmd->buttons &= ~IN_JUMP;
+
+		if (m_iFrame == 1)
+		{
+			if (!bBeggars)
+				pCmd->buttons |= IN_ATTACK, pCmd->buttons &= ~IN_ATTACK2;
+
+			if (m_bFull)
+			{
+				G::SilentAngles = bCurrGrounded;
+				pCmd->viewangles = m_vAngles;
+			}
+		}
+
+		if (m_iFrame <= m_iChoke)
+			G::PSilentAngles = true, G::SilentAngles = false; // only con to this is that you may not be able to choke depending on the ticks charged
+
+		if (bCurrGrounded)
+		{
+			if (m_iDelay > 1)
+			{
+				switch (m_iFrame - m_iDelay + 1)
+				{
+				case 0:
+					pCmd->buttons |= IN_DUCK;
+					break;
+				case 1:
+					pCmd->buttons |= IN_JUMP;
+				}
+			}
+			else // won't ctap in time
+				pCmd->buttons |= IN_DUCK | IN_JUMP;
+		}
+
+		if (m_iFrame == m_iDelay + 3)
+			m_iFrame = -1;
+	}
+
+	m_bRunning = m_iFrame != -1; // prevent stuff like antiaim messing with timing
+}
