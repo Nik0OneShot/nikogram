@@ -1,0 +1,551 @@
+#include "Entities.h"
+
+#include "../../SDK.h"
+#include "../../../Utils/Hash/FNV1A.h"
+#include "../../../Features/Players/PlayerUtils.h"
+#include "../../../Features/Backtrack/Backtrack.h"
+#include "../../../Features/CheatDetection/CheatDetection.h"
+#include "../../../Features/Resolver/Resolver.h"
+#include "../../../Features/Visuals/AnimInterp/AnimInterp.h"
+
+static std::unordered_map<unsigned short, DormantData> s_mDormancy = {};
+
+void CEntities::Store()
+{
+	auto pLocal = I::ClientEntityList->GetClientEntity(I::EngineClient->GetLocalPlayer());
+	if (!pLocal)
+		return;
+
+	m_pLocal = pLocal->As<CTFPlayer>();
+	m_pLocalWeapon = m_pLocal->m_hActiveWeapon()->As<CTFWeaponBase>();
+
+	int iLag;
+	{
+		static int iStaticTickcout = I::GlobalVars->tickcount;
+		iLag = I::GlobalVars->tickcount - iStaticTickcout - 1;
+		iStaticTickcout = I::GlobalVars->tickcount;
+	}
+
+	for (int n = I::EngineClient->GetMaxClients() + 1; n <= I::ClientEntityList->GetHighestEntityIndex(); n++)
+	{
+		auto pEntity = I::ClientEntityList->GetClientEntity(n)->As<CBaseEntity>();
+		if (!pEntity || ManageDormancy(pEntity))
+			continue;
+
+		auto nClassID = pEntity->GetClassID();
+		switch (nClassID)
+		{
+		case ETFClassID::CTFPlayerResource:
+			m_pPlayerResource = pEntity->As<CTFPlayerResource>();
+			break;
+		case ETFClassID::CObjectSentrygun:
+		case ETFClassID::CObjectDispenser:
+		case ETFClassID::CObjectTeleporter:
+			m_aModels[n] = FNV1A::Hash32(I::ModelInfoClient->GetModelName(pEntity->GetModel()));
+			m_aGroups[EntityEnum::BuildingAll].push_back(pEntity);
+			m_aGroups[pEntity->m_iTeamNum() != m_pLocal->m_iTeamNum() ? EntityEnum::BuildingEnemy : EntityEnum::BuildingTeam].push_back(pEntity);
+			break;
+		case ETFClassID::CBaseProjectile:
+		case ETFClassID::CBaseGrenade:
+		case ETFClassID::CTFWeaponBaseGrenadeProj:
+		case ETFClassID::CTFWeaponBaseMerasmusGrenade:
+		case ETFClassID::CTFGrenadePipebombProjectile:
+		case ETFClassID::CTFStunBall:
+		case ETFClassID::CTFBall_Ornament:
+		case ETFClassID::CTFProjectile_Jar:
+		case ETFClassID::CTFProjectile_Cleaver:
+		case ETFClassID::CTFProjectile_JarGas:
+		case ETFClassID::CTFProjectile_JarMilk:
+		case ETFClassID::CTFProjectile_SpellBats:
+		case ETFClassID::CTFProjectile_SpellKartBats:
+		case ETFClassID::CTFProjectile_SpellMeteorShower:
+		case ETFClassID::CTFProjectile_SpellMirv:
+		case ETFClassID::CTFProjectile_SpellPumpkin:
+		case ETFClassID::CTFProjectile_SpellSpawnBoss:
+		case ETFClassID::CTFProjectile_SpellSpawnHorde:
+		case ETFClassID::CTFProjectile_SpellSpawnZombie:
+		case ETFClassID::CTFProjectile_SpellTransposeTeleport:
+		case ETFClassID::CTFProjectile_Throwable:
+		case ETFClassID::CTFProjectile_ThrowableBreadMonster:
+		case ETFClassID::CTFProjectile_ThrowableBrick:
+		case ETFClassID::CTFProjectile_ThrowableRepel:
+		case ETFClassID::CTFBaseRocket:
+		case ETFClassID::CTFFlameRocket:
+		case ETFClassID::CTFProjectile_Arrow:
+		case ETFClassID::CTFProjectile_GrapplingHook:
+		case ETFClassID::CTFProjectile_HealingBolt:
+		case ETFClassID::CTFProjectile_Rocket:
+		case ETFClassID::CTFProjectile_BallOfFire:
+		case ETFClassID::CTFProjectile_MechanicalArmOrb:
+		case ETFClassID::CTFProjectile_SentryRocket:
+		case ETFClassID::CTFProjectile_SpellFireball:
+		case ETFClassID::CTFProjectile_SpellLightningOrb:
+		case ETFClassID::CTFProjectile_SpellKartOrb:
+		case ETFClassID::CTFProjectile_EnergyBall:
+		case ETFClassID::CTFProjectile_Flare:
+		case ETFClassID::CTFBaseProjectile:
+		case ETFClassID::CTFProjectile_EnergyRing:
+		//case ETFClassID::CTFProjectile_Syringe:
+		{
+			if ((nClassID == ETFClassID::CTFProjectile_Cleaver || nClassID == ETFClassID::CTFStunBall) && pEntity->As<CTFGrenadePipebombProjectile>()->m_bTouched()
+				|| (nClassID == ETFClassID::CTFProjectile_Arrow || nClassID == ETFClassID::CTFProjectile_GrapplingHook) && !pEntity->m_MoveType())
+				break;
+
+			m_aGroups[EntityEnum::WorldProjectile].push_back(pEntity);
+
+			if (nClassID == ETFClassID::CTFGrenadePipebombProjectile)
+			{
+				auto pPipebomb = pEntity->As<CTFGrenadePipebombProjectile>();
+				if (pPipebomb->m_hThrower().Get() == pLocal && pPipebomb->m_iType() == TF_GL_MODE_REMOTE_DETONATE /*pPipebomb->HasStickyEffects()*/)
+					m_aGroups[EntityEnum::LocalStickies].push_back(pEntity);
+			}
+
+			if (nClassID == ETFClassID::CTFProjectile_Flare)
+			{
+				auto pLauncher = pEntity->As<CTFProjectile_Flare>()->m_hLauncher()->As<CTFWeaponBase>();
+				if (pEntity->m_hOwnerEntity().Get() == m_pLocal && pLauncher && pLauncher->As<CTFFlareGun>()->GetFlareGunType() == FLAREGUN_DETONATE)
+					m_aGroups[EntityEnum::LocalFlares].push_back(pEntity);
+			}
+
+			break;
+		}
+		case ETFClassID::CTFBaseBoss:
+		case ETFClassID::CTFTankBoss:
+		case ETFClassID::CMerasmus:
+		case ETFClassID::CEyeballBoss:
+		case ETFClassID::CHeadlessHatman:
+		case ETFClassID::CZombie:
+			m_aGroups[EntityEnum::WorldNPC].push_back(pEntity);
+			break;
+		case ETFClassID::CTFGenericBomb:
+		case ETFClassID::CTFPumpkinBomb:
+			m_aGroups[EntityEnum::WorldBomb].push_back(pEntity);
+			break;
+		case ETFClassID::CBaseAnimating:
+		{
+			m_aModels[n] = FNV1A::Hash32(I::ModelInfoClient->GetModelName(pEntity->GetModel()));
+			//if (IsHealth(GetModel(n)))
+			//	m_aGroups[EntityEnum::PickupHealth].push_back(pEntity);
+			//else if (IsAmmo(GetModel(n)))
+			//	m_aGroups[EntityEnum::PickupAmmo].push_back(pEntity);
+			//else if (IsPowerup(GetModel(n)))
+			//	m_aGroups[EntityEnum::PickupPowerup].push_back(pEntity);
+			//else if (IsSpellbook(GetModel(n)))
+			//	m_aGroups[EntityEnum::PickupSpellbook].push_back(pEntity);
+			break;
+		}
+		//case ETFClassID::CTFAmmoPack:
+		//	m_aGroups[EntityEnum::PickupAmmo].push_back(pEntity);
+		//	break;
+		//case ETFClassID::CCurrencyPack:
+		//	m_aGroups[EntityEnum::PickupMoney].push_back(pEntity);
+		//	break;
+		//case ETFClassID::CHalloweenGiftPickup:
+		//	if (pEntity->As<CHalloweenGiftPickup>()->m_hTargetPlayer().Get() == m_pLocal)
+		//		m_aGroups[EntityEnum::PickupGargoyle].push_back(pEntity);
+		//	break;
+		//case ETFClassID::CCaptureFlag:
+		//	m_aGroups[EntityEnum::WorldObjective].push_back(pEntity);
+		//	break;
+		case ETFClassID::CSniperDot:
+			m_aGroups[EntityEnum::SniperDots].push_back(pEntity);
+			break;
+		}
+	}
+
+	static Timer tTimer = {};
+	bool bUpdateInfo = tTimer.Run(1.f);
+	std::unordered_map<uint32_t, uint64_t> mParties = {};
+	std::unordered_map<uint32_t, bool> mF2P = {};
+	std::unordered_map<uint32_t, int> mLevels = {};
+	if (bUpdateInfo)
+	{
+		m_mIPriorities.clear();
+		m_mUPriorities.clear();
+		m_mIFriends.clear();
+		m_mUFriends.clear();
+		m_mIParty.clear();
+		m_mUParty.clear();
+		m_mIF2P.clear();
+		m_mUF2P.clear();
+		m_mILevels.clear();
+		m_mULevels.clear();
+
+		if (auto pLobby = I::TFGCClientSystem->GetLobby())
+		{
+			auto pGameRules = I::TFGameRules();
+			auto pMatchDesc = pGameRules ? pGameRules->GetMatchGroupDescription() : nullptr;
+
+			int iMembers = pLobby->GetNumMembers();
+			for (int i = 0; i < iMembers; i++)
+			{
+				auto tSteamID = CSteamID(); pLobby->GetMember(&tSteamID, i);
+				auto uAccountID = tSteamID.GetAccountID();
+
+				ConstTFLobbyPlayer pDetails;
+				pLobby->GetMemberDetails(&pDetails, i);
+
+				auto pProto = pDetails.Proto();
+				mF2P[uAccountID] = pProto->chat_suspension;
+				mParties[uAccountID] = pProto->original_party_id;
+				if (pMatchDesc && pMatchDesc->m_pProgressionDesc)
+					mLevels[uAccountID] = std::max(int(pProto->rank), pMatchDesc->GetLevelForSteamID(&tSteamID));
+				else
+					mLevels[uAccountID] = pProto->rank;
+			}
+		}
+		if (auto pParty = I::TFGCClientSystem->GetParty())
+		{
+			int iMembers = pParty->GetNumMembers();
+			for (int i = 0; i < iMembers; i++)
+			{
+				auto tSteamID = CSteamID(); pParty->GetMember(&tSteamID, i);
+				auto uAccountID = tSteamID.GetAccountID();
+				mParties[uAccountID] = 1;
+			}
+		}
+
+		std::map<uint64_t, std::vector<uint32_t>> mParties2 = {};
+		for (auto& [uAccountID, uParty] : mParties)
+		{
+			if (uParty)
+				mParties2[uParty].push_back(uAccountID);
+		}
+		for (auto it = mParties2.begin(); it != mParties2.end();)
+		{
+			if (it->second.size() > 1)
+				it++;
+			else
+				it = mParties2.erase(it);
+		}
+		mParties.clear();
+		uint64_t uPartyCount = 0; for (auto& [uParty, vAccountIDs] : mParties2)
+		{
+			int iParty = uParty == 1 ? 1 : ++uPartyCount + 1;
+			for (auto uAccountID : vAccountIDs)
+				mParties[uAccountID] = iParty;
+		}
+		m_iPartyCount = uPartyCount;
+	}
+	for (int n = 1; n <= I::EngineClient->GetMaxClients(); n++)
+	{
+		if (bUpdateInfo)
+		{
+			auto pResource = GetResource();
+			if (pResource && pResource->m_bValid(n))
+			{
+				bool bLocal = n == I::EngineClient->GetLocalPlayer();
+				uint32_t uAccountID = pResource->m_iAccountID(n);
+				if (bLocal) m_uAccountID = uAccountID;
+
+				m_mIPriorities[n] = m_mUPriorities[uAccountID] = !bLocal ? F::PlayerUtils.GetPriority(uAccountID, false) : 0;
+				m_mIFriends[n] = m_mUFriends[uAccountID] = !pResource->IsFakePlayer(n) ? I::SteamFriends->HasFriend({ uAccountID, 1, k_EUniversePublic, k_EAccountTypeIndividual }, k_EFriendFlagImmediate) : false;
+				m_mIParty[n] = m_mUParty[uAccountID] = mParties.contains(uAccountID) ? mParties[uAccountID] : 0;
+				m_mIF2P[n] = m_mUF2P[uAccountID] = mF2P.contains(uAccountID) ? mF2P[uAccountID] : false;
+				m_mILevels[n] = m_mULevels[uAccountID] = mLevels.contains(uAccountID) ? mLevels[uAccountID] : -2;
+			}
+		}
+
+		auto pPlayer = I::ClientEntityList->GetClientEntity(n)->As<CTFPlayer>();
+		if (!pPlayer || !pPlayer->IsPlayer())
+			continue;
+
+		m_aModels[n] = FNV1A::Hash32(I::ModelInfoClient->GetModelName(pPlayer->GetModel()));
+		m_aGroups[EntityEnum::PlayerAll].push_back(pPlayer);
+		m_aGroups[pPlayer->m_iTeamNum() != m_pLocal->m_iTeamNum() ? EntityEnum::PlayerEnemy : EntityEnum::PlayerTeam].push_back(pPlayer);
+		ManageDormancy(pPlayer);
+		
+		if (n != I::EngineClient->GetLocalPlayer())
+		{
+			if (float flOldSimTime = m_aSimTimes[n], flSimTime = m_aSimTimes[n] = pPlayer->m_flSimulationTime();
+				m_aDeltaTimes[n] = flSimTime > flOldSimTime)
+			{
+				m_aDeltaTimes[n] = m_aLagTimes[n] = TICKS_TO_TIME(std::clamp(TIME_TO_TICKS(flSimTime - flOldSimTime) - iLag, 1, 24));
+				m_aSetTicks[n] = I::GlobalVars->tickcount;
+
+				m_aOldAngles[n] = m_aEyeAngles[n], m_aEyeAngles[n] = pPlayer->As<CTFPlayer>()->GetEyeAngles();
+
+				m_aOrigins[n].emplace_front(pPlayer->m_vecOrigin() + Vec3(0, 0, pPlayer->GetSize().z), flSimTime);
+				if (m_aOrigins[n].size() > Vars::Aimbot::Projectile::VelocityAverageCount.Value)
+					m_aOrigins[n].pop_back();
+
+				if (pPlayer->IsAlive())
+					F::CheatDetection.ReportChoke(pPlayer, m_aChokes[n]);
+			}
+			if (!pPlayer->IsDormant())
+				m_aChokes[n] = I::GlobalVars->tickcount - m_aSetTicks[n];
+			else
+			{
+				m_aOrigins[n].clear();
+				if (s_mDormancy.contains(n))
+					m_aChokes[n] = TIME_TO_TICKS(I::GlobalVars->curtime - s_mDormancy[n].m_flLastUpdate);
+			}
+		}
+	}
+	F::Resolver.FrameStageNotify();
+	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerAll))
+	{
+		auto pPlayer = pEntity->As<CTFPlayer>();
+		if (!pPlayer->IsAlive() || pPlayer->entindex() == I::EngineClient->GetLocalPlayer() && !I::EngineClient->IsPlayingDemo()) // local player managed in CreateMove
+			continue;
+
+		bool bResolver = F::Resolver.GetAngles(pPlayer);
+		if (!Vars::Visuals::Removals::Interpolation.Value && !bResolver)
+			continue;
+
+		int iDeltaTicks = TIME_TO_TICKS(H::Entities.GetDeltaTime(pPlayer->entindex()));
+		if (!iDeltaTicks)
+			continue;
+
+		float flOldFrameTime = I::GlobalVars->frametime;
+		I::GlobalVars->frametime = I::Prediction->m_bEnginePaused ? 0.f : TICK_INTERVAL;
+		for (int i = 0; i < iDeltaTicks; i++)
+		{
+			G::UpdatingAnims = true;
+
+			if (bResolver)
+			{
+				float flYaw, flPitch;
+				F::Resolver.GetAngles(pPlayer, &flYaw, &flPitch, nullptr, i + 1 == iDeltaTicks);
+
+				float flOriginalYaw = pPlayer->m_angEyeAnglesY(), flOriginalPitch = pPlayer->m_angEyeAnglesX();
+				pPlayer->m_angEyeAnglesY() = flYaw, pPlayer->m_angEyeAnglesX() = flPitch;
+				pPlayer->UpdateClientSideAnimation();
+				pPlayer->m_angEyeAnglesY() = flOriginalYaw, pPlayer->m_angEyeAnglesX() = flOriginalPitch;
+			}
+			else
+				pPlayer->UpdateClientSideAnimation();
+
+			G::UpdatingAnims = false;
+			F::AnimInterp.Record(pPlayer);
+		}
+		I::GlobalVars->frametime = flOldFrameTime;
+		F::AnimInterp.EndBurst(pPlayer);
+	}
+}
+
+void CEntities::Clear(bool bShutdown)
+{
+	m_pLocal = nullptr;
+	m_pLocalWeapon = nullptr;
+	m_pPlayerResource = nullptr;
+	m_aGroups = {};
+
+	if (bShutdown)
+	{
+		m_aSimTimes = {};
+		m_aDeltaTimes = {};
+		m_aLagTimes = {};
+		m_aChokes = {};
+		m_aSetTicks = {};
+		m_aOldAngles = {};
+		m_aEyeAngles = {};
+		m_aLagCompensation = {};
+		m_aAvgVelocities = {};
+		m_aOrigins = {};
+		m_aModels = {};
+		s_mDormancy.clear();
+	}
+}
+
+void CEntities::ManualNetwork(const StartSoundParams_t& params)
+{
+	int n = params.soundsource;
+	if (n <= 0 || n > MAX_EDICTS - 1 || !params.origin || n == I::EngineClient->GetLocalPlayer())
+		return;
+
+	auto pEntity = I::ClientEntityList->GetClientEntity(n)->As<CBaseEntity>();
+	if (!pEntity || !pEntity->IsDormant() || !pEntity->IsPlayer() && !pEntity->IsBuilding())
+		return;
+
+	switch (pEntity->GetClassID())
+	{
+	case ETFClassID::CTFPlayer:
+		if (float flDelta = std::min(I::GlobalVars->curtime - s_mDormancy[n].m_flLastUpdate, 1.f); flDelta > 0.f) // multiple sounds in one tick
+		{
+			pEntity->As<CTFPlayer>()->m_vecVelocity() = (params.origin - pEntity->m_vecOrigin()) / flDelta;
+			pEntity->SetAbsVelocity(pEntity->As<CTFPlayer>()->m_vecVelocity()); SetAvgVelocity(pEntity->entindex(), pEntity->As<CTFPlayer>()->m_vecVelocity());
+		}
+	}
+	pEntity->SetAbsOrigin(pEntity->m_vecOrigin() = params.origin);
+
+	s_mDormancy[n] = { params.origin, I::GlobalVars->curtime };
+}
+bool CEntities::ManageDormancy(CBaseEntity* pEntity)
+{
+	bool bDormant = pEntity->IsDormant();
+
+	float flDuration = 0.f;
+	switch (pEntity->GetClassID())
+	{
+	case ETFClassID::CTFPlayer: flDuration = 1.f; break;
+	case ETFClassID::CObjectSentrygun:
+	case ETFClassID::CObjectDispenser:
+	case ETFClassID::CObjectTeleporter: flDuration = 5.f; break;
+	}
+	if (!flDuration)
+		return bDormant;
+
+	int n = pEntity->entindex();
+	if (n < 0 || n > MAX_EDICTS - 1)
+		return bDormant;
+
+	if (bDormant)
+	{
+		if (auto pResource = GetResource(); pResource && pEntity->IsPlayer())
+		{
+			auto pPlayer = pEntity->As<CTFPlayer>();
+			pPlayer->m_lifeState() = pResource->m_bAlive(n) ? LIFE_ALIVE : LIFE_DEAD;
+			pPlayer->m_iHealth() = pResource->m_iHealth(n);
+			if (pPlayer->IsAlive() && pPlayer->m_iObserverMode() != OBS_MODE_NONE)
+				pPlayer->m_iObserverMode() = OBS_MODE_NONE;
+		}
+		if (s_mDormancy.contains(n))
+		{
+			auto& tDormancy = s_mDormancy[n];
+			if (tDormancy.m_flLastUpdate + flDuration < I::GlobalVars->curtime || pEntity->IsPlayer() && !pEntity->As<CTFPlayer>()->IsAlive())
+				s_mDormancy.erase(n);
+		}
+	}
+	else if (!pEntity->IsPlayer() || pEntity->As<CTFPlayer>()->IsAlive())
+		s_mDormancy[n] = { pEntity->m_vecOrigin(), I::GlobalVars->curtime };
+	return bDormant;
+}
+
+bool CEntities::IsHealth(uint32_t uHash)
+{
+	switch (uHash)
+	{
+	case FNV1A::Hash32Const("models/items/banana/plate_banana.mdl"):
+	case FNV1A::Hash32Const("models/items/medkit_small.mdl"):
+	case FNV1A::Hash32Const("models/items/medkit_medium.mdl"):
+	case FNV1A::Hash32Const("models/items/medkit_large.mdl"):
+	case FNV1A::Hash32Const("models/items/medkit_small_bday.mdl"):
+	case FNV1A::Hash32Const("models/items/medkit_medium_bday.mdl"):
+	case FNV1A::Hash32Const("models/items/medkit_large_bday.mdl"):
+	case FNV1A::Hash32Const("models/items/plate.mdl"):
+	case FNV1A::Hash32Const("models/items/plate_sandwich_xmas.mdl"):
+	case FNV1A::Hash32Const("models/items/plate_robo_sandwich.mdl"):
+	case FNV1A::Hash32Const("models/props_medieval/medieval_meat.mdl"):
+	case FNV1A::Hash32Const("models/workshopweapons/c_models/c_chocolate/plate_chocolate.mdl"):
+	case FNV1A::Hash32Const("models/workshopweapons/c_models/c_fishcake/plate_fishcake.mdl"):
+	case FNV1A::Hash32Const("models/props_halloween/halloween_medkit_small.mdl"):
+	case FNV1A::Hash32Const("models/props_halloween/halloween_medkit_medium.mdl"):
+	case FNV1A::Hash32Const("models/props_halloween/halloween_medkit_large.mdl"):
+	case FNV1A::Hash32Const("models/items/ld1/mushroom_large.mdl"):
+	case FNV1A::Hash32Const("models/items/plate_steak.mdl"):
+	case FNV1A::Hash32Const("models/props_brine/foodcan.mdl"):
+		return true;
+	}
+	return false;
+}
+
+bool CEntities::IsAmmo(uint32_t uHash)
+{
+	switch (uHash)
+	{
+	case FNV1A::Hash32Const("models/items/ammopack_small.mdl"):
+	case FNV1A::Hash32Const("models/items/ammopack_medium.mdl"):
+	case FNV1A::Hash32Const("models/items/ammopack_large.mdl"):
+	case FNV1A::Hash32Const("models/items/ammopack_large_bday.mdl"):
+	case FNV1A::Hash32Const("models/items/ammopack_medium_bday.mdl"):
+	case FNV1A::Hash32Const("models/items/ammopack_small_bday.mdl"):
+		return true;
+	}
+	return false;
+}
+
+bool CEntities::IsPowerup(uint32_t uHash)
+{
+	switch (uHash)
+	{
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_agility.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_crit.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_defense.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_haste.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_king.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_knockout.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_plague.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_precision.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_reflect.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_regen.mdl"):
+	//case FNV1A::Hash32Const("models/pickups/pickup_powerup_resistance.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_strength.mdl"):
+	//case FNV1A::Hash32Const("models/pickups/pickup_powerup_strength_arm.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_supernova.mdl"):
+	//case FNV1A::Hash32Const("models/pickups/pickup_powerup_thorns.mdl"):
+	//case FNV1A::Hash32Const("models/pickups/pickup_powerup_uber.mdl"):
+	case FNV1A::Hash32Const("models/pickups/pickup_powerup_vampire.mdl"):
+		return true;
+	}
+	return false;
+}
+
+bool CEntities::IsSpellbook(uint32_t uHash)
+{
+	switch (uHash)
+	{
+	case FNV1A::Hash32Const("models/props_halloween/hwn_spellbook_flying.mdl"):
+	case FNV1A::Hash32Const("models/props_halloween/hwn_spellbook_upright.mdl"):
+	case FNV1A::Hash32Const("models/props_halloween/hwn_spellbook_upright_major.mdl"):
+	case FNV1A::Hash32Const("models/items/crystal_ball_pickup.mdl"):
+	case FNV1A::Hash32Const("models/items/crystal_ball_pickup_major.mdl"):
+	case FNV1A::Hash32Const("models/props_monster_mash/flask_vial_green.mdl"):
+	case FNV1A::Hash32Const("models/props_monster_mash/flask_vial_purple.mdl"): // prop_dynamic in the map, probably won't work
+		return true;
+	}
+	return false;
+}
+
+CTFPlayer* CEntities::GetLocal()
+{
+	return I::ClientEntityList->GetClientEntity(I::EngineClient->GetLocalPlayer())->As<CTFPlayer>();
+	//return m_pLocal;
+}
+CTFWeaponBase* CEntities::GetWeapon()
+{
+	auto pLocal = GetLocal();
+	return pLocal ? pLocal->m_hActiveWeapon()->As<CTFWeaponBase>() : nullptr;
+	//return m_pLocalWeapon;
+}
+CTFPlayerResource* CEntities::GetResource()
+{
+	return m_pPlayerResource;
+}
+
+const std::vector<CBaseEntity*>& CEntities::GetGroup(uint8_t iGroup) { return m_aGroups[iGroup]; }
+
+float CEntities::GetDeltaTime(uint16_t iIndex) { return iIndex < MAX_PLAYERS ? m_aDeltaTimes[iIndex] : TICK_INTERVAL; }
+float CEntities::GetLagTime(uint16_t iIndex) { return iIndex < MAX_PLAYERS ? m_aLagTimes[iIndex] : TICK_INTERVAL; }
+int CEntities::GetChoke(uint16_t iIndex) { return iIndex < MAX_PLAYERS ? m_aChokes[iIndex] : 0; }
+Vec3 CEntities::GetEyeAngles(uint16_t iIndex) { return iIndex < MAX_PLAYERS ? m_aEyeAngles[iIndex] : Vec3(); }
+Vec3 CEntities::GetDeltaAngles(uint16_t iIndex) { return iIndex < MAX_PLAYERS && m_aLagTimes[iIndex] ? m_aEyeAngles[iIndex].DeltaAngle(m_aOldAngles[iIndex]) / m_aLagTimes[iIndex] * (F::Backtrack.GetReal() + TICKS_TO_TIME(F::Backtrack.GetAnticipatedChoke())) : Vec3(); }
+bool CEntities::GetLagCompensation(uint16_t iIndex) { return iIndex < MAX_PLAYERS ? m_aLagCompensation[iIndex] : false; }
+void CEntities::SetLagCompensation(uint16_t iIndex, bool bLagComp) { if (iIndex < MAX_PLAYERS) m_aLagCompensation[iIndex] = bLagComp; }
+Vec3* CEntities::GetAvgVelocity(uint16_t iIndex) { return iIndex < MAX_PLAYERS && iIndex != I::EngineClient->GetLocalPlayer() ? &m_aAvgVelocities[iIndex] : nullptr; }
+void CEntities::SetAvgVelocity(uint16_t iIndex, Vec3 vAvgVelocity) { if (iIndex < MAX_PLAYERS) m_aAvgVelocities[iIndex] = vAvgVelocity; }
+std::deque<VelFixRecord>* CEntities::GetOrigins(uint16_t iIndex) { return iIndex < MAX_PLAYERS ? &m_aOrigins[iIndex] : nullptr; }
+uint32_t CEntities::GetModel(unsigned short iIndex) { return iIndex < MAX_EDICTS ? m_aModels[iIndex] : 0; }
+DormantData* CEntities::GetDormancy(unsigned short iIndex) { return s_mDormancy.contains(iIndex) ? &s_mDormancy[iIndex] : nullptr; }
+
+// read without inserting default entries
+template <class K, class V>
+static V MapGet(const std::unordered_map<K, V>& mMap, const K& tKey, V tDefault)
+{
+	auto it = mMap.find(tKey);
+	return it != mMap.end() ? it->second : tDefault;
+}
+
+int CEntities::GetPriority(int iIndex) { return MapGet(m_mIPriorities, iIndex, 0); }
+int CEntities::GetPriority(uint32_t uAccountID) { return MapGet(m_mUPriorities, uAccountID, 0); }
+bool CEntities::IsFriend(int iIndex) { return MapGet(m_mIFriends, iIndex, false); }
+bool CEntities::IsFriend(uint32_t uAccountID) { return MapGet(m_mUFriends, uAccountID, false); }
+bool CEntities::InParty(int iIndex) { return iIndex != I::EngineClient->GetLocalPlayer() && MapGet(m_mIParty, iIndex, 0) == 1; }
+bool CEntities::InParty(uint32_t uAccountID) { return uAccountID != m_uAccountID && MapGet(m_mUParty, uAccountID, 0) == 1; }
+bool CEntities::IsF2P(int iIndex) { return MapGet(m_mIF2P, iIndex, false); }
+bool CEntities::IsF2P(uint32_t uAccountID) { return MapGet(m_mUF2P, uAccountID, false); }
+int CEntities::GetLevel(int iIndex) { return MapGet(m_mILevels, iIndex, -2); }
+int CEntities::GetLevel(uint32_t uAccountID) { return MapGet(m_mULevels, uAccountID, -2); }
+int CEntities::GetParty(int iIndex) { return MapGet(m_mIParty, iIndex, 0); }
+int CEntities::GetParty(uint32_t uAccountID) { return MapGet(m_mUParty, uAccountID, 0); }
+int CEntities::GetPartyCount() { return m_iPartyCount; }
