@@ -70,6 +70,10 @@ struct History_t
 {
 	Vec3 m_vOrigin;
 	int m_iSimtime;
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    float m_flDiagnosticSim=0, m_flDiagnosticNetworkSim=0;
+    bool m_bDiagnosticGround=false;
+#endif
 };
 struct Direct_t : History_t
 {
@@ -98,8 +102,22 @@ private:
 	bool TestAngle(const Vec3& vPoint, const Vec3& vAngles, int iSimTime, uint8_t iType, uint8_t iFlags, bool bSecondTest = false);
 
 	bool HandlePoint(const Vec3& vOrigin, int iSimTime, float flPitch, float flYaw, float flTime, const Vec3& vPoint, uint8_t iType = PointTypeEnum::Direct, uint8_t iFlags = PointFlagsEnum::Regular);
-	bool HandleDirect(DirectHistory_t& vDirectHistory);
+	bool HandleDirect(DirectHistory_t& vDirectHistory, size_t* diagnosticTests = nullptr);
 	bool HandleSplash(SplashHistory_t& vSplashHistory);
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    void SnapshotSelectedPath(const History_t& history,float flight,uint8_t type,uint8_t flags,const Vec3& targetPoint);
+    struct DiagnosticQuery
+    {
+        Vec3 start,end,mins,maxs,targetOrigin,targetMins,targetMaxs;
+        CTraceFilterCollideable filter;CGameTrace result;int mask=0,kind=0;bool hull=false;
+    };
+    std::vector<DiagnosticQuery> m_DiagnosticScratch,m_DiagnosticSelected;
+    size_t m_DiagnosticScratchCount=0,m_DiagnosticSelectedCount=0;
+    bool m_DiagnosticRecording=false,m_DiagnosticSelectedSupported=false;
+    int m_DiagnosticSelectedType=0;
+    void RecordDiagnosticQuery(const Vec3& start,const Vec3& end,const Vec3& mins,const Vec3& maxs,int mask,const CTraceFilterCollideable& filter,const CGameTrace& result,int kind,bool hull);
+    void ReplayFinalPath();
+#endif
 
 	int CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate = true);
 	bool RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);

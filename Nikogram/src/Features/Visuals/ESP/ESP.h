@@ -7,6 +7,7 @@ struct Text_t
 	std::string m_sText = "";
 	Color_t m_tColor = {};
 	Color_t m_tOutline = {};
+	bool m_bPreserveColour = false;
 };
 
 struct Bar_t

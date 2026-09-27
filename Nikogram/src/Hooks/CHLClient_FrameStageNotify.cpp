@@ -3,6 +3,8 @@
 #include "../Features/Aimbot/Aimbot.h"
 #include "../Features/Backtrack/Backtrack.h"
 #include "../Features/PacketManip/RealLag/RealLag.h"
+#include "../Features/Statistics/Statistics.h"
+#include "../Features/LearningAccess.h"
 #include "../Features/Binds/Binds.h"
 #include "../Features/CheatDetection/CheatDetection.h"
 #include "../Features/CritHack/CritHack.h"
@@ -29,7 +31,7 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 	}
 
 	// Restore before engine callbacks can consume animation data or apply network updates.
-	if (curStage == FRAME_START) RealLag::Update();
+	if (curStage == FRAME_START) { RealLag::Update(); Statistics::Tick(); PrivateLearning::Pulse(); }
 	if (curStage == FRAME_NET_UPDATE_START || curStage == FRAME_RENDER_START || curStage == FRAME_RENDER_END)
 		F::AnimInterp.Restore();
 	CALL_ORIGINAL(rcx, curStage);
@@ -53,6 +55,7 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 		F::MoveSim.Store();
 		F::CritHack.Store();
 		F::Aimbot.Store();
+		PrivateLearning::Observe();
 
 		auto pLocal = H::Entities.GetLocal();
 		F::Groups.Store(pLocal);

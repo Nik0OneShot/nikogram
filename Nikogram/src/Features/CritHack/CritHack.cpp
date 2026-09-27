@@ -1,6 +1,11 @@
 #include "CritHack.h"
+#include "CritIndicatorStyle.h"
 
 #include "../Ticks/Ticks.h"
+#include "../ImGui/Workspace.h"
+#include "../ImGui/Menu/Menu.h"
+#include "../ImGui/Menu/BindLayout.h"
+#include "../ImGui/Notifications/NotificationStyle.h"
 #include "../AntiCheatCompatibility/AntiCheatCompatibility.h"
 
 #define WEAPON_RANDOM_RANGE				10000
@@ -494,8 +499,6 @@ void CCritHack::Event(IGameEvent* pEvent, uint32_t uHash, CTFPlayer* pLocal)
 				return;
 		}
 
-		//m_flLastDamageTime = I::GlobalVars->curtime;
-
 		CTFWeaponBase* pWeapon = nullptr;
 		for (int i = 0; i < MAX_WEAPONS; i++)
 		{
@@ -636,72 +639,156 @@ void CCritHack::Draw(CTFPlayer* pLocal)
 		align = ALIGN_TOPRIGHT;
 	}
 
-	if (!pWeapon->AreRandomCritsEnabled())
+	const bool enabled = pWeapon->AreRandomCritsEnabled();
+	const float tickBase = TICKS_TO_TIME(pLocal->m_nTickBase());
+	const bool streaming = CritIndicatorStyle::Streaming(enabled, pLocal->IsCritBoosted(), pWeapon->m_flCritTime(), tickBase);
+	std::string status = CritIndicatorStyle::ReserveStatus(m_iAvailableCrits), detailLabel = "NEXT CHARGE";
+	std::string detail = std::format("{}{} SHOTS", m_iNextCrit, m_iNextCrit == BUCKET_ATTEMPTS ? "+" : "");
+	if (!enabled)
+		status = "DISABLED", detailLabel = "RANDOM CRITS", detail = "SERVER DISABLED";
+	else if (pLocal->IsCritBoosted())
+		status = "BOOSTED";
+	else if (streaming)
 	{
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Colors::IndicatorTextBad.Value, Vars::Menu::Theme::Background.Value, align, "Random crits disabled");
-		return;
+		status = "STREAMING"; detailLabel = "REMAINING";
+		detail = std::format("{:.1f}s", pWeapon->m_flCritTime() - tickBase);
 	}
-
-
-
-	float flTickBase = TICKS_TO_TIME(pLocal->m_nTickBase());
-
-	if (F::AntiCheatCompatibility.Active())
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Colors::IndicatorTextBad.Value, Vars::Menu::Theme::Background.Value, align, "Anticheat compatibility");
-
-	if (pLocal->IsCritBoosted())
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Colors::IndicatorTextMisc.Value, Vars::Menu::Theme::Background.Value, align, "Crit Boosted");
-	else if (pWeapon->m_flCritTime() > flTickBase)
+	else if (m_bCritBanned)
 	{
-		float flTime = pWeapon->m_flCritTime() - flTickBase;
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Colors::IndicatorTextMisc.Value, Vars::Menu::Theme::Background.Value, align, std::format("Streaming crits {:.1f}s", flTime).c_str());
+		status = "CRITBANNED"; detailLabel = "DAMAGE REQUIRED";
+		detail = std::format("{:.0f}", ceilf(m_flDamageTilFlip));
 	}
-	else if (!m_bCritBanned)
+	else if (m_iPotentialCrits <= 0)
+		status = "UNAVAILABLE", detail = "--";
+	else if (m_iAvailableCrits > 0)
 	{
-		if (m_iPotentialCrits > 0)
+		status = "READY";
+		if (pWeapon->IsRapidFire() && tickBase < pWeapon->m_flLastRapidFireCritCheckTime() + 1.f)
 		{
-			if (m_iAvailableCrits > 0)
-			{
-				if (!pWeapon->IsRapidFire() || flTickBase >= pWeapon->m_flLastRapidFireCritCheckTime() + 1.f)
-					H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Colors::IndicatorTextGood.Value, Vars::Menu::Theme::Background.Value, align, "Crit Ready");
-				else
-				{
-					float flTime = pWeapon->m_flLastRapidFireCritCheckTime() + 1.f - flTickBase;
-					H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format("Wait {:.1f}s", flTime).c_str());
-				}
-			}
-			else
-			{
-				int iShots = m_iNextCrit;
-				H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Colors::IndicatorTextBad.Value, Vars::Menu::Theme::Background.Value, align, std::format("Crit in {}{} shot{}", iShots, iShots == BUCKET_ATTEMPTS ? "+" : "", iShots == 1 ? "" : "s").c_str());
-			}
+			status = "COOLDOWN"; detailLabel = "REMAINING";
+			detail = std::format("{:.1f}s", pWeapon->m_flLastRapidFireCritCheckTime() + 1.f - tickBase);
 		}
 	}
-	else
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Colors::IndicatorTextBad.Value, Vars::Menu::Theme::Background.Value, align, std::format("Deal {} damage", ceilf(m_flDamageTilFlip)).c_str());
-	
-	if (m_iPotentialCrits > 0)
+	if (detailLabel == "NEXT CHARGE" && m_iNextCrit <= 0)
+		detail = "--";
+
+	// Keep uncommon diagnostic information separate from the four primary rows.
+	std::vector<std::pair<std::string, std::string>> extras;
+	if (enabled && F::AntiCheatCompatibility.Active())
+		extras.emplace_back("COMPATIBILITY", "ACTIVE");
+	if (enabled && m_flDamageTilFlip && !m_bCritBanned)
+		extras.emplace_back("DAMAGE", std::format("{:.0f}", floorf(m_flDamageTilFlip)));
+	if (enabled && m_iDesyncDamage)
+		extras.emplace_back("DESYNC", std::format("{:+}", m_iDesyncDamage));
+
+	const auto& labelFont = H::Fonts.GetFont(FONT_CRIT_LABEL);
+	const auto& countFont = H::Fonts.GetFont(FONT_CRIT_COUNT);
+	const int pad = std::max(3, int(H::Draw.Scale(6, Scale_Round)));
+	const int gap = std::max(2, int(H::Draw.Scale(3, Scale_Round)));
+	const int barH = std::max(5, int(H::Draw.Scale(10, Scale_Round)));
+	const int lineH = labelFont.m_nTall;
+	const std::string count = enabled
+		? std::format("{:02}{} / {:02}", std::max(0, m_iAvailableCrits), m_iAvailableCrits == BUCKET_ATTEMPTS ? "+" : "", std::max(0, m_iPotentialCrits))
+		: "-- / --";
+	int width = int(H::Draw.Scale(196, Scale_Round));
+	auto fitRow = [&](const std::string& first, const Font_t& font, const std::string& second)
 	{
-		int iCrits = m_iAvailableCrits;
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format("{}{} / {} crits", iCrits, iCrits == BUCKET_ATTEMPTS ? "+" : "", m_iPotentialCrits).c_str());
-		
-		if (m_iNextCrit && iCrits)
+		width = std::max(width, int(H::Draw.GetTextSize(first.c_str(), font).x +
+			H::Draw.GetTextSize(second.c_str(), labelFont).x) + pad * 2 + gap * 3);
+	};
+	fitRow("CRIT", labelFont, status);
+	fitRow(count, countFont, "STORED");
+	fitRow(detailLabel, labelFont, detail);
+	for (const auto& [label, value] : extras) fitRow(label, labelFont, value);
+	const int height = pad * 2 + lineH * 2 + countFont.m_nTall + barH + gap * 3
+		+ int(extras.size()) * (lineH + gap);
+	m_vIndicatorSize = { float(width), float(height) };
+	const int left = int(BindLayout::ClampAxis(float(Vars::Menu::CritsDisplay.Value.x - width / 2), float(width), 0.f, float(H::Draw.m_nScreenW)));
+	const float taskbar = F::Menu.m_bIsOpen ? H::Draw.Scale(26) : 0.f;
+	const int top = int(BindLayout::ClampAxis(float(Vars::Menu::CritsDisplay.Value.y), float(height),
+		Workspace::TopTaskbar ? taskbar : 0.f, H::Draw.m_nScreenH - (Workspace::TopTaskbar ? 0.f : taskbar)));
+	const Color_t accent(int(Workspace::Accent[0] * 255), int(Workspace::Accent[1] * 255), int(Workspace::Accent[2] * 255), 255);
+	const float fraction = CritIndicatorStyle::Charge(m_iAvailableCrits, m_iPotentialCrits, enabled);
+	const bool full = CritIndicatorStyle::Full(m_iAvailableCrits, m_iPotentialCrits, enabled);
+	const Color_t textColour(int(Workspace::TextChannel(0) * 255), int(Workspace::TextChannel(1) * 255), int(Workspace::TextChannel(2) * 255), 255);
+	Workspace::ScopedTextColour preserveTextColour;
+	const Color_t rightColour = textColour.Lerp({ 0, 0, 0, 255 }, 1.f - CritIndicatorStyle::LabelBrightness(fraction));
+	auto drawText = [&](const Font_t& font, int textX, int textY, EAlign alignment, const char* text, bool chargeTint, bool streamGlow = false)
+	{
+		Color_t colour = chargeTint ? rightColour : textColour;
+		if (streamGlow)
 		{
-			int iShots = m_iNextCrit;
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format("Next in {}{} shot{}", iShots, iShots == BUCKET_ATTEMPTS ? "+" : "", iShots == 1 ? "" : "s").c_str());
+			colour = textColour.Lerp({ 255, 255, 255, 255 }, .20f);
+			// Stronger than the reserve halo, but keep the crisp glyphs readable.
+			for (int ring = 2; ring >= 1; --ring)
+			{
+				Color_t halo = colour; halo.a = ring == 2 ? 20 : 42;
+				const int offset = ring * std::max(1, int(std::round(H::Draw.Scale())));
+				for (int dx = -1; dx <= 1; ++dx)
+					for (int dy = -1; dy <= 1; ++dy)
+						if (dx || dy)
+							H::Draw.String(font, textX + dx * offset, textY + dy * offset, halo, alignment, text);
+			}
+		}
+		// Match the ticks HUD: four low-alpha samples and a 5% highlight at full.
+		// Left-hand labels and the reserve count never receive charge effects.
+		else if (chargeTint && full)
+		{
+			colour = textColour.Lerp({ 255, 255, 255, 255 }, .05f);
+			Color_t halo = colour; halo.a = 10;
+			const int offset = std::max(1, int(std::round(std::max(.1f, H::Draw.Scale()))));
+			H::Draw.String(font, textX - offset, textY, halo, alignment, text);
+			H::Draw.String(font, textX + offset, textY, halo, alignment, text);
+			H::Draw.String(font, textX, textY - offset, halo, alignment, text);
+			H::Draw.String(font, textX, textY + offset, halo, alignment, text);
+		}
+		H::Draw.String(font, textX, textY, colour, alignment, text);
+	};
+	H::Draw.FillRect(left, top, width, height, { 0, 0, 0, 255 });
+	H::Draw.LineRect(left, top, width, height, Color_t(int(Workspace::BorderChannel(0) * 255), int(Workspace::BorderChannel(1) * 255), int(Workspace::BorderChannel(2) * 255), 255));
+	auto row = [&](int rowY, const std::string& label, const std::string& value, bool streamGlow = false)
+	{
+		drawText(labelFont, left + pad, rowY, ALIGN_TOPLEFT, label.c_str(), false);
+		drawText(labelFont, left + width - pad, rowY, ALIGN_TOPRIGHT, value.c_str(), true, streamGlow);
+	};
+	int rowY = top + pad;
+	row(rowY, "CRIT", status, streaming);
+	rowY += lineH + gap;
+	drawText(countFont, left + pad, rowY, ALIGN_TOPLEFT, count.c_str(), false);
+	drawText(labelFont, left + width - pad, rowY + countFont.m_nTall - lineH, ALIGN_TOPRIGHT, "STORED", true);
+	rowY += countFont.m_nTall + gap;
+	const int barX = left + pad, barW = width - pad * 2;
+	const auto layout = NotificationStyle::Layout(float(barW), std::max(0.1f, H::Draw.Scale()));
+	const int filled = NotificationStyle::Filled(CritIndicatorStyle::BarCharge(fraction, streaming), layout.count);
+	if (streaming)
+	{
+		// Bound the halo by the available gap so it cannot cover adjacent text.
+		for (int ring = 2; ring >= 1; --ring)
+		{
+			const int spread = std::min(gap - 1, ring * std::max(1, int(std::round(H::Draw.Scale()))));
+			Color_t halo = accent; halo.a = ring == 2 ? 24 : 48;
+			H::Draw.LineRect(barX - spread, rowY - spread, barW + spread * 2, barH + spread * 2, halo);
 		}
 	}
-
-	if (m_flDamageTilFlip && !m_bCritBanned)
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Colors::IndicatorTextGood.Value, Vars::Menu::Theme::Background.Value, align, std::format("{} damage", floorf(m_flDamageTilFlip)).c_str());
-
-	if (m_iDesyncDamage)
+	for (int i = 0; i < layout.count; ++i)
 	{
-		auto tColor = m_iDesyncDamage < 0
-			? Vars::Menu::Theme::Active.Value.Lerp(Vars::Colors::IndicatorTextMid.Value, std::min(fabsf(m_iDesyncDamage) / 100, 1.f))
-			: Vars::Colors::IndicatorTextBad.Value;
-		H::Draw.StringOutlined(fFont, x, y += nTall, tColor, Vars::Menu::Theme::Background.Value, align, std::format("{}{} desync", m_iDesyncDamage > 0 ? "+" : "", m_iDesyncDamage).c_str());
+		const int cellX = barX + int(layout.Left(i));
+		const int cellW = std::max(1, int(layout.Right(i)) - int(layout.Left(i)));
+		if (i < filled)
+			H::Draw.GradientRect(cellX, rowY, cellW, barH,
+				accent.Lerp({ 255, 255, 255, 255 }, streaming ? .30f : .15f), accent.Lerp({ 0, 0, 0, 255 }, streaming ? .15f : .45f), false);
+		else
+			H::Draw.FillRect(cellX, rowY, cellW, barH, { 35, 35, 35, 255 });
 	}
+	rowY += barH + gap;
+	row(rowY, detailLabel, detail);
+	for (const auto& [label, value] : extras)
+	{
+		rowY += lineH + gap;
+		row(rowY, label, value);
+	}
+	y = top + height;
+	if (!enabled) return;
 
 
 

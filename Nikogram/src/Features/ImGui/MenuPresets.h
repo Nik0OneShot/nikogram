@@ -12,6 +12,14 @@ namespace MenuPresets
         std::string name = "Niko - Yellow / Black";
         std::array<float, 3> accent = { .85f, .75f, .20f }, background = { 0.f, 0.f, 0.f };
         bool compact = false, top = false, snap = true;
+        bool textOverride = false;
+        bool inactiveTextOverride = false;
+        bool titleTextOverride = false;
+        std::array<float,3> titleTextColour = { .88f,.80f,.36f };
+        std::array<float,3> inactiveTextColour = { .55f,.48f,.13f };
+        bool borderOverride = false;
+        std::array<float, 3> borderColour = { .85f, .75f, .20f };
+        std::array<float, 3> textColour = { 1.f, 1.f, 1.f };
         float scale = 1.f;
 		bool pet = true, petRun = true, petJump = true, petClimb = true, petDrag = true;
 		int petSize = 128, petRest = 60, petSleep = 180;
@@ -29,6 +37,14 @@ namespace MenuPresets
     inline Preset Capture(const std::string& name)
     {
         Preset p; p.name = name;
+        p.textOverride = Workspace::TextColourOverride;
+        p.borderOverride = Workspace::InterfaceBorderSelected ? Workspace::InterfaceBorderCustom : Workspace::BorderColourOverride;
+        std::copy_n(Workspace::InterfaceBorderSelected ? Workspace::InterfaceBorderColour : Workspace::BorderColour, 3, p.borderColour.begin());
+        p.inactiveTextOverride=Workspace::InactiveTextOverride;
+        p.titleTextOverride=Workspace::TitleTextOverride;
+        std::copy_n(Workspace::TitleTextColour,3,p.titleTextColour.begin());
+        std::copy_n(Workspace::InactiveTextColour,3,p.inactiveTextColour.begin());
+        std::copy_n(Workspace::TextColour, 3, p.textColour.begin());
         std::copy_n(Workspace::Accent, 3, p.accent.begin());
         std::copy_n(Workspace::Background, 3, p.background.begin());
         p.compact = Workspace::CompactTaskbar; p.top = Workspace::TopTaskbar;
@@ -46,11 +62,20 @@ namespace MenuPresets
     }
     inline void Apply(const Preset& p)
     {
+        Workspace::TextColourOverride = p.textOverride;
+        Workspace::InterfaceBorderSelected = p.name != Preset{}.name;
+        Workspace::InterfaceBorderCustom = p.borderOverride;
+        std::copy(p.borderColour.begin(), p.borderColour.end(), Workspace::InterfaceBorderColour);
+        Workspace::InactiveTextOverride=p.inactiveTextOverride;
+        Workspace::TitleTextOverride=p.titleTextOverride;
+        std::copy(p.titleTextColour.begin(),p.titleTextColour.end(),Workspace::TitleTextColour);
+        std::copy(p.inactiveTextColour.begin(),p.inactiveTextColour.end(),Workspace::InactiveTextColour);
+        std::copy(p.textColour.begin(), p.textColour.end(), Workspace::TextColour);
         std::copy(p.accent.begin(), p.accent.end(), Workspace::Accent);
         std::copy(p.background.begin(), p.background.end(), Workspace::Background);
         std::copy(p.accent.begin(),p.accent.end(),Workspace::InterfaceAccent);
         std::copy(p.background.begin(),p.background.end(),Workspace::InterfaceBackground);
-        Workspace::InterfaceColoursOverride=true;
+        Workspace::InterfaceColoursOverride=p.name != Preset{}.name;
         Workspace::CompactTaskbar = p.compact; Workspace::TopTaskbar = p.top;
         Workspace::Snap = p.snap; Workspace::FontScale = p.scale;
 		Workspace::PetEnabled = p.pet; Workspace::PetSize = std::clamp(p.petSize, 32, 128);
@@ -77,6 +102,34 @@ namespace MenuPresets
             {
                 const auto& tree = entry.second;
                 Preset p; p.name = tree.get<std::string>("name");
+                p.textOverride = tree.get<bool>("textOverride", false);
+                p.inactiveTextOverride=tree.get<bool>("inactiveTextOverride",false);
+                p.titleTextOverride=tree.get<bool>("titleTextOverride",false);
+                for (int i=0;i<3;++i)
+                {
+                    const float c=tree.get<float>("titleTextColour"+std::to_string(i),1.f);
+                    if (!std::isfinite(c)) throw std::runtime_error("Invalid title text colour");
+                    p.titleTextColour[i]=std::clamp(c,0.f,1.f);
+                }
+                for (int i=0;i<3;++i)
+                {
+                    const float c=tree.get<float>("inactiveTextColour"+std::to_string(i),.5f);
+                    if (!std::isfinite(c)) throw std::runtime_error("Invalid inactive text colour");
+                    p.inactiveTextColour[i]=std::clamp(c,0.f,1.f);
+                }
+                p.borderOverride = tree.get<bool>("borderOverride", false);
+                for (int i = 0; i < 3; ++i)
+                {
+                    const float colour = tree.get<float>("borderColour" + std::to_string(i), 1.f);
+                    if (!std::isfinite(colour)) throw std::runtime_error("Invalid border colour");
+                    p.borderColour[i] = std::clamp(colour, 0.f, 1.f);
+                }
+                for (int i = 0; i < 3; ++i)
+                {
+                    const float colour = tree.get<float>("textColour" + std::to_string(i), 1.f);
+                    if (!std::isfinite(colour)) throw std::runtime_error("Invalid text colour");
+                    p.textColour[i] = std::clamp(colour, 0.f, 1.f);
+                }
                 if (p.name.empty() || p.name.size() > 127) throw std::runtime_error("Invalid name");
                 for (int i = 0; i < 3; ++i)
                 {
@@ -120,6 +173,14 @@ namespace MenuPresets
             {
                 boost::property_tree::ptree tree;
                 tree.put("name", p.name);
+                tree.put("textOverride", p.textOverride);
+                tree.put("inactiveTextOverride",p.inactiveTextOverride);
+                tree.put("titleTextOverride",p.titleTextOverride);
+                for(int i=0;i<3;++i) tree.put("titleTextColour"+std::to_string(i),p.titleTextColour[i]);
+                for(int i=0;i<3;++i) tree.put("inactiveTextColour"+std::to_string(i),p.inactiveTextColour[i]);
+                tree.put("borderOverride", p.borderOverride);
+                for (int i = 0; i < 3; ++i) tree.put("borderColour" + std::to_string(i), p.borderColour[i]);
+                for (int i = 0; i < 3; ++i) tree.put("textColour" + std::to_string(i), p.textColour[i]);
                 for (int i = 0; i < 3; ++i)
                 {
                     tree.put("accent" + std::to_string(i), p.accent[i]);

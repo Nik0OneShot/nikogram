@@ -1,4 +1,5 @@
 #include "Notifications.h"
+#include "NotificationStyle.h"
 
 #include "../Easings/Easings.h"
 #include "../Menu/Components.h"
@@ -10,6 +11,8 @@
 
 void CNotifications::Add(const std::string& sText, const char* sIcon, Color_t tColor, float flLifeTime, float flPanTime)
 {
+	flLifeTime = std::isfinite(flLifeTime) ? std::max(0.f, flLifeTime) : 0.f;
+	flPanTime = std::isfinite(flPanTime) ? std::max(0.f, flPanTime) : 0.f;
 	float flTime = SDK::PlatFloatTime();
 	std::lock_guard tLock(m_tMutex);
 	const Color_t info = INFO_COLOR;
@@ -87,14 +90,42 @@ void CNotifications::Draw()
 
 	ImDrawList* pDrawList = GetForegroundDrawList();
 
-	float h = H::Draw.Scale(40);
-	float y = ShouldReverseY() ? GetIO().DisplaySize.y - H::Draw.Scale(8) - h : H::Draw.Scale(8);
+	const float scale = std::max(0.1f, H::Draw.Scale());
+	const float margin = H::Draw.Scale(8), padding = H::Draw.Scale(10);
+	const float barHeight = H::Draw.Scale(12), textGap = H::Draw.Scale(7);
+	const float maxWidth = GetIO().DisplaySize.x - margin * 2;
+	if (maxWidth <= padding * 2 || GetIO().DisplaySize.y <= margin * 2) return;
+	float y = ShouldReverseY() ? GetIO().DisplaySize.y - margin : margin;
 	for (auto& tNotification : m_vNotifications)
 	{
-		bool bIcon = tNotification.m_sIcon;
-
-		float w = CalcTextSize(tNotification.m_sText.c_str()).x + H::Draw.Scale(bIcon ? 54 : 30);
-		float x = ShouldReverseX() ? GetIO().DisplaySize.x - H::Draw.Scale(8) - w : H::Draw.Scale(8);
+		// Text and countdown share the same inset. Long messages wrap rather
+		// than forcing the toast beyond the screen edge. Icons are intentionally omitted.
+		const float w = std::min(maxWidth, std::max(H::Draw.Scale(224), CalcTextSize(tNotification.m_sText.c_str()).x + padding * 2));
+		const float wrapWidth = w - padding * 2;
+		std::vector<std::string> textLines;
+		const char* cursor = tNotification.m_sText.c_str();
+		const char* end = cursor + tNotification.m_sText.size();
+		do
+		{
+			const char* paragraphEnd = std::find(cursor, end, '\n');
+			do
+			{
+				const char* lineEnd = GetFont()->CalcWordWrapPosition(GetFontSize(), cursor, paragraphEnd, wrapWidth);
+				if (lineEnd == cursor && cursor < paragraphEnd)
+				{
+					unsigned int character;
+					lineEnd += std::max(1, ImTextCharFromUtf8(&character, cursor, paragraphEnd));
+				}
+				textLines.emplace_back(cursor, lineEnd);
+				cursor = lineEnd;
+				while (cursor < paragraphEnd && (*cursor == ' ' || *cursor == '\t')) ++cursor;
+			} while (cursor < paragraphEnd);
+			if (cursor == end) break;
+			++cursor;
+		} while (cursor <= end);
+		const float textHeight = GetFontSize() * textLines.size();
+		const float h = padding * 2 + textHeight + textGap + barHeight;
+		float x = ShouldReverseX() ? GetIO().DisplaySize.x - margin - w : margin;
 
 		float flEaseX = 1.f, flEaseY = 1.f;
 		float flTime = SDK::PlatFloatTime();
@@ -110,37 +141,50 @@ void CNotifications::Draw()
 			if (float flDelta = flCreate + flLife + flPan - flTime; flDelta < flPan)
 				flEaseY = EASE_Y(Math::RemapVal(flDelta, 0.f, flPan, 0.f, 1.f));
 		}
-		flLife = Math::RemapVal(flCreate + flLife - flPan - flTime, 0.f, flLife, 0.f, 1.f);
+		const float remaining = NotificationStyle::Remaining(flTime - flCreate, tNotification.m_flLifeTime, flPan);
+		flEaseX = std::clamp(flEaseX, 0.f, 1.f);
+		flEaseY = std::clamp(flEaseY, 0.f, 1.f);
 
 		x -= (w + H::Draw.Scale(8)) * (1.f - flEaseX) * X();
 
-		ImU32 uBackground = F::Render.Background0;
-		ImU32 uBorder = F::Render.Background2;
-		ImU32 uActive = F::Render.Active;
-		const Color_t notificationColor = tNotification.m_bWorkspaceAccent ? ColorFloatToByte(F::Render.Accent) : tNotification.m_tColor;
-		ImU32 uAccentOpaque = ColorByteToInt(notificationColor.Alpha(255));
-		ImU32 uAccentTransparent = ColorByteToInt(notificationColor.Alpha(50));
-
-		ImVec2 vDrawPos = { x, y };
-		ImVec2 vSize = { w, h };
-		float flInset = H::Draw.Scale();
-
-		pDrawList->AddRectFilled(vDrawPos + ImVec2(flInset, flInset), vDrawPos + vSize - ImVec2(flInset, flInset), uBackground, H::Draw.Scale(3));
-		pDrawList->PushClipRect(vDrawPos + ImVec2(flInset, h - flInset - H::Draw.Scale(2)), vDrawPos + ImVec2(w - flInset, h - flInset), false);
-		pDrawList->AddRectFilled(vDrawPos + ImVec2(flInset, flInset), vDrawPos + vSize - ImVec2(flInset, flInset), uAccentTransparent, H::Draw.Scale(3));
-		pDrawList->PopClipRect();
-		pDrawList->PushClipRect(vDrawPos + ImVec2(flInset, h - flInset - H::Draw.Scale(2)), vDrawPos + ImVec2((w - flInset) * flLife, h - flInset), false);
-		pDrawList->AddRectFilled(vDrawPos + ImVec2(flInset, flInset), vDrawPos + vSize - ImVec2(flInset, flInset), uAccentOpaque, H::Draw.Scale(3));
-		pDrawList->PopClipRect();
-		flInset += H::Draw.Scale(0.5f) - 0.5f - H::Draw.Scale();
-		pDrawList->AddRect(vDrawPos + ImVec2(flInset, flInset), vDrawPos + vSize - ImVec2(flInset, flInset), uBorder, H::Draw.Scale(4), ImDrawFlags_None, H::Draw.Scale());
-		if (!bIcon)
-			pDrawList->AddText(vDrawPos + ImVec2(H::Draw.Scale(15), H::Draw.Scale(13)), uActive, tNotification.m_sText.c_str());
-		else
+		const ImVec4 accent = F::Render.Accent.Value; // resolve every frame, including already-visible toasts
+		auto tint = [&](float multiplier, float highlight = 0.f)
 		{
-			pDrawList->AddText(vDrawPos + ImVec2(H::Draw.Scale(39), H::Draw.Scale(13)), uActive, tNotification.m_sText.c_str());
-			pDrawList->AddText(F::Render.IconFont, F::Render.IconFont->LegacySize, vDrawPos + ImVec2(H::Draw.Scale(12), H::Draw.Scale(12)), uAccentOpaque, tNotification.m_sIcon);
+			return ColorConvertFloat4ToU32(ImVec4(
+				std::clamp(accent.x * multiplier + (1.f - accent.x) * highlight, 0.f, 1.f),
+				std::clamp(accent.y * multiplier + (1.f - accent.y) * highlight, 0.f, 1.f),
+				std::clamp(accent.z * multiplier + (1.f - accent.z) * highlight, 0.f, 1.f), 1.f));
+		};
+		const ImVec2 pos(x, ShouldReverseY() ? y - h : y);
+		const float stroke = std::max(1.f, scale);
+		pDrawList->PushClipRect(ImVec2(0, 0), GetIO().DisplaySize, true);
+		pDrawList->AddRectFilled(pos, pos + ImVec2(w, h), IM_COL32(0, 0, 0, 255));
+		pDrawList->AddRect(pos + ImVec2(stroke * .5f, stroke * .5f), pos + ImVec2(w - stroke * .5f, h - stroke * .5f), tint(1.f), 0.f, ImDrawFlags_None, stroke);
+		float lineY = pos.y + padding;
+		for (const auto& line : textLines)
+		{
+			const float lineWidth = CalcTextSize(line.c_str()).x;
+			pDrawList->AddText(GetFont(), GetFontSize(), ImVec2(pos.x + (w - lineWidth) * .5f, lineY), tint(1.f), line.c_str());
+			lineY += GetFontSize();
 		}
+		const ImVec2 bar = pos + ImVec2(padding, padding + textHeight + textGap);
+		const auto layout = NotificationStyle::Layout(wrapWidth, scale);
+		const int filled = NotificationStyle::Filled(remaining, layout.count);
+		for (int i = 0; i < layout.count; ++i)
+		{
+			const ImVec2 lo = bar + ImVec2(layout.Left(i), 0), hi = bar + ImVec2(layout.Right(i), barHeight);
+			if (i < filled)
+			{
+				pDrawList->AddRectFilledMultiColor(lo, hi, tint(1.f, .25f), tint(1.f, .25f), tint(.55f), tint(.55f));
+				pDrawList->AddLine(lo + ImVec2(stroke * .5f, stroke * .5f), ImVec2(hi.x - stroke * .5f, lo.y + stroke * .5f), tint(1.f, .4f), stroke);
+			}
+			else
+			{
+				pDrawList->AddRectFilled(lo, hi, IM_COL32(9, 9, 9, 255));
+				pDrawList->AddRect(lo, hi, IM_COL32(48, 48, 48, 255), 0.f, ImDrawFlags_None, std::min(stroke, layout.cell * .25f));
+			}
+		}
+		pDrawList->PopClipRect();
 
 		y += (h + H::Draw.Scale(8, Scale_Round)) * (flEaseY) * Y();
 	}

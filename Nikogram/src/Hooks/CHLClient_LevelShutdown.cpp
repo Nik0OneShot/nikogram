@@ -2,6 +2,7 @@
 
 #include "../Features/EnginePrediction/EnginePrediction.h"
 #include "../Features/Spectate/Spectate.h"
+#include "../Features/Blockbot/Blockbot.h"
 #include "../Features/Visuals/AnimInterp/AnimInterp.h"
 #include "../Features/Visuals/Visuals.h"
 
@@ -16,6 +17,7 @@ MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 	H::Entities.Clear(true);
 	F::EnginePrediction.Unload();
 	F::Spectate.Reset();
+	F::Blockbot.Reset();
 	H::Draw.ClearAvatarCache(); // free avatar textures between maps instead of keeping them forever
 
 	CALL_ORIGINAL(rcx);

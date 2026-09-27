@@ -1,6 +1,7 @@
 #include "MovementSimulation.h"
 
 #include "../../EnginePrediction/EnginePrediction.h"
+#include "../../LearningAccess.h"
 #include <numeric>
 
 void CMovementSimulation::Store(MoveStorage& tMoveStorage)
@@ -312,6 +313,9 @@ void CMovementSimulation::SetupMoveData(MoveStorage& tMoveStorage)
 
 	tMoveStorage.m_flPredictedDelta = GetPredictedDelta(tMoveStorage.m_pPlayer);
 	tMoveStorage.m_flSimTime = tMoveStorage.m_pPlayer->m_flSimulationTime();
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    tMoveStorage.m_flDiagnosticNetworkOriginTime = tMoveStorage.m_flSimTime;
+#endif
 	tMoveStorage.m_flPredictedSimTime = tMoveStorage.m_flSimTime + tMoveStorage.m_flPredictedDelta;
 	tMoveStorage.m_vPredictedOrigin = tMoveStorage.m_MoveData.m_vecAbsOrigin;
 	tMoveStorage.m_bDirectMove = tMoveStorage.m_pPlayer->IsOnGround() || tMoveStorage.m_pPlayer->IsSwimming();
@@ -702,6 +706,9 @@ void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTick
 	if (tMoveStorage.m_bPredictNetworked)
 	{
 		tMoveStorage.m_vPredictedOrigin = tMoveStorage.m_MoveData.m_vecAbsOrigin;
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+        tMoveStorage.m_flDiagnosticNetworkOriginTime = tMoveStorage.m_flSimTime;
+#endif
 		tMoveStorage.m_flPredictedSimTime += tMoveStorage.m_flPredictedDelta;
 	}
 	bool bLastbDirectMove = tMoveStorage.m_bDirectMove;
@@ -728,6 +735,9 @@ void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTick
 
 	if (bPath)
 		tMoveStorage.m_vPath.push_back(tMoveStorage.m_MoveData.m_vecAbsOrigin);
+    PrivateLearning::EngineTick(&tMoveStorage,tMoveStorage.m_flSimTime,
+        tMoveStorage.m_MoveData.m_vecAbsOrigin.x,tMoveStorage.m_MoveData.m_vecAbsOrigin.y,
+        tMoveStorage.m_vPredictedOrigin.x,tMoveStorage.m_vPredictedOrigin.y);
 }
 
 void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTickCallback fCallback)

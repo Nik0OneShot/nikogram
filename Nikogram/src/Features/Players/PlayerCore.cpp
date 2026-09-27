@@ -72,6 +72,11 @@ void CPlayerlistCore::SavePlayerlist()
 			tWrite.put_child("Aliases", tSub);
 		}
 
+		{
+			boost::property_tree::ptree automatic;
+			for (uint32_t account : F::PlayerUtils.m_sAutomaticCheaterTags) automatic.put(std::to_string(account), true);
+			tWrite.put_child("AutomaticCheaterTags", automatic);
+		}
 		write_json(F::Configs.m_sCorePath + "Players.json", tWrite);
 
 		SDK::Output("Nikogram", "Saved playerlist", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG, ICON_MD_INFO);
@@ -102,6 +107,7 @@ void CPlayerlistCore::LoadPlayerlist()
 		// (a half-loaded list would otherwise get written over Players.json on the next save)
 		std::unordered_map<uint32_t, std::vector<int>> mPlayerTags = {};
 		std::unordered_map<uint32_t, std::string> mPlayerAliases = {};
+		std::unordered_set<uint32_t> automaticTags;
 		std::vector<PriorityLabel_t> vTags = {
 			{ "Default", { 200, 200, 200, 255 }, 0, false, false, true },
 			{ "Ignored", { 200, 200, 200, 255 }, -1, false, true, true },
@@ -173,7 +179,11 @@ void CPlayerlistCore::LoadPlayerlist()
 		else
 			SDK::Output("Nikogram", "Playerlist aliases not found", ERROR_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG, ICON_MD_CANCEL);
 
+		if (auto automatic = tRead.get_child_optional("AutomaticCheaterTags"))
+			for (const auto& [account, value] : *automatic)
+				if (value.get_value<bool>()) automaticTags.insert(std::stoul(account));
 		// everything parsed, now apply it
+		F::PlayerUtils.m_sAutomaticCheaterTags = std::move(automaticTags);
 		F::PlayerUtils.m_vTags = std::move(vTags);
 		F::PlayerUtils.m_mPlayerTags = std::move(mPlayerTags);
 		F::PlayerUtils.m_mPlayerAliases = std::move(mPlayerAliases);

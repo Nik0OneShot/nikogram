@@ -1,140 +1,265 @@
 #include "SpectatorList.h"
-
 #include "../../Players/PlayerUtils.h"
 #include "../../Spectate/Spectate.h"
+#include "../../ImGui/Workspace.h"
+#include "../../ImGui/Menu/Menu.h"
+#include "../../ImGui/Menu/BindLayout.h"
 
-bool CSpectatorList::GetSpectators(CTFPlayer* pTarget)
+void CSpectatorList::GetSpectators(CTFPlayer* local)
 {
-	m_vSpectators.clear();
-
-	auto pResource = H::Entities.GetResource();
-	if (!pResource)
-		return false;
-
-	int iTarget = pTarget->entindex();
-	for (int n = 1; n <= I::EngineClient->GetMaxClients(); n++)
-	{
-		auto pPlayer = I::ClientEntityList->GetClientEntity(n)->As<CTFPlayer>();
-		bool bLocal = n == I::EngineClient->GetLocalPlayer();
-
-		if (pResource->m_bValid(n) && !pResource->IsFakePlayer(n)
-			&& pResource->m_iTeam(I::EngineClient->GetLocalPlayer()) != TEAM_SPECTATOR && pResource->m_iTeam(n) == TEAM_SPECTATOR)
-		{
-			m_vSpectators.emplace_back(F::PlayerUtils.GetPlayerName(n, pResource->GetName(n)), "possible", -1.f, false, n);
-			continue;
-		}
-
-		if (pTarget->entindex() == n || pResource->IsFakePlayer(n)
-			|| !pPlayer || !pPlayer->IsPlayer() || pPlayer->IsAlive()
-			|| pTarget->IsDormant() != pPlayer->IsDormant()
-			|| pResource->m_iTeam(iTarget) != pResource->m_iTeam(n))
-		{
-			if (m_mRespawnCache.contains(n))
-				m_mRespawnCache.erase(n);
-			continue;
-		}
-
-		int iObserverTarget = !pPlayer->IsDormant() ? pPlayer->m_hObserverTarget().GetEntryIndex() : iTarget;
-		int iObserverMode = pPlayer->m_iObserverMode();
-		if (bLocal && F::Spectate.HasTarget())
-		{
-			iObserverTarget = F::Spectate.m_hOriginalTarget.GetEntryIndex();
-			iObserverMode = F::Spectate.m_iOriginalMode;
-		}
-		if (iObserverTarget != iTarget || bLocal && !I::EngineClient->IsPlayingDemo() && !F::Spectate.HasTarget())
-		{
-			if (m_mRespawnCache.contains(n))
-				m_mRespawnCache.erase(n);
-			continue;
-		}
-
-		const char* sMode = "possible";
-		if (!pPlayer->IsDormant())
-		{
-			switch (iObserverMode)
-			{
-			case OBS_MODE_FIRSTPERSON: sMode = "1st"; break;
-			case OBS_MODE_THIRDPERSON: sMode = "3rd"; break;
-			default: continue;
-			}
-		}
-
-		float flRespawnTime = 0.f, flRespawnIn = -1.f;
-		bool bRespawnTimeIncreased = false;
-		if (pPlayer->IsInValidTeam())
-		{
-			flRespawnTime = pResource->m_flNextRespawnTime(n);
-			flRespawnIn = std::max(floorf(flRespawnTime - TICKS_TO_TIME(I::ClientState->m_ClockDriftMgr.m_nServerTick)), 0.f);
-			if (!m_mRespawnCache.contains(n))
-				m_mRespawnCache[n] = flRespawnTime;
-			else if (m_mRespawnCache[n] + 0.5f < flRespawnTime)
-				bRespawnTimeIncreased = true;
-		}
-
-		m_vSpectators.emplace_back(F::PlayerUtils.GetPlayerName(n, pResource->GetName(n)), sMode, flRespawnIn, bRespawnTimeIncreased, n);
-	}
-
-	return !m_vSpectators.empty();
+    using namespace SpectatorStyle;
+    m_vSpectators.clear();
+    auto resource = H::Entities.GetResource();
+    if (!resource) return;
+    const int maxClients = std::min(I::EngineClient->GetMaxClients(), MAX_PLAYERS);
+    for (int n = 1; n <= maxClients; ++n)
+    {
+        if (!resource->m_bValid(n) || !resource->m_bConnected(n)) continue;
+        if (resource->m_iTeam(n) < TEAM_SPECTATOR || (resource->m_bAlive(n) && resource->m_iTeam(n) != TEAM_SPECTATOR)) continue;
+        auto entity = I::ClientEntityList->GetClientEntity(n);
+        auto player = entity ? entity->As<CTFPlayer>() : nullptr;
+        const bool known = player && player->IsPlayer() && !player->IsDormant();
+        int mode = known ? player->m_iObserverMode() : OBS_MODE_NONE;
+        auto target = known ? player->m_hObserverTarget().Get() : nullptr;
+        if (known && player == local && F::Spectate.HasTarget())
+        {
+            mode = F::Spectate.m_iOriginalMode;
+            target = F::Spectate.m_hOriginalTarget.Get();
+        }
+        auto classification = Classify(mode, known);
+        if (known && mode == OBS_MODE_NONE && resource->m_iTeam(n) == TEAM_SPECTATOR)
+            classification = Classify(mode, false);
+        int targetIndex = classification.targeted && target && target->IsPlayer() ? target->entindex() : 0;
+        if (targetIndex < 1 || targetIndex > maxClients || !resource->m_bValid(targetIndex) || !resource->m_bConnected(targetIndex)) targetIndex = 0;
+        if (Vars::Menu::SpectatorScope.Value == 1 && targetIndex != local->entindex()) continue;
+        if (!Include(classification.state, classification.view, Vars::Menu::SpectatorStates.Value, Vars::Menu::SpectatorViews.Value)) continue;
+        int respawn = -1;
+        if (resource->m_iTeam(n) > TEAM_SPECTATOR)
+        {
+            const float seconds = resource->m_flNextRespawnTime(n) - TICKS_TO_TIME(I::ClientState->m_ClockDriftMgr.m_nServerTick);
+            if (std::isfinite(seconds) && seconds > 0.f && seconds < 3600.f) respawn = int(std::ceil(seconds));
+        }
+        m_vSpectators.push_back({ F::PlayerUtils.GetPlayerName(n, resource->GetName(n)),
+            targetIndex ? F::PlayerUtils.GetPlayerName(targetIndex, resource->GetName(targetIndex)) : "UNASSIGNED",
+            classification.state, classification.view, targetIndex, respawn });
+    }
+    std::stable_sort(m_vSpectators.begin(), m_vSpectators.end(), [](const auto& a, const auto& b)
+    {
+        if (Vars::Menu::SpectatorGroup.Value && a.targetIndex != b.targetIndex)
+        {
+            if (!a.targetIndex || !b.targetIndex) return a.targetIndex != 0;
+            if (a.target != b.target) return a.target < b.target;
+            return a.targetIndex < b.targetIndex;
+        }
+        return a.name < b.name;
+    });
 }
 
-void CSpectatorList::Draw(CTFPlayer* pLocal)
+void CSpectatorList::Draw(CTFPlayer* local)
 {
-	if (!(Vars::Menu::Indicators.Value & Vars::Menu::IndicatorsEnum::Spectators))
-	{
-		m_mRespawnCache.clear();
-		return;
-	}
-
-	auto pTarget = pLocal;
-	switch (pLocal->m_iObserverMode())
-	{
-	case OBS_MODE_FIRSTPERSON:
-	case OBS_MODE_THIRDPERSON:
-		pTarget = pLocal->m_hObserverTarget()->As<CTFPlayer>();
-	}
-	if (!pTarget || !pTarget->IsPlayer()
-		|| !GetSpectators(pTarget))
-		return;
-
-	int x = Vars::Menu::SpectatorsDisplay.Value.x;
-	int y = Vars::Menu::SpectatorsDisplay.Value.y + 8;
-	int iconOffset = 0;
-	const auto& fFont = H::Fonts.GetFont(FONT_INDICATORS);
-	const int nTall = fFont.m_nTall + H::Draw.Scale(3);
-
-	EAlign align = ALIGN_TOP;
-	if (x <= 100 + H::Draw.Scale(50, Scale_Round))
-	{
-		x -= H::Draw.Scale(42, Scale_Round);
-		align = ALIGN_TOPLEFT;
-	}
-	else if (x >= H::Draw.m_nScreenW - 100 - H::Draw.Scale(50, Scale_Round))
-	{
-		x += H::Draw.Scale(42, Scale_Round);
-		align = ALIGN_TOPRIGHT;
-	}
-
-	auto pResource = H::Entities.GetResource();
-	int iIndex = pTarget->entindex();
-	const char* sName = pTarget != pLocal ? F::PlayerUtils.GetPlayerName(iIndex, pResource->GetName(iIndex)) : "You";
-	H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Accent.Value, Vars::Menu::Theme::Background.Value, align, std::format("Spectating {}:", sName).c_str());
-	for (auto& tSpectator : m_vSpectators)
-	{
-		y += nTall;
-
-		Color_t tColor = Vars::Menu::Theme::Active.Value;
-		if (H::Entities.IsFriend(tSpectator.m_iIndex))
-			tColor = F::PlayerUtils.m_vTags[F::PlayerUtils.TagToIndex(FRIEND_TAG)].m_tColor;
-		else if (H::Entities.InParty(tSpectator.m_iIndex))
-			tColor = F::PlayerUtils.m_vTags[F::PlayerUtils.TagToIndex(PARTY_TAG)].m_tColor;
-		else if (tSpectator.m_bRespawnTimeIncreased)
-			tColor = F::PlayerUtils.m_vTags[F::PlayerUtils.TagToIndex(CHEATER_TAG)].m_tColor;
-		else if (FNV1A::Hash32(tSpectator.m_sMode) == FNV1A::Hash32Const("1st"))
-			tColor = tColor.Lerp({ 255, 150, 0, 255 }, 0.5f);
-
-		if (tSpectator.m_flRespawnIn != -1.f)
-			H::Draw.StringOutlined(fFont, x + iconOffset, y, tColor, Vars::Menu::Theme::Background.Value, align, std::format("{} ({} - respawn {}s)", tSpectator.m_sName, tSpectator.m_sMode, tSpectator.m_flRespawnIn).c_str());
-		else
-			H::Draw.StringOutlined(fFont, x + iconOffset, y, tColor, Vars::Menu::Theme::Background.Value, align, std::format("{} ({})", tSpectator.m_sName, tSpectator.m_sMode).c_str());
-	}
+    if (!(Vars::Menu::Indicators.Value & Vars::Menu::IndicatorsEnum::Spectators) || !local) return;
+    GetSpectators(local);
+    m_iEntries = int(m_vSpectators.size());
+    if (m_vSpectators.empty()) m_iCurrentPage = m_iPageCount = 1;
+    if (m_vSpectators.empty() && !F::Menu.m_bIsOpen) return;
+    const auto& font = H::Fonts.GetFont(FONT_CRIT_LABEL);
+    const int pad = std::max(3, int(H::Draw.Scale(6, Scale_Round)));
+    const int gap = std::max(2, int(H::Draw.Scale(4, Scale_Round)));
+    const int line = font.m_nTall + gap;
+    const bool horizontal = Vars::Menu::SpectatorLayout.Value == 1;
+    const bool targets = Vars::Menu::SpectatorTargets.Value;
+    const bool labels = Vars::Menu::SpectatorLabels.Value;
+    const bool grouped = Vars::Menu::SpectatorGroup.Value && targets;
+    const int taskbar = F::Menu.m_bIsOpen ? int(H::Draw.Scale(26)) : 0;
+    const int screenW = H::Draw.m_nScreenW, availableH = H::Draw.m_nScreenH - taskbar;
+    if (screenW < 200 || availableH < 100) return;
+    const int minWidth = std::min(screenW, int(H::Draw.Scale(200)));
+    const int customWidth = Vars::Menu::SpectatorWidth.Value > 0 ? std::clamp(Vars::Menu::SpectatorWidth.Value, minWidth, screenW) : 0;
+    auto measure = [&](std::string value)
+    {
+        for (auto& c : value) if (static_cast<unsigned char>(c) < 32) c = ' ';
+        return int(std::ceil(H::Draw.GetTextSize(value.c_str(), font).x));
+    };
+    const char* title = Vars::Menu::SpectatorScope.Value == 1 ? "SPECTATORS / WATCHING ME" : "SPECTATORS / ALL PLAYERS";
+    auto compactName = [&](std::string name)
+    {
+        const int limit = int(H::Draw.Scale(120));
+        if (measure(name) <= limit) return name;
+        while (!name.empty() && measure(name + "...") > limit)
+        {
+            size_t pos = name.size() - 1;
+            while (pos && (static_cast<unsigned char>(name[pos]) & 0xc0) == 0x80) --pos;
+            name.resize(pos);
+        }
+        return name + "...";
+    };
+    auto cardLines = [&](const Spectator_t& entry)
+    {
+        std::string first = compactName(entry.name), second;
+        if (targets) first += " > " + (entry.targetIndex ? compactName(entry.target) : "UNASSIGNED");
+        if (labels)
+        {
+            second = std::string(SpectatorStyle::Label(entry.state)) + " | ";
+            second += entry.view == SpectatorStyle::DeathCamera
+                ? (entry.state == SpectatorStyle::Freeze ? "FREEZE CAM" : "DEATH CAM") : SpectatorStyle::Label(entry.view);
+        }
+        if (Vars::Menu::SpectatorRespawn.Value && entry.respawn >= 0)
+        {
+            if (!second.empty()) second += " | ";
+            second += std::format("RESPAWN {}s", entry.respawn);
+        }
+        return std::pair(first, second);
+    };
+    std::array<int, 4> measured = { measure("OBSERVER"), targets ? measure("TARGET") : 0,
+        labels ? measure("STATE") : 0, labels ? measure("VIEW") : 0 };
+    if (!horizontal)
+    {
+        const int nameCap = std::max(measure("OBSERVER"), int(H::Draw.Scale(120)));
+        // Measure the filtered list, not only the current page, to avoid resizing
+        // on page changes. Long player names cannot enlarge the panel indefinitely.
+        for (const auto& entry : m_vSpectators)
+        {
+            std::string name = entry.name;
+            if (Vars::Menu::SpectatorRespawn.Value && entry.respawn >= 0) name += std::format(" ({}s)", entry.respawn);
+            measured[0] = std::max(measured[0], std::min(nameCap, measure(name)));
+            if (targets) measured[1] = std::max(measured[1], std::min(nameCap, measure(entry.target)));
+            if (labels)
+            {
+                measured[2] = std::max(measured[2], measure(SpectatorStyle::Label(entry.state)));
+                measured[3] = std::max(measured[3], measure(SpectatorStyle::Label(entry.view)));
+            }
+        }
+    }
+    for (int& w : measured) if (w) w += gap * 2;
+    measured = SpectatorStyle::FitColumns(measured, screenW - pad * 2);
+    int minimumInner = measure(title);
+    if (m_vSpectators.empty()) minimumInner = std::max(minimumInner, measure("NO MATCHING SPECTATORS"));
+    int cardWidth = 0, largestGroup = 0, run = 0, previousTarget = -1;
+    bool hasDetails = false;
+    if (horizontal) for (const auto& entry : m_vSpectators)
+    {
+        const auto [first, second] = cardLines(entry);
+        cardWidth = std::max(cardWidth, std::max(measure(first), measure(second)) + pad * 2);
+        hasDetails = hasDetails || !second.empty();
+        run = entry.targetIndex == previousTarget ? run + 1 : 1;
+        largestGroup = std::max(largestGroup, run); previousTarget = entry.targetIndex;
+    }
+    const int horizontalAvailable = (customWidth ? customWidth : std::min(screenW, int(H::Draw.Scale(720)))) - pad * 2;
+    cardWidth = std::min(horizontalAvailable, std::max(cardWidth, minimumInner));
+    const auto horizontalSize = SpectatorStyle::SizeHorizontal(horizontalAvailable, cardWidth, gap,
+        grouped ? largestGroup : int(m_vSpectators.size()), minimumInner);
+    const int width = customWidth ? customWidth : std::max(minWidth, std::min(screenW, (horizontal ? horizontalSize.width
+        : std::max(minimumInner, measured[0] + measured[1] + measured[2] + measured[3])) + pad * 2));
+    const int inner = width - 2 * pad;
+    measured = SpectatorStyle::FitColumns(measured, inner);
+    if (customWidth)
+    {
+        const int spare = std::max(0, inner - measured[0] - measured[1] - measured[2] - measured[3]);
+        measured[0] += targets ? spare / 2 : spare;
+        if (targets) measured[1] += spare - spare / 2;
+    }
+    const int nameW = measured[0], targetW = measured[1], stateW = measured[2], viewW = measured[3];
+    const int card = horizontal ? std::min(inner, cardWidth) : inner;
+    const int columns = horizontal ? horizontalSize.columns : 1;
+    const int rowHeight = horizontal ? pad * 2 + line * (hasDetails ? 2 : 1) : line + pad;
+    const int startY = pad + line * (horizontal ? 1 : 2);
+    const int minHeight = startY + rowHeight + (grouped ? line : 0) + pad;
+    m_vMinimumSize = { float(minWidth), float(std::min(minHeight, availableH)) };
+    if (availableH < minHeight) return;
+    const int maxHeight = Vars::Menu::SpectatorHeight.Value > 0
+        ? std::clamp(Vars::Menu::SpectatorHeight.Value, minHeight, availableH)
+        : std::min(availableH, std::max(minHeight, int(H::Draw.Scale(600))));
+    std::vector<int> targetIndices;
+    for (const auto& entry : m_vSpectators) targetIndices.push_back(entry.targetIndex);
+    const auto pages = SpectatorStyle::Paginate(targetIndices, grouped, columns, card, gap, pad, line, rowHeight, startY, maxHeight, false);
+    const int page = std::clamp(Vars::Menu::SpectatorPage.Value - 1, 0, int(pages.size()) - 1);
+    m_iPageCount = int(pages.size()); m_iCurrentPage = page + 1;
+    int bottom = startY + line;
+    for (const auto& placement : pages[page]) bottom = std::max(bottom, placement.y + (placement.header ? line : rowHeight));
+    const int height = Vars::Menu::SpectatorHeight.Value > 0 ? maxHeight : std::max(minHeight, bottom + pad);
+    m_vIndicatorSize = { float(width), float(height) };
+    const int left = int(BindLayout::ClampAxis(float(Vars::Menu::SpectatorsDisplay.Value.x - width / 2), float(width), 0.f, float(screenW)));
+    const int top = int(BindLayout::ClampAxis(float(Vars::Menu::SpectatorsDisplay.Value.y), float(height), Workspace::TopTaskbar ? float(taskbar) : 0.f, float(H::Draw.m_nScreenH - (Workspace::TopTaskbar ? 0 : taskbar))));
+    const Color_t accent(int(Workspace::Accent[0] * 255), int(Workspace::Accent[1] * 255), int(Workspace::Accent[2] * 255), 255);
+    const Color_t border(int(Workspace::BorderChannel(0) * 255), int(Workspace::BorderChannel(1) * 255), int(Workspace::BorderChannel(2) * 255), 255);
+    auto text = [&](int x, int ty, std::string value, int maxWidth, bool watchingLocal = false)
+    {
+        if (maxWidth <= 0) return;
+        for (auto& c : value) if (static_cast<unsigned char>(c) < 32) c = ' ';
+        if (H::Draw.GetTextSize(value.c_str(), font).x > maxWidth)
+        {
+            while (!value.empty() && H::Draw.GetTextSize((value + "...").c_str(), font).x > maxWidth)
+            {
+                size_t pos = value.size() - 1;
+                while (pos && (static_cast<unsigned char>(value[pos]) & 0xc0) == 0x80) --pos;
+                value.resize(pos);
+            }
+            if (measure("...") > maxWidth) return;
+            value += "...";
+        }
+        Color_t foreground = accent;
+        if (watchingLocal)
+        {
+            // Keep a crisp centre with a restrained one-pixel halo, not a solid blur.
+            foreground = Color_t(accent.r + (255 - accent.r) * .35f,
+                accent.g + (255 - accent.g) * .35f, accent.b + (255 - accent.b) * .35f, 255);
+            const Color_t halo(foreground.r, foreground.g, foreground.b, 32);
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                    if (dx || dy)
+                        H::Draw.String(font, left + x + dx, top + ty + dy, halo, ALIGN_TOPLEFT, value.c_str());
+        }
+        H::Draw.String(font, left + x, top + ty, foreground, ALIGN_TOPLEFT, value.c_str());
+    };
+    H::Draw.FillRect(left, top, width, height, { 0, 0, 0, 255 });
+    H::Draw.LineRect(left, top, width, height, border);
+    text(pad, pad, title, inner);
+    if (!horizontal)
+    {
+        int columnX = pad;
+        const char* headings[] = { "OBSERVER", "TARGET", "STATE", "VIEW" };
+        for (int i = 0; i < 4; ++i)
+        {
+            const int cellWidth = measured[i];
+            if (!cellWidth) continue;
+            H::Draw.LineRect(left + columnX, top + pad + line, cellWidth, line, border);
+            text(columnX + gap, pad + line + gap / 2, headings[i], cellWidth - gap * 2);
+            columnX += cellWidth;
+        }
+    }
+    for (const auto& placement : pages[page])
+    {
+        const auto& entry = m_vSpectators[placement.index];
+        const bool watchingLocal = SpectatorStyle::WatchingLocal(entry.targetIndex, local->entindex());
+        if (placement.header)
+        {
+            const int watchers = int(std::count(targetIndices.begin(), targetIndices.end(), entry.targetIndex));
+            text(pad, placement.y, "TARGET / " + entry.target + std::format(" / {} ENTRIES", watchers), inner, watchingLocal);
+            continue;
+        }
+        const int px = placement.x, py = placement.y, w = horizontal ? card : inner;
+        if (horizontal) H::Draw.LineRect(left + px, top + py, w, rowHeight, border);
+        std::string name = entry.name;
+        if (!horizontal && Vars::Menu::SpectatorRespawn.Value && entry.respawn >= 0) name += std::format(" ({}s)", entry.respawn);
+        if (horizontal)
+        {
+            const auto [first, second] = cardLines(entry);
+            text(px + pad, py + pad, first, w - 2 * pad, watchingLocal);
+            if (!second.empty()) text(px + pad, py + pad + line, second, w - 2 * pad, watchingLocal);
+        }
+        else
+        {
+            int columnX = px;
+            for (const int cellWidth : measured)
+            {
+                if (!cellWidth) continue;
+                H::Draw.LineRect(left + columnX, top + py, cellWidth, rowHeight, border);
+                columnX += cellWidth;
+            }
+            text(px + gap, py + pad / 2, name, nameW - gap * 2, watchingLocal);
+            if (targets) text(px + nameW + gap, py + pad / 2, entry.target, targetW - gap * 2, watchingLocal);
+            if (labels) { text(px + nameW + targetW + gap, py + pad / 2, SpectatorStyle::Label(entry.state), stateW - gap * 2, watchingLocal); text(px + nameW + targetW + stateW + gap, py + pad / 2, SpectatorStyle::Label(entry.view), viewW - gap * 2, watchingLocal); }
+        }
+    }
+    if (m_vSpectators.empty()) text(pad, startY, "NO MATCHING SPECTATORS", inner);
 }

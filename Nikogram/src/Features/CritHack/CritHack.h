@@ -56,6 +56,7 @@ private:
 	//float m_flLastDamageTime = 0.f;
 
 public:
+	Vec2 m_vIndicatorSize = { 180, 70 };
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
 	void Event(IGameEvent* pEvent, uint32_t uHash, CTFPlayer* pLocal);
 	void Store();

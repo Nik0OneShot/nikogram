@@ -1,5 +1,6 @@
 #include "Render.h"
 #include "Workspace.h"
+#include "Fonts/OneShotFont.h"
 #include "SteamDefaultAvatar.h"
 
 #include "../../Hooks/Direct3DDevice9.h"
@@ -60,6 +61,11 @@ void CRender::LoadColors()
 	Background2 = ColorByteToFloat(Vars::Menu::Theme::Background.Value.Lerp({ 127, 127, 127 }, 2.f / 9, LerpEnum::NoAlpha));
 	Inactive = ColorByteToFloat(Vars::Menu::Theme::Inactive.Value);
 	Active = ColorByteToFloat(Vars::Menu::Theme::Active.Value);
+	Active = ImColor(Workspace::TextChannel(0), Workspace::TextChannel(1), Workspace::TextChannel(2), 1.f);
+	Inactive = ImColor(Workspace::InactiveTextChannel(0), Workspace::InactiveTextChannel(1), Workspace::InactiveTextChannel(2), 1.f);
+	// Legacy HUD callers read these effective colours; config defaults live separately.
+	Vars::Menu::Theme::Active.Value = Color_t(int(Workspace::TextChannel(0)*255),int(Workspace::TextChannel(1)*255),int(Workspace::TextChannel(2)*255),255);
+	Vars::Menu::Theme::Inactive.Value = Color_t(int(Workspace::InactiveTextChannel(0)*255),int(Workspace::InactiveTextChannel(1)*255),int(Workspace::InactiveTextChannel(2)*255),255);
 	Accent = ImColor(Workspace::Accent[0], Workspace::Accent[1], Workspace::Accent[2], 1.f);
 	Background0 = ImColor(Workspace::Background[0], Workspace::Background[1], Workspace::Background[2], 1.f);
 	Background0p5 = Background1 = Background1p5 = Background0;
@@ -67,7 +73,11 @@ void CRender::LoadColors()
 	Background2 = ImColor(Workspace::Accent[0] * 0.65f, Workspace::Accent[1] * 0.65f, Workspace::Accent[2] * 0.65f, 1.f);
 
 	ImVec4* colors = GetStyle().Colors;
-	colors[ImGuiCol_Border] = Background2;
+	const ImVec4 border(Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2), 1.f);
+	colors[ImGuiCol_Border] = border;
+	colors[ImGuiCol_Separator] = border;
+	colors[ImGuiCol_TableBorderLight] = border;
+	colors[ImGuiCol_TableBorderStrong] = border;
 	colors[ImGuiCol_Button] = {};
 	colors[ImGuiCol_ButtonHovered] = {};
 	colors[ImGuiCol_ButtonActive] = {};
@@ -83,10 +93,11 @@ void CRender::LoadColors()
 	colors[ImGuiCol_ResizeGripActive] = {};
 	colors[ImGuiCol_ResizeGripHovered] = {};
 	// ImGui uses separator colours for hovered/held window resize borders.
-	colors[ImGuiCol_SeparatorHovered] = Accent;
-	colors[ImGuiCol_SeparatorActive] = Accent;
+	colors[ImGuiCol_SeparatorHovered] = border;
+	colors[ImGuiCol_SeparatorActive] = border;
 	colors[ImGuiCol_ScrollbarBg] = {};
 	colors[ImGuiCol_Text] = Active;
+	colors[ImGuiCol_TextDisabled] = Inactive;
 	colors[ImGuiCol_WindowBg] = Background0;
 	colors[ImGuiCol_TitleBg] = Background0;
 	colors[ImGuiCol_TitleBgActive] = Background0;
@@ -114,24 +125,32 @@ void CRender::LoadFonts()
 		io.Fonts->Clear();
 
 	ImFontConfig tFontConfig;
-	tFontConfig.OversampleH = 2;
-#ifndef NIKOGRAM_CUSTOM_FONTS
-	FontSmall = io.Fonts->AddFontFromFileTTF(R"(C:\Windows\Fonts\verdana.ttf)", H::Draw.Scale(11), &tFontConfig);
-	FontRegular = io.Fonts->AddFontFromFileTTF(R"(C:\Windows\Fonts\verdana.ttf)", H::Draw.Scale(13), &tFontConfig);
-	FontBold = io.Fonts->AddFontFromFileTTF(R"(C:\Windows\Fonts\verdanab.ttf)", H::Draw.Scale(13), &tFontConfig);
-	FontLarge = io.Fonts->AddFontFromFileTTF(R"(C:\Windows\Fonts\verdana.ttf)", H::Draw.Scale(14), &tFontConfig);
-	FontMono = io.Fonts->AddFontFromFileTTF(R"(C:\Windows\Fonts\cour.ttf)", H::Draw.Scale(16), &tFontConfig); // windows mono font installed by default
-#else
-	FontSmall = io.Fonts->AddFontFromMemoryCompressedTTF(RobotoMedium_compressed_data, RobotoMedium_compressed_size, H::Draw.Scale(12), &tFontConfig);
-	FontRegular = io.Fonts->AddFontFromMemoryCompressedTTF(RobotoMedium_compressed_data, RobotoMedium_compressed_size, H::Draw.Scale(13), &tFontConfig);
-	FontBold = io.Fonts->AddFontFromMemoryCompressedTTF(RobotoBlack_compressed_data, RobotoBlack_compressed_size, H::Draw.Scale(13), &tFontConfig);
-	FontLarge = io.Fonts->AddFontFromMemoryCompressedTTF(RobotoMedium_compressed_data, RobotoMedium_compressed_size, H::Draw.Scale(15), &tFontConfig);
-	FontMono = io.Fonts->AddFontFromMemoryCompressedTTF(CascadiaMono_compressed_data, CascadiaMono_compressed_size, H::Draw.Scale(15), &tFontConfig);
-#endif
+	tFontConfig.OversampleH = 3;
+	tFontConfig.OversampleV = 2;
+	tFontConfig.PixelSnapH = false;
+	auto loadTerminus = [&](float size)
+	{
+		ImFontConfig config = tFontConfig;
+		config.FontDataOwnedByAtlas = false;
+		ImFont* font = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(OneShotFont::Data), int(sizeof(OneShotFont::Data)), H::Draw.Scale(size), &config);
+		if (!font)
+		{
+			ImFontConfig fallback = tFontConfig;
+			fallback.SizePixels = H::Draw.Scale(size);
+			font = io.Fonts->AddFontDefault(&fallback);
+		}
+		return font;
+	};
+	FontSmall = loadTerminus(14);
+	FontRegular = loadTerminus(14);
+	FontBold = loadTerminus(14);
+	FontLarge = loadTerminus(16);
+	FontMono = loadTerminus(16);
 
 	ImFontConfig tIconConfig;
 	tIconConfig.PixelSnapH = true;
 	IconFont = io.Fonts->AddFontFromMemoryCompressedTTF(MaterialIcons_compressed_data, MaterialIcons_compressed_size, H::Draw.Scale(16), &tIconConfig);
+	Workspace::TextIconFont = IconFont;
 
 	io.Fonts->Build();
 	io.ConfigDebugHighlightIdConflicts = false;

@@ -6,6 +6,7 @@
 #include "../Features/ImGui/Menu/Menu.h"
 #include "../Features/ImGui/PetClock.h"
 #include "../Features/PacketManip/RealLag/RealLag.h"
+#include "../Features/Statistics/Statistics.h"
 #include "../Features/EnginePrediction/EnginePrediction.h"
 #include "../Features/Visuals/Materials/Materials.h"
 #include "../Features/Visuals/Visuals.h"
@@ -142,6 +143,7 @@ void CCore::Loop()
 	}
 }
 
+#include "../Features/LearningAccess.h"
 void CCore::Unload()
 {
 	if (m_bFailed)
@@ -153,6 +155,8 @@ void CCore::Unload()
 
 	G::Unload = true;
 	RealLag::Shutdown();
+	Statistics::Shutdown();
+	PrivateLearning::Shutdown();
 	m_bFailed2 = !U::Hooks.Unload() || m_bFailed2;
 	U::BytePatches.Unload();
 	H::Events.Unload();

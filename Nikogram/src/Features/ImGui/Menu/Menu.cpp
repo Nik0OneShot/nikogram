@@ -1,4 +1,5 @@
 #include "Menu.h"
+#include "BindLayout.h"
 
 #include "Components.h"
 #include "../Workspace.h"
@@ -7,13 +8,19 @@
 #include "../Notifications/Notifications.h"
 #include "../../Configs/Configs.h"
 #include "../../Binds/Binds.h"
+#include "../../CritHack/CritHack.h"
+#include "../../Ticks/Ticks.h"
+#include "../../Visuals/SpectatorList/SpectatorList.h"
 #include "../../Visuals/Groups/Groups.h"
 #include "../../Players/PlayerUtils.h"
 #include "../../Spectate/Spectate.h"
+#include "../../Blockbot/Blockbot.h"
 #include "../../Resolver/Resolver.h"
 #include "../../Visuals/Visuals.h"
 #include "../../Misc/Misc.h"
 #include "../../PacketManip/RealLag/RealLag.h"
+#include "../../Statistics/Statistics.h"
+#include "../../LearningAccess.h"
 #include "../../Output/Output.h"
 #include "../../World/World.h"
 #include "../../Simulation/ProjectileSimulation/ProjectileSimulation.h"
@@ -129,10 +136,10 @@ static inline const std::vector<std::filesystem::directory_entry>& GetDirectoryE
 void CMenu::DrawMenu()
 {
     using namespace ImGui;
-    enum { Main, Players, Configs, Logs, Interface, About, Count };
-    static const char* names[Count] = { "Main Menu", "Player Manager", "Configs", "Logs", "Interface", "About" };
+    enum { Main, Players, Configs, Logs, Interface, About, Stats, Count };
+    static const char* names[Count] = { "Main Menu", "Player Manager", "Configs", "Logs", "Interface", "About", "Statistics" };
     static const char* ids[Count] = { "Main Menu###DesktopMain", "Player Manager###DesktopPlayers", "Configs###DesktopConfigs",
-        "Logs###DesktopLogs", "Interface###DesktopInterface", "About###DesktopAbout" };
+        "Logs###DesktopLogs", "Interface###DesktopInterface", "About###DesktopAbout", "Statistics###DesktopStatistics" };
     static bool open[Count] = {}, minimized[Count] = {};
     static int active = -1, focus = -1, mainTab = 0, aimTab = 0, visualTab = 0, configTab = 0;
     static bool resetLayout = false;
@@ -165,7 +172,7 @@ void CMenu::DrawMenu()
         for (const char* label : labels)
         {
             if (index) SameLine(0, H::Draw.Scale(2));
-            PushStyleColor(ImGuiCol_Button, selected == index ? F::Render.Accent.Value : F::Render.Background0.Value);
+            PushStyleColor(ImGuiCol_Button, selected == index ? F::Render.Background1p5L.Value : F::Render.Background0.Value);
             if (Button(label)) selected = index;
             PopStyleColor();
             ++index;
@@ -310,6 +317,11 @@ void CMenu::DrawMenu()
                 if (BeginChild("LogPage", {}, ImGuiChildFlags_AlwaysUseWindowPadding)) MenuLogs(2);
                 EndChild();
             }
+            else if (i == Stats)
+            {
+                if (BeginChild("StatisticsPage", {}, ImGuiChildFlags_AlwaysUseWindowPadding)) Statistics::Draw();
+                EndChild();
+            }
             else if (i == Interface)
             {
                 MenuPresets::Load();
@@ -427,8 +439,29 @@ void CMenu::DrawMenu()
                 Checkbox("Taskbar at top", &Workspace::TopTaskbar);
                 Checkbox("Snap windows to screen edges", &Workspace::Snap);
                 SliderFloat("Text scale", &Workspace::FontScale, 0.85f, 1.5f, "%.2fx");
-                ColorEdit3("Outline / accent", Workspace::Accent, ImGuiColorEditFlags_NoInputs);
+                ColorEdit3("Accent", Workspace::Accent, ImGuiColorEditFlags_NoInputs);
+                float borderColour[3] = { Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2) };
+                if (ColorEdit3("Border / outline color", borderColour, ImGuiColorEditFlags_NoInputs))
+                {
+                    std::copy_n(borderColour, 3, Workspace::InterfaceBorderColour);
+                    Workspace::InterfaceBorderCustom = true;
+                    Workspace::InterfaceBorderSelected = true;
+                }
+                SameLine(); if (Button("Use accent##Border")) { Workspace::InterfaceBorderSelected = true; Workspace::InterfaceBorderCustom = false; }
+                SameLine(); if (Button("Use config##Border")) Workspace::InterfaceBorderSelected = false;
                 ColorEdit3("Background", Workspace::Background, ImGuiColorEditFlags_NoInputs);
+                float activeText[3] = { Workspace::TextChannel(0), Workspace::TextChannel(1), Workspace::TextChannel(2) };
+                if (ColorEdit3("Text active", activeText, ImGuiColorEditFlags_NoInputs))
+                { std::copy_n(activeText, 3, Workspace::TextColour); Workspace::TextColourOverride = true; }
+                SameLine(); if (Button("Use accent##ActiveText")) Workspace::TextColourOverride = false;
+                float inactiveText[3] = { Workspace::InactiveTextChannel(0), Workspace::InactiveTextChannel(1), Workspace::InactiveTextChannel(2) };
+                if (ColorEdit3("Text inactive color", inactiveText, ImGuiColorEditFlags_NoInputs))
+                { std::copy_n(inactiveText, 3, Workspace::InactiveTextColour); Workspace::InactiveTextOverride = true; }
+                SameLine(); if (Button("Use darker accent##InactiveText")) Workspace::InactiveTextOverride = false;
+                float titleText[3] = { Workspace::TitleTextChannel(0), Workspace::TitleTextChannel(1), Workspace::TitleTextChannel(2) };
+                if (ColorEdit3("Text Title Color", titleText, ImGuiColorEditFlags_NoInputs))
+                { std::copy_n(titleText, 3, Workspace::TitleTextColour); Workspace::TitleTextOverride = true; }
+                SameLine(); if (Button("Use brighter accent##TitleText")) Workspace::TitleTextOverride = false;
 				Separator(); TextUnformatted("Pets");
                 Checkbox("Pets enabled", &Workspace::PetEnabled);
                 Checkbox("Niko", &Workspace::PetNiko);SameLine();Checkbox("Alula", &Workspace::PetAlula);SameLine();Checkbox("Calamus", &Workspace::PetCalamus);
@@ -562,11 +595,11 @@ void CMenu::DrawMenu()
                 if (hovered && CalcTextSize(label).x > size.x - textX - H::Draw.Scale(3)) SetTooltip("%s", label);
                 return pressed;
             };
-            const int primary[] = { Main, Players, Configs, Logs, Interface, About };
-            const char* primaryIcons[] = { ICON_MD_HOME, ICON_MD_PEOPLE, ICON_MD_FOLDER, ICON_MD_LIST_ALT, ICON_MD_SETTINGS, ICON_MD_INFO };
-            for (int row = 0; row < 6; ++row)
+            const int primary[] = { Main, Players, Configs, Logs, Interface, Stats, About };
+            const char* primaryIcons[] = { ICON_MD_HOME, ICON_MD_PEOPLE, ICON_MD_FOLDER, ICON_MD_LIST_ALT, ICON_MD_SETTINGS, ICON_MD_LIST_ALT, ICON_MD_INFO };
+            for (int row = 0; row < 7; ++row)
                 if (launcherButton(names[primary[row]], primaryIcons[row],
-                    bodyPos + ImVec2(0, row * H::Draw.Scale(34)), { leftWidth, H::Draw.Scale(32) }))
+                    bodyPos + ImVec2(0, row * H::Draw.Scale(30)), { leftWidth, H::Draw.Scale(28) }))
                 {
                     launch(primary[row]); CloseCurrentPopup();
                 }
@@ -602,7 +635,7 @@ void CMenu::DrawMenu()
             if (!open[i]) continue;
             SameLine();
             PushID(i);
-            PushStyleColor(ImGuiCol_Button, active == i && !minimized[i] ? F::Render.Accent.Value : F::Render.Background0.Value);
+            PushStyleColor(ImGuiCol_Button, active == i && !minimized[i] ? F::Render.Background1p5L.Value : F::Render.Background0.Value);
             if (Button(names[i], { tabWidth, H::Draw.Scale(20) }))
             {
                 if (active == i && !minimized[i]) { minimized[i] = true; active = -1; }
@@ -773,6 +806,9 @@ void CMenu::MenuAimbot(int iTab)
 						}
 					} EndSection();
 				}
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+				if (Section("Private learning")) { PrivateLearning::Draw(); } EndSection();
+#endif
 				if (Section("Projectile"))
 				{
 					FDropdown(Vars::Aimbot::Projectile::StrafePrediction, FDropdownEnum::Left);
@@ -1528,11 +1564,16 @@ void CMenu::MenuVisuals(int iTab)
 
 					PushTransparent(tGroup.m_iTargets && !(tGroup.m_iTargets & TargetsEnum::ESP));
 					{
-						FDropdown("Draw", &tGroup.m_iESP, vEntries, vValues, FDropdownEnum::Multi);
-						if (FToggle("Custom name colour", &tGroup.m_bCustomNameColor) && tGroup.m_bCustomNameColor)
-							tGroup.m_tNameColor = tGroup.m_tColor;
-						if (tGroup.m_bCustomNameColor)
-							FColorPicker("Name colour", &tGroup.m_tNameColor);
+						FDropdown("Draw", &tGroup.m_iESP, vEntries, vValues, FDropdownEnum::Multi, 0, "None", nullptr, nullptr, [&]
+						{
+							// Display inheritance without committing an override on open.
+							auto colour = tGroup.NameColor();
+							if (FColorPicker("##NameColour", &colour, AttachedColorPicker | FColorPickerEnum::NoTooltip))
+							{
+								tGroup.m_tNameColor = colour;
+								tGroup.m_bCustomNameColor = true;
+							}
+						}, ESPEnum::Name);
 					}
 					PopTransparent();
 				} EndSection();
@@ -1785,7 +1826,7 @@ void CMenu::MenuVisuals(int iTab)
 					// Share the workspace values with Interface; do not duplicate them in gameplay configs.
 					Color_t workspaceAccent = ColorVecToByte({ Workspace::Accent[0], Workspace::Accent[1], Workspace::Accent[2], 1.f });
 					Color_t workspaceBackground = ColorVecToByte({ Workspace::Background[0], Workspace::Background[1], Workspace::Background[2], 1.f });
-					if (FColorPicker("Outline / accent", &workspaceAccent, FColorPickerEnum::Left))
+					if (FColorPicker("Accent", &workspaceAccent, FColorPickerEnum::Left))
 					{
 						Workspace::Accent[0] = workspaceAccent.r / 255.f;
 						Workspace::Accent[1] = workspaceAccent.g / 255.f;
@@ -1797,8 +1838,28 @@ void CMenu::MenuVisuals(int iTab)
 						Workspace::Background[1] = workspaceBackground.g / 255.f;
 						Workspace::Background[2] = workspaceBackground.b / 255.f;
 					}
-					FColorPicker(Vars::Menu::Theme::Active, FColorPickerEnum::Left);
-					FColorPicker(Vars::Menu::Theme::Inactive, FColorPickerEnum::Right);
+					const auto configBorder = Workspace::BorderColourOverride ? Workspace::BorderColour : Workspace::Accent;
+					Color_t workspaceBorder(int(configBorder[0] * 255), int(configBorder[1] * 255), int(configBorder[2] * 255), 255);
+					// Standalone picker: reserve a labelled row instead of attaching a swatch.
+					if (FColorPicker("Border / outline color", &workspaceBorder, FColorPickerEnum::Full))
+					{
+						Workspace::BorderColour[0] = workspaceBorder.r / 255.f;
+						Workspace::BorderColour[1] = workspaceBorder.g / 255.f;
+						Workspace::BorderColour[2] = workspaceBorder.b / 255.f;
+						Workspace::BorderColourOverride = true;
+					}
+					if (FButton("Use accent for borders")) Workspace::BorderColourOverride = false;
+					Color_t activeText(int(Workspace::TextChannel(0)*255), int(Workspace::TextChannel(1)*255), int(Workspace::TextChannel(2)*255), 255);
+					Color_t inactiveText(int(Workspace::InactiveTextChannel(0)*255), int(Workspace::InactiveTextChannel(1)*255), int(Workspace::InactiveTextChannel(2)*255), 255);
+					if (FColorPicker("Text active", &activeText, FColorPickerEnum::Left))
+					{ Workspace::TextColour[0]=activeText.r/255.f; Workspace::TextColour[1]=activeText.g/255.f; Workspace::TextColour[2]=activeText.b/255.f; Workspace::TextColourOverride=true; }
+					if (FColorPicker("Text inactive color", &inactiveText, FColorPickerEnum::Right))
+					{ Workspace::InactiveTextColour[0]=inactiveText.r/255.f; Workspace::InactiveTextColour[1]=inactiveText.g/255.f; Workspace::InactiveTextColour[2]=inactiveText.b/255.f; Workspace::InactiveTextOverride=true; }
+					if (FButton("Use accent for text")) { Workspace::TextColourOverride=false; Workspace::InactiveTextOverride=false; }
+					Color_t titleText(int(Workspace::TitleTextChannel(0)*255), int(Workspace::TitleTextChannel(1)*255), int(Workspace::TitleTextChannel(2)*255), 255);
+					if (FColorPicker("Text Title Color", &titleText, FColorPickerEnum::Full))
+					{ Workspace::TitleTextColour[0]=titleText.r/255.f; Workspace::TitleTextColour[1]=titleText.g/255.f; Workspace::TitleTextColour[2]=titleText.b/255.f; Workspace::TitleTextOverride=true; }
+					if (FButton("Use brighter accent for titles")) Workspace::TitleTextOverride=false;
 
 					FSDropdown(Vars::Menu::CheatTitle, FDropdownEnum::Left);
 					FSDropdown(Vars::Menu::CheatTag, FDropdownEnum::Right);
@@ -1819,6 +1880,27 @@ void CMenu::MenuVisuals(int iTab)
 				if (Section("Indicators"))
 				{
 					FDropdown(Vars::Menu::Indicators);
+					if (FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Spectators)
+					{
+						FDropdown(Vars::Menu::SpectatorScope);
+						FDropdown(Vars::Menu::SpectatorLayout);
+						FToggle(Vars::Menu::SpectatorGroup);
+						FDropdown(Vars::Menu::SpectatorStates);
+						FDropdown(Vars::Menu::SpectatorViews);
+						FToggle(Vars::Menu::SpectatorTargets);
+						FToggle(Vars::Menu::SpectatorLabels);
+						FToggle(Vars::Menu::SpectatorRespawn);
+						FSlider(Vars::Menu::SpectatorPage);
+						FText(std::format("{} entries / Page {} of {}", F::SpectatorList.m_iEntries,
+							F::SpectatorList.m_iCurrentPage, F::SpectatorList.m_iPageCount).c_str());
+						if (FButton("Reset spectator size"))
+						{
+							FSet(Vars::Menu::SpectatorWidth, 0);
+							FSet(Vars::Menu::SpectatorHeight, 0);
+						}
+						FText("Drag any spectator-panel corner to resize.");
+						FText("Hidden observer data is presumed; targets are not guessed.");
+					}
 					if (FSlider(Vars::Menu::Scale))
 						H::Fonts.Reload();
 					if (FToggle(Vars::Menu::CheapText))
@@ -1934,6 +2016,29 @@ void CMenu::MenuMisc(int iTab)
 					FToggle(Vars::Misc::Movement::NoPush, FToggleEnum::Left);
 					FToggle(Vars::Misc::Movement::MovementLock, FToggleEnum::Right);
 				} EndSection();
+				if (Section("Blockbot"))
+				{
+					FToggle(Vars::Misc::Blockbot::Enabled);
+					FDropdown(Vars::Misc::Blockbot::Target);
+					FDropdown(Vars::Misc::Blockbot::Team);
+					FDropdown(Vars::Misc::Blockbot::Behavior);
+					if (Vars::Misc::Blockbot::Team.Value != Vars::Misc::Blockbot::TeamEnum::Enemies)
+						FDropdown(Vars::Misc::Blockbot::TeammateBehavior);
+					FSlider(Vars::Misc::Blockbot::Range);
+					FSlider(Vars::Misc::Blockbot::ResumeDelay);
+					FSlider(Vars::Misc::Blockbot::Acceleration, FSliderEnum::Left);
+					FSlider(Vars::Misc::Blockbot::Deceleration, FSliderEnum::Right);
+					FToggle(Vars::Misc::Blockbot::WhileMenuOpen);
+					FToggle(Vars::Misc::Blockbot::WhileCrouching);
+					FToggle(Vars::Misc::Blockbot::ContinueFollowing);
+					FToggle(Vars::Misc::Blockbot::IgnoreDanger);
+					if (Vars::Misc::Blockbot::Target.Value == Vars::Misc::Blockbot::TargetEnum::Manual)
+					{
+						TextWrapped("Manual target: %s", F::Blockbot.ManualName().c_str());
+						TextWrapped("Right-click a player in the player list to select them.");
+					}
+					TextWrapped("%s", F::Blockbot.Status().c_str());
+				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
 					if (Section("##Debug"))
@@ -1962,6 +2067,12 @@ void CMenu::MenuMisc(int iTab)
 					FToggle(Vars::Misc::Automation::AutoF2Ignored, FToggleEnum::Left);
 					FToggle(Vars::Misc::Automation::AutoF1Priority, FToggleEnum::Right);
 					FToggle(Vars::Misc::Automation::AcceptItemDrops);
+				} EndSection();
+				if (Section("Mann vs. Machine"))
+				{
+					FToggle(Vars::Misc::MannVsMachine::InstantRespawn, FToggleEnum::Left);
+					FToggle(Vars::Misc::MannVsMachine::InstantRevive, FToggleEnum::Right);
+					FToggle(Vars::Misc::MannVsMachine::AllowInspect);
 				} EndSection();
 			}
 			/* Column 2 */
@@ -2014,16 +2125,6 @@ void CMenu::MenuMisc(int iTab)
 					FToggle(Vars::Misc::Sound::RemoveDSP, FToggleEnum::Right);
 					FToggle(Vars::Misc::Sound::GiantWeaponSounds);
 				} EndSection();
-			}
-			TableNextRow();
-			TableNextColumn();
-				if (Section("Mann vs. Machine"))
-				{
-					FToggle(Vars::Misc::MannVsMachine::InstantRespawn, FToggleEnum::Left);
-					FToggle(Vars::Misc::MannVsMachine::InstantRevive, FToggleEnum::Right);
-					FToggle(Vars::Misc::MannVsMachine::AllowInspect);
-				} EndSection();
-			TableNextColumn();
 				if (Section("Cheat Detection"))
 				{
 					FDropdown(Vars::CheatDetection::Methods);
@@ -2044,6 +2145,7 @@ void CMenu::MenuMisc(int iTab)
 					}
 					PopTransparent();
 				} EndSection();
+			}
 			EndTable();
 		}
 		break;
@@ -2146,6 +2248,16 @@ void CMenu::MenuLogs(int iTab)
 
 						if (FSelectable(F::Spectate.GetTarget(true) == tPlayer.m_iUserID ? "Unspectate" : "Spectate"))
 							F::Spectate.SetTarget(tPlayer.m_iUserID);
+						if (!tPlayer.m_bLocal && !I::EngineClient->IsPlayingDemo() && FSelectable("Set as blockbot target"))
+						{
+							F::Blockbot.SetManual(tPlayer.m_iUserID, tPlayer.m_uAccountID, tPlayer.m_sName);
+							Vars::Misc::Blockbot::Target.Map[DEFAULT_BIND] = Vars::Misc::Blockbot::TargetEnum::Manual;
+							Vars::Misc::Blockbot::Target.Value = Vars::Misc::Blockbot::TargetEnum::Manual;
+						}
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+						if (!tPlayer.m_bLocal && !tPlayer.m_bFake && tPlayer.m_uAccountID && !I::EngineClient->IsPlayingDemo() && FSelectable("Learn only this player (private)"))
+							PrivateLearning::Select(tPlayer.m_uAccountID, tPlayer.m_sName);
+#endif
 
 						if (!I::EngineClient->IsPlayingDemo() && FBeginMenu("Votekick"))
 						{
@@ -3218,6 +3330,12 @@ void CMenu::MenuSettings(int iTab)
 				DebugDummy({ 0, H::Draw.Scale(6) });
 				FToggle(Vars::Menu::MenuShowsBinds);
 			} EndChild();
+			FToggle(Vars::Menu::BindWindowHorizontal);
+			FToggle(Vars::Menu::BindTextGlow);
+			FToggle(Vars::Menu::BindTextGlowCustom);
+			if (FGet(Vars::Menu::BindTextGlowCustom))
+				FColorPicker(Vars::Menu::BindTextGlowColour);
+			else FText("Glow colour: lighter accent");
 		} EndSection();
 		if (Section("Binds"))
 		{
@@ -4256,6 +4374,8 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 
 	auto tDragBox = FGet(tVar, true);
 	auto uHash = FNV1A::Hash32(sLabel);
+	const bool bCritPanel = &tVar == &Vars::Menu::CritsDisplay || &tVar == &Vars::Menu::TicksDisplay || &tVar == &Vars::Menu::SpectatorsDisplay;
+	const bool bSpectatorPanel = &tVar == &Vars::Menu::SpectatorsDisplay;
 
 	bool bContains = s_mDragBoxStorage.contains(uHash);
 	auto& tStorage = s_mDragBoxStorage[uHash];
@@ -4263,25 +4383,86 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 	SetNextWindowSize(vSize, ImGuiCond_Always);
 	if (!bContains || tDragBox != tStorage.m_tDragBox || H::Draw.Scale() != tStorage.m_flScale)
 		SetNextWindowPos({ float(tDragBox.x - vSize.x / 2), float(tDragBox.y) }, ImGuiCond_Always);
+	if (bCritPanel)
+	{
+		ImVec2 pos(float(tDragBox.x) - vSize.x / 2, float(tDragBox.y));
+		if (auto window = FindWindowByName(sLabel); window && bContains && tDragBox == tStorage.m_tDragBox && H::Draw.Scale() == tStorage.m_flScale)
+			pos = window->Pos;
+		const float bar = H::Draw.Scale(26);
+		pos.x = BindLayout::ClampAxis(pos.x, vSize.x, 0.f, GetIO().DisplaySize.x);
+		pos.y = BindLayout::ClampAxis(pos.y, vSize.y, Workspace::TopTaskbar ? bar : 0.f,
+			GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : bar));
+		SetNextWindowPos(pos, ImGuiCond_Always);
+	}
 
 	PushStyleColor(ImGuiCol_WindowBg, {});
 	PushStyleColor(ImGuiCol_Border, F::Render.Active.Value);
 	PushStyleVar(ImGuiStyleVar_WindowRounding, H::Draw.Scale(3));
-	PushStyleVar(ImGuiStyleVar_WindowBorderSize, H::Draw.Scale(1));
-	PushStyleVar(ImGuiStyleVar_WindowMinSize, vSize);
+	// Crit hack already renders an accent outline; its editor is only a drag surface.
+	PushStyleVar(ImGuiStyleVar_WindowBorderSize, bCritPanel ? 0.f : H::Draw.Scale(1));
+	PushStyleVar(ImGuiStyleVar_WindowMinSize, bSpectatorPanel
+		? ImVec2(F::SpectatorList.m_vMinimumSize.x, F::SpectatorList.m_vMinimumSize.y) : vSize);
 	if (Begin(sLabel, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings))
 	{
 		ImVec2 vWindowPos = GetWindowPos();
+		if (bSpectatorPanel)
+		{
+			// Four explicit grips support all corners without ImGui's default border.
+			static ImVec2 resizeMouse, resizePos, resizeSize;
+			const float grip = std::max(8.f, H::Draw.Scale(8));
+			for (int corner = 0; corner < 4; ++corner)
+			{
+				const bool right = (corner & 1) != 0, bottom = (corner & 2) != 0;
+				SetCursorPos({ right ? vSize.x - grip : 0.f, bottom ? vSize.y - grip : 0.f });
+				PushID(corner);
+				InvisibleButton("##SpectatorResize", { grip, grip });
+				if (IsItemHovered() || IsItemActive()) SetMouseCursor(right == bottom ? ImGuiMouseCursor_ResizeNWSE : ImGuiMouseCursor_ResizeNESW);
+				if (IsItemActivated()) { resizeMouse = GetIO().MousePos; resizePos = vWindowPos; resizeSize = vSize; }
+				if (IsItemActive() && IsMouseDragging(ImGuiMouseButton_Left, 0.f))
+				{
+					const ImVec2 delta = GetIO().MousePos - resizeMouse;
+					const float bar = H::Draw.Scale(26);
+					const float minY = Workspace::TopTaskbar ? bar : 0.f;
+					const float maxY = GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : bar);
+					const auto [newX, newW] = SpectatorStyle::ResizeAxis(resizePos.x, resizeSize.x, delta.x, right,
+						F::SpectatorList.m_vMinimumSize.x, 0.f, GetIO().DisplaySize.x);
+					const auto [newY, newH] = SpectatorStyle::ResizeAxis(resizePos.y, resizeSize.y, delta.y, bottom,
+						F::SpectatorList.m_vMinimumSize.y, minY, maxY);
+					vSize = { newW, newH }; vWindowPos = { newX, newY };
+					SetWindowPos(vWindowPos); SetWindowSize(vSize);
+					FSet(Vars::Menu::SpectatorWidth, int(vSize.x));
+					FSet(Vars::Menu::SpectatorHeight, int(vSize.y));
+				}
+				const ImVec2 point = vWindowPos + ImVec2(right ? vSize.x - 1 : 1, bottom ? vSize.y - 1 : 1);
+				const auto colour = GetColorU32(ImVec4(Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2), 1.f));
+				GetWindowDrawList()->AddLine(point, point + ImVec2(right ? -grip : grip, 0), colour, 2.f);
+				GetWindowDrawList()->AddLine(point, point + ImVec2(0, bottom ? -grip : grip), colour, 2.f);
+				PopID();
+			}
+		}
 
+		if (bCritPanel)
+		{
+			const float bar = H::Draw.Scale(26);
+			vWindowPos.x = BindLayout::ClampAxis(vWindowPos.x, vSize.x, 0.f, GetIO().DisplaySize.x);
+			vWindowPos.y = BindLayout::ClampAxis(vWindowPos.y, vSize.y,
+				Workspace::TopTaskbar ? bar : 0.f, GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : bar));
+			SetWindowPos(vWindowPos);
+		}
 		tDragBox.x = vWindowPos.x + vSize.x / 2, tDragBox.y = vWindowPos.y;
 		tStorage = { tDragBox, H::Draw.Scale() };
 		FSet(tVar, tDragBox);
 
-		PushFont(F::Render.FontBold);
-		ImVec2 vTextSize = FCalcTextSize(sLabel);
-		SetCursorPos({ (vSize.x - vTextSize.x) * 0.5f, (vSize.y - vTextSize.y) * 0.5f });
-		FText(sLabel);
-		PopFont();
+		// The crit panel is an empty drag surface. Only position the cursor when
+		// submitting a label; a cursor-only layout extension triggers an ImGui assertion.
+		if (!bCritPanel)
+		{
+			PushFont(F::Render.FontBold);
+			ImVec2 vTextSize = FCalcTextSize(sLabel);
+			SetCursorPos({ (vSize.x - vTextSize.x) * 0.5f, (vSize.y - vTextSize.y) * 0.5f });
+			FText(sLabel);
+			PopFont();
+		}
 	}
 	End(); // must always be paired with Begin, even when it returns false
 	PopStyleVar(3);
@@ -4347,6 +4528,7 @@ struct BindInfo_t
 
 	int iBind;
 	Bind_t& tBind;
+	bool bEffectiveActive;
 };
 void CMenu::DrawBinds()
 {
@@ -4356,7 +4538,7 @@ void CMenu::DrawBinds()
 		return;
 
 	std::vector<BindInfo_t> vInfo;
-	std::function<void(int)> fGetBinds = [&](int iParent)
+	std::function<void(int, bool)> fGetBinds = [&](int iParent, bool bParentActive)
 	{
 		for (int iBind = 0; iBind < F::Binds.m_vBinds.size(); iBind++)
 		{
@@ -4436,14 +4618,15 @@ void CMenu::DrawBinds()
 				if (tBind.m_bNot && (tBind.m_iType != BindEnum::Key || tBind.m_iInfo == BindEnum::KeyEnum::Hold))
 					sInfo = std::format("not {}", sInfo);
 
-				vInfo.emplace_back(tBind.m_sName.c_str(), sType, sInfo, iBind, tBind);
+				vInfo.emplace_back(tBind.m_sName.c_str(), sType, sInfo, iBind, tBind,
+					bParentActive && tBind.m_bEnabled && tBind.m_bActive);
 			}
 
 			if (tBind.m_bActive || m_bIsOpen)
-				fGetBinds(iBind);
+				fGetBinds(iBind, bParentActive && tBind.m_bEnabled && tBind.m_bActive);
 		}
 	};
-	fGetBinds(DEFAULT_BIND);
+	fGetBinds(DEFAULT_BIND, true);
 	if (vInfo.empty())
 		return;
 
@@ -4454,7 +4637,7 @@ void CMenu::DrawBinds()
 
 	float flNameWidth = 0, flInfoWidth = 0, flStateWidth = 0;
 	PushFont(F::Render.FontSmall);
-	for (auto& [sName, sInfo, sState, iBind, tBind] : vInfo)
+	for (auto& [sName, sInfo, sState, iBind, tBind, bEffectiveActive] : vInfo)
 	{
 		flNameWidth = std::max(flNameWidth, FCalcTextSize(sName).x);
 		flInfoWidth = std::max(flInfoWidth, FCalcTextSize(sInfo.c_str()).x);
@@ -4464,12 +4647,32 @@ void CMenu::DrawBinds()
 	flNameWidth += H::Draw.Scale(9), flInfoWidth += H::Draw.Scale(9), flStateWidth += H::Draw.Scale(9);
 
 	float flWidth = flNameWidth + flInfoWidth + flStateWidth + (m_bIsOpen ? H::Draw.Scale(113) : H::Draw.Scale(14));
-	float flHeight = H::Draw.Scale(18 * vInfo.size() + (Vars::Menu::BindWindowTitle.Value ? 42 : 12));
+	const float flCardWidth = flWidth - H::Draw.Scale(12);
+	const float flStride = flCardWidth + H::Draw.Scale(6);
+	const int iColumns = BindLayout::Columns(int(vInfo.size()), Vars::Menu::BindWindowHorizontal.Value,
+		GetIO().DisplaySize.x, flStride, H::Draw.Scale(16));
+	const int iRows = BindLayout::Rows(int(vInfo.size()), iColumns);
+	flWidth = iColumns * flStride + H::Draw.Scale(6);
+	float flHeight = H::Draw.Scale(28 * iRows + (Vars::Menu::BindWindowTitle.Value ? 38 : 10));
 	SetNextWindowSize({ flWidth, flHeight }, ImGuiCond_Always);
+	ImVec2 vLivePos(float(tDragBox.x), float(tDragBox.y));
+	if (auto window = FindWindowByName("Binds"); window && tDragBox == tOld)
+		vLivePos = window->Pos;
+	const float flTaskbar = m_bIsOpen ? H::Draw.Scale(26) : 0.f;
+	vLivePos.x = BindLayout::ClampAxis(vLivePos.x, flWidth, 0.f, GetIO().DisplaySize.x);
+	vLivePos.y = BindLayout::ClampAxis(vLivePos.y, flHeight, Workspace::TopTaskbar ? flTaskbar : 0.f,
+		GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : flTaskbar));
+	SetNextWindowPos(vLivePos, ImGuiCond_Always);
 	PushStyleVar(ImGuiStyleVar_WindowMinSize, { H::Draw.Scale(40), H::Draw.Scale(40) });
 	if (Begin("Binds", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings))
 	{
 		ImVec2 vWindowPos = GetWindowPos();
+		const ImVec2 vActualSize = GetWindowSize();
+		const float flBar = m_bIsOpen ? H::Draw.Scale(26) : 0.f;
+		vWindowPos.x = BindLayout::ClampAxis(vWindowPos.x, vActualSize.x, 0.f, GetIO().DisplaySize.x);
+		vWindowPos.y = BindLayout::ClampAxis(vWindowPos.y, vActualSize.y,
+			Workspace::TopTaskbar ? flBar : 0.f, GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : flBar));
+		SetWindowPos(vWindowPos);
 
 		if (Vars::Menu::BindWindowTitle.Value)
 			RenderTwoToneBackground(H::Draw.Scale(28), F::Render.Background0, F::Render.Background0p5, F::Render.Background2);
@@ -4495,40 +4698,103 @@ void CMenu::DrawBinds()
 
 		PushFont(F::Render.FontSmall);
 		int iPendingRemove = DEFAULT_BIND; // bind removal is deferred until vInfo (which references the bind list) is no longer being iterated
-		int i = 0; for (auto& [sName, sInfo, sState, iBind, tBind] : vInfo)
+		int i = 0; for (auto& [sName, sInfo, sState, iBind, tBind, bEffectiveActive] : vInfo)
 		{
-			float flPosX = 0;
+			const float flCardX = H::Draw.Scale(6) + (i % iColumns) * flStride;
+			const float flTextY = H::Draw.Scale(iListStart + 28 * (i / iColumns));
+			const float flCardRight = flCardX + flCardWidth;
+			float flPosX = flCardX - H::Draw.Scale(6);
+			const ImVec2 vMin(vWindowPos.x + flCardX, vWindowPos.y + flTextY - H::Draw.Scale(4));
+			const ImVec2 vMax(vMin.x + flCardWidth, vMin.y + H::Draw.Scale(24));
+			GetWindowDrawList()->AddRectFilled(vMin, vMax, IM_COL32(0, 0, 0, 255));
+			if (bEffectiveActive)
+			{
+				// A steady glow communicates activation without distracting flashing.
+				// Keep the halo inside the existing row gutter so neighbouring binds stay distinct.
+				auto tint = [&](float alpha)
+				{
+					ImVec4 colour = F::Render.Accent.Value;
+					colour.w = alpha;
+					return GetColorU32(colour);
+				};
+				const float scale = std::max(.5f, H::Draw.Scale());
+				for (int layer = 3; layer >= 1; --layer)
+				{
+					const ImVec2 spread(layer * .5f * scale, layer * .5f * scale);
+					GetWindowDrawList()->AddRect(vMin - spread, vMax + spread,
+						tint(.09f + (3 - layer) * .07f), 0.f, ImDrawFlags_None, scale);
+				}
+				GetWindowDrawList()->AddRectFilled(vMin, vMax, tint(.16f));
+				const ImVec2 inset(scale, scale);
+				GetWindowDrawList()->AddRect(vMin + inset, vMax - inset, tint(.55f), 0.f, ImDrawFlags_None, scale);
+			}
+			GetWindowDrawList()->AddRect(vMin, vMax, GetColorU32(F::Render.Accent.Value));
+			PushID(iBind);
 
 			if (m_bIsOpen)
 				PushTransparent(!F::Binds.WillBeEnabled(iBind), true);
 
-			SetCursorPos({ flPosX += H::Draw.Scale(12), H::Draw.Scale(iListStart + 18 * i) });
+			auto drawBindText = [&](const char* text)
+			{
+				if (!bEffectiveActive || !Vars::Menu::BindTextGlow.Value)
+				{
+					FText(text);
+					return;
+				}
+				Workspace::ScopedTextColour preserveColour;
+				ImVec4 colour = Vars::Menu::BindTextGlowCustom.Value
+					? ColorByteToFloat(Vars::Menu::BindTextGlowColour.Value).Value : F::Render.Accent.Value;
+				if (!Vars::Menu::BindTextGlowCustom.Value)
+				{
+					colour.x += (1.f - colour.x) * .45f;
+					colour.y += (1.f - colour.y) * .45f;
+					colour.z += (1.f - colour.z) * .45f;
+				}
+				colour.w = 1.f;
+				const ImVec2 position = GetCursorScreenPos();
+				const float scale = std::max(.5f, H::Draw.Scale());
+				// Low-alpha glyph copies form a soft halo; draw the crisp glyphs last.
+				for (int ring = 2; ring >= 1; --ring)
+				{
+					ImVec4 halo = colour; halo.w = ring == 2 ? .075f : .14f;
+					for (int dx = -1; dx <= 1; ++dx)
+						for (int dy = -1; dy <= 1; ++dy)
+							if (dx || dy)
+								GetWindowDrawList()->AddText(GetFont(), GetFontSize(),
+									position + ImVec2(dx * ring * scale, dy * ring * scale), GetColorU32(halo), text);
+				}
+				PushStyleColor(ImGuiCol_Text, colour);
+				FText(text);
+				PopStyleColor();
+			};
+
+			SetCursorPos({ flPosX += H::Draw.Scale(12), flTextY });
 			PushStyleColor(ImGuiCol_Text, tBind.m_bActive ? F::Render.Accent.Value : F::Render.Inactive.Value);
-			FText(sName);
+			drawBindText(sName);
 			PopStyleColor();
 
-			SetCursorPos({ flPosX += flNameWidth, H::Draw.Scale(iListStart + 18 * i) });
+			SetCursorPos({ flPosX += flNameWidth, flTextY });
 			PushStyleColor(ImGuiCol_Text, tBind.m_bActive ? F::Render.Active.Value : F::Render.Inactive.Value);
-			FText(sInfo.c_str());
+			drawBindText(sInfo.c_str());
 
-			SetCursorPos({ flPosX += flInfoWidth, H::Draw.Scale(iListStart + 18 * i) });
-			FText(sState.c_str());
+			SetCursorPos({ flPosX += flInfoWidth, flTextY });
+			drawBindText(sState.c_str());
 			PopStyleColor();
 
 			if (m_bIsOpen)
 			{	// buttons
-				SetCursorPos({ flWidth - H::Draw.Scale(26), H::Draw.Scale(iListStart - 2 + 18 * i) });
+				SetCursorPos({ flCardRight - H::Draw.Scale(20), flTextY - H::Draw.Scale(2) });
 				bool bDelete = IconButton(ICON_MD_DELETE, H::Draw.Scale(18), F::Render.Accent.Value);
 
-				SetCursorPos({ flWidth - H::Draw.Scale(51), H::Draw.Scale(iListStart - 2 + 18 * i) });
+				SetCursorPos({ flCardRight - H::Draw.Scale(45), flTextY - H::Draw.Scale(2) });
 				bool bNot = IconButton(!tBind.m_bNot ? ICON_MD_CODE : ICON_MD_CODE_OFF, H::Draw.Scale(18), F::Render.Accent.Value);
 
 				PushTransparent(Transparent || tBind.m_iVisibility == BindVisibilityEnum::Hidden, true);
-				SetCursorPos({ flWidth - H::Draw.Scale(76), H::Draw.Scale(iListStart - 2 + 18 * i) });
+				SetCursorPos({ flCardRight - H::Draw.Scale(70), flTextY - H::Draw.Scale(2) });
 				bool bVisibility = IconButton(tBind.m_iVisibility == BindVisibilityEnum::Always ? ICON_MD_VISIBILITY : ICON_MD_VISIBILITY_OFF, H::Draw.Scale(18), F::Render.Accent.Value);
 				PopTransparent(1, 1);
 
-				SetCursorPos({ flWidth - H::Draw.Scale(101), H::Draw.Scale(iListStart - 2 + 18 * i) });
+				SetCursorPos({ flCardRight - H::Draw.Scale(95), flTextY - H::Draw.Scale(2) });
 				bool bEnable = IconButton(tBind.m_bEnabled ? ICON_MD_TOGGLE_ON : ICON_MD_TOGGLE_OFF, H::Draw.Scale(18), F::Render.Accent.Value);
 
 				PopTransparent(1, 1);
@@ -4570,6 +4836,7 @@ void CMenu::DrawBinds()
 				PopFont();
 			}
 
+			PopID();
 			i++;
 		}
 		PopFont();
@@ -4616,9 +4883,12 @@ void CMenu::Render()
 		ManageVars();
 		DrawMenu();
 
-		AddDraggable("Ticks", Vars::Menu::TicksDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Ticks);
-		AddDraggable("Crit hack", Vars::Menu::CritsDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::CritHack);
-		AddDraggable("Spectators", Vars::Menu::SpectatorsDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Spectators);
+		AddDraggable("Ticks", Vars::Menu::TicksDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Ticks,
+			{ F::Ticks.m_vIndicatorSize.x, F::Ticks.m_vIndicatorSize.y });
+		AddDraggable("Crit hack", Vars::Menu::CritsDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::CritHack,
+			{ F::CritHack.m_vIndicatorSize.x, F::CritHack.m_vIndicatorSize.y });
+		AddDraggable("Spectators", Vars::Menu::SpectatorsDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Spectators,
+			{ F::SpectatorList.m_vIndicatorSize.x, F::SpectatorList.m_vIndicatorSize.y });
 		AddDraggable("Ping", Vars::Menu::PingDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Ping);
 		AddDraggable("Conditions", Vars::Menu::ConditionsDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Conditions);
 		AddDraggable("Seed prediction", Vars::Menu::SeedPredictionDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::SeedPrediction);
