@@ -18,6 +18,9 @@ struct MoveStorage
 	float m_flSimTime = 0.f;
 	float m_flPredictedDelta = 0.f;
 	float m_flPredictedSimTime = 0.f;
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    float m_flDiagnosticNetworkOriginTime = 0.f;
+#endif
 	bool m_bDirectMove = true;
 
 	bool m_bPredictNetworked = true;

@@ -48,6 +48,7 @@ public:
 	bool IsTimingUnsure();
 
 	bool m_bDoubletap = false;
+	Vec2 m_vIndicatorSize = { 196, 56 };
 	bool m_bWarp = false;
 	bool m_bRecharge = false;
 	bool m_bAntiWarp = false;

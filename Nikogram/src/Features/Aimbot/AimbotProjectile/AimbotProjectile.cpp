@@ -3,10 +3,17 @@
 #include "../Aimbot.h"
 #include "../../Ticks/Ticks.h"
 #include "../../EnginePrediction/EnginePrediction.h"
+#include "../../LearningAccess.h"
 #include "../../World/World.h"
 #include "../AutoAirblast/AutoAirblast.h"
 #include "../../AntiCheatCompatibility/AntiCheatCompatibility.h"
 #include <numeric>
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+#include <chrono>
+#include "../../../Private/Learning/ProjectileReplay.h"
+#include "../../../Private/Learning/CollisionParity.h"
+#include "../../../Private/Learning/FullPathParity.h"
+#endif
 
 //#define SPLASH_DEBUG1 // trace splash visualization
 //#define SPLASH_DEBUG2 // plane splash visualization
@@ -1144,6 +1151,10 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 
 bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int iSimTime, uint8_t iType, uint8_t iFlags, bool bSecondTest)
 {
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    m_DiagnosticScratch.clear();m_DiagnosticScratchCount=0;
+    m_DiagnosticRecording=!bSecondTest&&PrivateLearning::EngineReplayWanted(&m_tMoveStorage);
+#endif
 	auto pLocal = m_tInfo.m_pLocal;
 	auto pWeapon = m_tInfo.m_pWeapon;
 	auto& tTarget = *m_tInfo.m_pTarget;
@@ -1209,6 +1220,9 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 	if (!m_tProjInfo.m_flGravity)
 	{
 		SDK::TraceHull(m_tProjInfo.m_vPos, vPoint, -m_tProjInfo.m_vHull, m_tProjInfo.m_vHull, nMask, &filter, &trace);
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+        RecordDiagnosticQuery(m_tProjInfo.m_vPos,vPoint,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull,nMask,filter,trace,0,true);
+#endif
 #ifdef SPLASH_DEBUG5
 		s_mTraceCount[__FUNCTION__": nograv trace"]++;
 #endif
@@ -1230,6 +1244,10 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 	uint8_t iTraceInterval = iFlags == PointFlagsEnum::Lob ? Vars::Aimbot::Projectile::LobTraceInterval.Value
 		: iType != PointTypeEnum::Direct ? Vars::Aimbot::Projectile::SplashTraceInterval.Value
 		: Vars::Aimbot::Projectile::DirectTraceInterval.Value;
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    const Vec3 diagnosticVelocity=F::ProjSim.GetVelocity();
+    int diagnosticPreviousTick=0;
+#endif
 
 	const RestoreInfo_t tOriginal = { tTarget.m_pEntity->GetAbsOrigin(), tTarget.m_pEntity->m_vecMins(), tTarget.m_pEntity->m_vecMaxs() };
 	tTarget.m_pEntity->SetAbsOrigin(tTarget.m_vPos);
@@ -1248,7 +1266,14 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 			continue;
 
 		Vec3 vOld = vNew; vNew = F::ProjSim.GetOrigin();
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+        const int diagnosticFrom=diagnosticPreviousTick;diagnosticPreviousTick=n;
+        CGameTrace diagnosticVisibility={};bool diagnosticHasVisibility=false;
+#endif
 		SDK::TraceHull(vOld, vNew, -m_tProjInfo.m_vHull, m_tProjInfo.m_vHull, nMask, &filter, &trace);
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+        RecordDiagnosticQuery(vOld,vNew,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull,nMask,filter,trace,1,true);
+#endif
 #ifdef SPLASH_DEBUG5
 		s_mTraceCount[std::format(__FUNCTION__": trace ({})", iTraceInterval)]++;
 #endif
@@ -1283,7 +1308,13 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 			{
 				CGameTrace trace2 = {};
 				SDK::Trace(trace.endpos + trace.plane.normal * m_tInfo.m_flNormalOffset, tTarget.m_vPos + m_tInfo.m_vTargetEye, MASK_SHOT, &filter, &trace2);
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+                RecordDiagnosticQuery(trace.endpos+trace.plane.normal*m_tInfo.m_flNormalOffset,tTarget.m_vPos+m_tInfo.m_vTargetEye,{},{},MASK_SHOT,filter,trace2,2,false);
+#endif
 				bValid = trace2.fraction == 1.f;
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+                diagnosticVisibility=trace2;diagnosticHasVisibility=true;
+#endif
 #ifdef SPLASH_DEBUG5
 				s_mTraceCount[__FUNCTION__": splash eye trace"]++;
 #endif
@@ -1312,6 +1343,9 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 				{
 					vOld = m_tProjInfo.m_vPath[i - 1], vNew = m_tProjInfo.m_vPath[i];
 					SDK::TraceHull(vOld, vNew, -m_tProjInfo.m_vHull, m_tProjInfo.m_vHull, nMask, &filter, &trace2);
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+                    RecordDiagnosticQuery(vOld,vNew,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull,nMask,filter,trace2,3,true);
+#endif
 					bValid = !trace2.DidHit();
 #ifdef SPLASH_DEBUG5
 					s_mTraceCount[__FUNCTION__": trace (retest)"]++;
@@ -1369,6 +1403,38 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 						break;
 				}
 
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+                // A bounded paired check inside the baseline's existing target
+                // simulation boundary. Never changes target, filter, path, or result.
+                if(!bSecondTest&&!m_tProjInfo.m_flGravity&&!F::ProjSim.m_bPhysics&&!m_tInfo.m_iArmTime
+                    &&iFlags==PointFlagsEnum::Regular&&(pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER||pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT)
+                    &&PrivateLearning::EngineCollisionReserve(&m_tMoveStorage))
+                {
+                    using namespace PrivateLearning::CollisionParity;
+                    const auto started=std::chrono::steady_clock::now();Result result;result.path=iType;result.from=diagnosticFrom;result.to=n;
+                    const auto vec=[](const Vec3& p)->V3{return {p.x,p.y,p.z};};
+                    const auto encode=[&](const CGameTrace& t)->Trace{return {vec(t.endpos),vec(t.plane.normal),t.fraction,t.m_pEnt?t.m_pEnt->entindex():-1,t.startsolid,t.allsolid};};
+                    result.baseline=encode(trace);V3 a{},b{};
+                    if(!Segment(vec(m_tProjInfo.m_vPos),vec(diagnosticVelocity),TICK_INTERVAL,diagnosticFrom,n,a,b))result.reason="segment_out_of_bounds";
+                    else if(Distance(a,vec(vOld))>.01||Distance(b,vec(vNew))>.01)result.reason="segment_kinematics_mismatch";
+                    else
+                    {
+                        CGameTrace replay={};auto replayFilter=filter;
+                        SDK::TraceHull(Vec3(a[0],a[1],a[2]),Vec3(b[0],b[1],b[2]),-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull,nMask,&replayFilter,&replay);
+                        result.traces=1;result.replay=encode(replay);result.endpointError=Distance(result.baseline.end,result.replay.end);
+                        result.reason=Match(result.baseline,result.replay)?"terminal_collision_match_unvalidated":"terminal_collision_mismatch";
+                        if(diagnosticHasVisibility)
+                        {
+                            CGameTrace visibility={};
+                            SDK::Trace(replay.endpos+replay.plane.normal*m_tInfo.m_flNormalOffset,tTarget.m_vPos+m_tInfo.m_vTargetEye,MASK_SHOT,&replayFilter,&visibility);
+                            ++result.traces;result.visibility=true;result.baselineVisibility=encode(diagnosticVisibility);result.replayVisibility=encode(visibility);
+                            if(!Match(result.baselineVisibility,result.replayVisibility))result.reason="splash_visibility_mismatch";
+                        }
+                    }
+                    result.micros=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-started).count();
+                    PrivateLearning::EngineCollisionResult(&m_tMoveStorage,result);
+                }
+#endif
 				bDidHit = true;
 			}
 			else if (bTarget && iType == PointTypeEnum::Direct && m_tInfo.m_iArmTime)
@@ -1461,7 +1527,73 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
 	return bReturn && m_iResult == 1;
 }
 
-bool CAimbotProjectile::HandleDirect(DirectHistory_t& mDirectHistory)
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+void CAimbotProjectile::RecordDiagnosticQuery(const Vec3& start,const Vec3& end,const Vec3& mins,const Vec3& maxs,int mask,const CTraceFilterCollideable& filter,const CGameTrace& result,int kind,bool hull)
+{
+    if(!m_DiagnosticRecording)return;
+    ++m_DiagnosticScratchCount;
+    if(m_DiagnosticScratch.size()>=PrivateLearning::FullPathParity::MaxQueries)return;
+    auto entity=m_tInfo.m_pTarget->m_pEntity;
+    m_DiagnosticScratch.push_back({start,end,mins,maxs,entity->GetAbsOrigin(),entity->m_vecMins(),entity->m_vecMaxs(),filter,result,mask,kind,hull});
+}
+void CAimbotProjectile::ReplayFinalPath()
+{
+    if(!PrivateLearning::EngineReplayWanted(&m_tMoveStorage))return;
+    using namespace PrivateLearning;FullPathParity::Result result;result.recorded=m_DiagnosticSelectedCount;result.path=m_DiagnosticSelectedType;
+    const auto started=std::chrono::steady_clock::now();
+    if(!m_DiagnosticSelectedSupported)result.reason="unsupported_or_missing_final_path";
+    else if(result.recorded>FullPathParity::MaxQueries)result.reason="query_budget_exceeded";
+    else
+    {
+        auto entity=m_tInfo.m_pTarget->m_pEntity;
+        const Vec3 origin=entity->GetAbsOrigin(),mins=entity->m_vecMins(),maxs=entity->m_vecMaxs();
+        {
+            struct Restore {CBaseEntity* entity;Vec3 origin,mins,maxs;~Restore(){entity->SetAbsOrigin(origin);entity->m_vecMins()=mins;entity->m_vecMaxs()=maxs;}} restore{entity,origin,mins,maxs};
+            const auto encode=[](const CGameTrace& t)->CollisionParity::Trace{return {{t.endpos.x,t.endpos.y,t.endpos.z},{t.plane.normal.x,t.plane.normal.y,t.plane.normal.z},t.fraction,t.m_pEnt?t.m_pEnt->entindex():-1,t.startsolid,t.allsolid};};
+            for(const auto& q:m_DiagnosticSelected)
+            {
+                entity->SetAbsOrigin(q.targetOrigin);entity->m_vecMins()=q.targetMins;entity->m_vecMaxs()=q.targetMaxs;
+                auto filter=q.filter;CGameTrace replay={};
+                if(q.hull)SDK::TraceHull(q.start,q.end,q.mins,q.maxs,q.mask,&filter,&replay);
+                else SDK::Trace(q.start,q.end,q.mask,&filter,&replay);
+                result.Compare(q.kind,encode(q.result),encode(replay));
+            }
+        }
+        result.restored=entity->GetAbsOrigin()==origin&&entity->m_vecMins()==mins&&entity->m_vecMaxs()==maxs;
+        result.Finish();
+    }
+    result.micros=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-started).count();
+    EngineFullPathResult(&m_tMoveStorage,result);
+}
+void CAimbotProjectile::SnapshotSelectedPath(const History_t& history,float flight,uint8_t type,uint8_t flags,const Vec3& targetPoint)
+{
+    if(!PrivateLearning::EngineReplayWanted(&m_tMoveStorage))return;
+    PrivateLearning::ProjectileReplay::Input input;
+    input.weapon=m_tInfo.m_pWeapon->GetWeaponID();input.pathType=type;
+    input.targetPoint={targetPoint.x,targetPoint.y,targetPoint.z};input.grounded=history.m_bDiagnosticGround;
+    const auto diagnosticVec=[](const Vec3& v)->PrivateLearning::ProjectileReplay::V3{return {v.x,v.y,v.z};};
+    input.targetOrigin=diagnosticVec(history.m_vOrigin);input.targetMins=diagnosticVec(m_tInfo.m_pTarget->m_pEntity->m_vecMins());input.targetMaxs=diagnosticVec(m_tInfo.m_pTarget->m_pEntity->m_vecMaxs());
+    input.splashRadius=m_tInfo.m_flRadius;
+    if(!m_tProjInfo.m_vPath.empty())input.impact=diagnosticVec(m_tProjInfo.m_vPath.back());
+    input.supported=!m_tInfo.m_pProjectile&&flags==PointFlagsEnum::Regular&&!m_tProjInfo.m_flGravity
+        &&!m_tInfo.m_iArmTime&&!F::ProjSim.m_bPhysics&&m_iResult==1
+        &&(input.weapon==TF_WEAPON_ROCKETLAUNCHER||input.weapon==TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT);
+    m_DiagnosticSelectedSupported=input.supported;m_DiagnosticSelectedType=type;
+    m_DiagnosticSelected=m_DiagnosticScratch;m_DiagnosticSelectedCount=m_DiagnosticScratchCount;
+    input.tick=TICK_INTERVAL;input.selectedSim=history.m_flDiagnosticSim;input.networkSim=history.m_flDiagnosticNetworkSim;
+    input.flight=flight;input.latency=m_tInfo.m_flLatency;
+    const auto velocity=F::ProjSim.GetVelocity();
+    input.start={m_tProjInfo.m_vPos.x,m_tProjInfo.m_vPos.y,m_tProjInfo.m_vPos.z};
+    input.velocity={velocity.x,velocity.y,velocity.z};
+    // RunTick stores pre-step positions. The last appended point is a trace
+    // endpoint (possibly clipped); exclude it from kinematic parity.
+    input.count=m_tProjInfo.m_vPath.empty()?0:m_tProjInfo.m_vPath.size()-1;
+    if(input.supported&&input.count<=PrivateLearning::ProjectileReplay::MaxPoints)
+        for(size_t i=0;i<input.count;++i){const auto& p=m_tProjInfo.m_vPath[i];input.observed[i]={p.x,p.y,p.z};}
+    PrivateLearning::EngineSelectedPath(&m_tMoveStorage,input);
+}
+#endif
+bool CAimbotProjectile::HandleDirect(DirectHistory_t& mDirectHistory, size_t* diagnosticTests)
 {
 	bool bReturn = false;
 	if (mDirectHistory.empty())
@@ -1487,8 +1619,36 @@ bool CAimbotProjectile::HandleDirect(DirectHistory_t& mDirectHistory)
 
 	for (auto& tHistory : vDirectHistory)
 	{
+		if (diagnosticTests) ++*diagnosticTests;
 		if (HandlePoint(tHistory.m_vOrigin, tHistory.m_iSimtime, tHistory.m_flPitch, tHistory.m_flYaw, tHistory.m_flTime, tHistory.m_vPoint, PointTypeEnum::Direct, iType))
 		{
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+            SnapshotSelectedPath(tHistory,tHistory.m_flTime,PointTypeEnum::Direct,iType,tHistory.m_vPoint);
+            // Read-only preflight. Do NOT call CalculateAngle/TestAngle again:
+            // they reinitialize shared projectile/physics state.
+            const auto weapon=m_tInfo.m_pWeapon->GetWeaponID();
+            const bool supported=m_iResult==1&&!m_tInfo.m_pProjectile&&iType==PointFlagsEnum::Regular
+                && !m_tInfo.m_flGravity&&!m_tInfo.m_iArmTime&&!F::ProjSim.m_bPhysics
+                && (weapon==TF_WEAPON_ROCKETLAUNCHER||weapon==TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT)
+                && m_tInfo.m_pTarget->m_iTargetType==TargetEnum::Player;
+            float dx=0,dy=0;
+            if(PrivateLearning::EngineIntercept(&m_tMoveStorage,tHistory.m_flDiagnosticSim,tHistory.m_flDiagnosticNetworkSim,tHistory.m_bDiagnosticGround,supported,tHistory.m_flTime,m_tInfo.m_flLatency,dx,dy))
+            {
+                const auto start=std::chrono::steady_clock::now();
+                const Vec3 corrected=tHistory.m_vOrigin+Vec3(dx,dy,0);
+                auto entity=m_tInfo.m_pTarget->m_pEntity;
+                CTraceFilterWorldAndPropsOnly filter={};filter.pSkip=entity;
+                CGameTrace sweep={},ground={};const char* reason="geometry_clear_unvalidated";
+                SDK::TraceHull(tHistory.m_vOrigin,corrected,entity->m_vecMins(),entity->m_vecMaxs(),MASK_PLAYERSOLID,&filter,&sweep);
+                if(sweep.startsolid||sweep.allsolid||sweep.fraction<1.f)reason="target_hull_blocked";
+                else
+                {
+                    SDK::TraceHull(corrected+Vec3(0,0,2),corrected-Vec3(0,0,4),entity->m_vecMins(),entity->m_vecMaxs(),MASK_PLAYERSOLID,&filter,&ground);
+                    if(ground.startsolid||ground.allsolid||ground.fraction>=1.f||ground.plane.normal.z<.7f)reason="ground_support_failed";
+                }
+                PrivateLearning::EngineGeometry(&m_tMoveStorage,reason,std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count());
+            }
+#endif
 			bReturn = true;
 			break;
 		}
@@ -1535,6 +1695,9 @@ bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
 				{
 					bReturn = true;
 					flLowestDistance = flDistance;
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+                    SnapshotSelectedPath(tHistory,tPoint.m_tSolution.m_flTime,tPoint.m_iType,iType,tPoint.m_vPoint);
+#endif
 				}
 			}
 			if (m_tInfo.m_bIgnoreTiming && iType == PointFlagsEnum::Lob)
@@ -1548,6 +1711,10 @@ bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
 
 int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate)
 {
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    m_DiagnosticSelected.clear();m_DiagnosticSelectedCount=0;m_DiagnosticSelectedSupported=false;
+#endif
+    PrivateLearning::EngineScope engineDiagnostic(&m_tMoveStorage,tTarget.m_pEntity?tTarget.m_pEntity->entindex():0);
 	//if (Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Unsimulated && H::Entities.GetChoke(tTarget.m_pEntity->entindex()) > Vars::Aimbot::General::TickTolerance.Value)
 	//	return false;
 
@@ -1656,6 +1823,10 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 			{
 			case CalculateResultEnum::Good:
 				mDirectHistory[iType].emplace_back(History_t(tTarget.m_vPos, i), tSolution.m_flPitch, tSolution.m_flYaw, tSolution.m_flTime, vPoint, iIndex);
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+                {auto& history=mDirectHistory[iType].back();history.m_flDiagnosticSim=m_tMoveStorage.m_flSimTime;history.m_flDiagnosticNetworkSim=m_tMoveStorage.m_flDiagnosticNetworkOriginTime;
+                history.m_bDiagnosticGround=!m_tMoveStorage.m_bFailed&&m_tMoveStorage.m_pPlayer&&m_tMoveStorage.m_pPlayer->IsOnGround()&&!m_tMoveStorage.m_pPlayer->IsSwimming();}
+#endif
 				[[fallthrough]];
 			case CalculateResultEnum::Bad:
 				tOffset.m_iFlags &= ~iType;
@@ -1699,6 +1870,10 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 			}
 
 			mSplashHistory[*it].emplace_back(History_t(tTarget.m_vPos, i), fabsf(flTimeTo));
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+            {auto& history=mSplashHistory[*it].back();history.m_flDiagnosticSim=m_tMoveStorage.m_flSimTime;history.m_flDiagnosticNetworkSim=m_tMoveStorage.m_flDiagnosticNetworkOriginTime;
+            history.m_bDiagnosticGround=!m_tMoveStorage.m_bFailed&&m_tMoveStorage.m_pPlayer&&m_tMoveStorage.m_pPlayer->IsOnGround()&&!m_tMoveStorage.m_pPlayer->IsSwimming();}
+#endif
 			++it;
 		}
 
@@ -1706,6 +1881,13 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 			break;
 	}
 
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    size_t diagnosticGenerated=0,diagnosticTests=0;
+    float diagnosticMin=std::numeric_limits<float>::max(),diagnosticMax=0;
+    bool diagnosticSplash=false;
+    for(const auto& [type,history]:mDirectHistory)for(const auto& h:history)
+    {++diagnosticGenerated;diagnosticMin=std::min(diagnosticMin,h.m_flDiagnosticSim);diagnosticMax=std::max(diagnosticMax,h.m_flDiagnosticSim);}
+#endif
 	m_iResult = false, m_bUpdate = bUpdate;
 	if (!m_tInfo.m_flRadius || Vars::Aimbot::Projectile::SplashPrediction.Value < Vars::Aimbot::Projectile::SplashPredictionEnum::Prefer)
 		goto direct;
@@ -1713,12 +1895,28 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 		goto splash;
 	while (!mDirectHistory.empty() || !mSplashHistory.empty())
 	{
-		direct: if (HandleDirect(mDirectHistory)) break;
-		splash: if (HandleSplash(mSplashHistory)) break;
+		direct: if (HandleDirect(mDirectHistory
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+            , &diagnosticTests
+#endif
+        )) break;
+		splash: if (HandleSplash(mSplashHistory)) {
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+            diagnosticSplash=true;
+#endif
+            break;
+        }
 	}
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    PrivateLearning::EnginePathAudit(&m_tMoveStorage,diagnosticGenerated,diagnosticTests,diagnosticSplash,diagnosticMin,diagnosticMax);
+#endif
 	F::MoveSim.Restore(m_tMoveStorage);
 	if (!F::AimbotGlobal.ShouldAimAtAngle(m_vAngleTo))
 		return false;
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+    if(m_iResult==1)ReplayFinalPath();
+#endif
+	PrivateLearning::EngineSolution(&m_tMoveStorage,m_iResult,m_flTimeTo,m_tInfo.m_flLatency,pWeapon->GetWeaponID());
 	if (!bUpdate)
 		return m_iResult;
 
@@ -2103,11 +2301,30 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 	return false;
 }
 
+#include "../../LearningAccess.h"
 void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	// RunMain may temporarily restore a charged weapon's previous aim mode.
 	const bool bAimEnabled = Vars::Aimbot::General::AimType.Value != 0;
 	const bool bSuccess = RunMain(pLocal, pWeapon, pCmd);
+#ifdef NIKOGRAM_PRIVATE_LEARNING
+	if (PrivateLearning::WantsAimObservation() && !F::Aimbot.m_bRunningSecondary)
+	{
+		int target = 0;
+		if (bAimEnabled)
+		{
+			if (G::AimTarget.m_iTickCount == I::GlobalVars->tickcount) target = G::AimTarget.m_iEntIndex;
+			else
+			{
+				// Read-only candidate selection continues during weapon cooldown.
+				// No CanHit, aim-angle, attack-button or projectile-path changes.
+				auto candidates = F::AimbotGlobal.ManageTargets(GetTargets, pLocal, pWeapon);
+				if (!candidates.empty()) target = candidates.front().m_pEntity->entindex();
+			}
+		}
+		PrivateLearning::Aim(target, bool(G::OriginalCmd.buttons & IN_ATTACK) || bool(pCmd->buttons & IN_ATTACK) || G::Attacking == 1 || (bAimEnabled && Vars::Aimbot::General::AutoShoot.Value));
+	}
+#endif
 	const bool bAimPreview = (Vars::Visuals::Viewmodel::CrosshairAim.Value && Vars::Visuals::Viewmodel::CrosshairCooldown.Value)
 		|| (Vars::Visuals::Viewmodel::ViewmodelAim.Value && Vars::Visuals::Viewmodel::ViewmodelCooldown.Value);
 	if (bAimEnabled && !F::Aimbot.m_bRunningSecondary && G::Attacking != 1

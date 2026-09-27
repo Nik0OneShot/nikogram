@@ -1,4 +1,5 @@
 #pragma once
+#include "../TextStyle.h"
 #include "../Render.h"
 #include "../../../SDK/Helpers/Draw/Draw.h"
 #include "Menu.h"
@@ -9,6 +10,12 @@
 #include <ImGui/imgui_internal.h>
 #include <ImGui/imgui_stdlib.h>
 #include <numeric>
+#include <functional>
+
+inline ImVec4 MenuTitleColour()
+{
+    return { Workspace::TitleTextChannel(0), Workspace::TitleTextChannel(1), Workspace::TitleTextChannel(2), 1.f };
+}
 
 Enum(FTabs, None = 0, Horizontal = 0, Vertical = 1 << 0, HorizontalIcons = 0, VerticalIcons = 1 << 1, AlignCenter = 0, AlignLeft = 1 << 2, AlignRight = 1 << 3, AlignTop = 1 << 4, AlignBottom = 1 << 5, AlignForward = 0, AlignReverse = 1 << 6, BarLeft = 1 << 7, BarRight = 1 << 8, BarTop = 1 << 9, BarBottom = 1 << 10, Fit = 1 << 11);
 Enum(FText, None = 0, Middle = 1 << 0, Right = 1 << 1, SameLine = 1 << 2);
@@ -817,11 +824,11 @@ namespace ImGui
 			const float headerTop = sectionWindow->Pos.y + borderInset;
 			const float textY = headerTop + (titleMax.y - headerTop - textHeight) * 0.5f;
 			sectionDraw->AddText(GetFont(), GetFontSize(), ImVec2(titleMin.x + titlePadding.x, textY),
-				GetColorU32(F::Render.Active.Value), title.c_str());
+				GetColorU32(MenuTitleColour()), title.c_str());
 			sectionDraw->AddLine(
 				ImVec2(sectionWindow->Pos.x + borderInset, titleMax.y),
 				ImVec2(sectionWindow->Pos.x + sectionWindow->Size.x - borderInset, titleMax.y),
-				GetColorU32(F::Render.Background2.Value));
+				GetColorU32(ImGuiCol_Border));
 			sectionDraw->PopClipRect();
 			const float titleHeight = titleMax.y - titleMin.y;
 			PopFont();
@@ -1326,7 +1333,7 @@ namespace ImGui
 #else
 			SetCursorPos(vOriginalPos + ImVec2(H::Draw.Scale(6), H::Draw.Scale(3 + 18 * i)));
 #endif
-			TextUnformatted(vWrapped[i].c_str());
+			TextColored(MenuTitleColour(), "%s", vWrapped[i].c_str());
 		}
 
 #ifdef ALTERNATE_FULL_SLIDER
@@ -1398,7 +1405,7 @@ namespace ImGui
 				if (!Disabled && IsItemHovered() && IsWindowHovered())
 					SetMouseCursor(ImGuiMouseCursor_TextInput);
 				if (ActiveMap[uHash2])
-					pDrawList->AddRectFilled(vDrawPos + vOriginalPos2 + ImVec2(0, H::Draw.Scale(14)), vDrawPos + vOriginalPos2 + ImVec2(flWidth, H::Draw.Scale(15)), F::Render.Active);
+					pDrawList->AddRectFilled(vDrawPos + vOriginalPos2 + ImVec2(0, H::Draw.Scale(14)), vDrawPos + vOriginalPos2 + ImVec2(flWidth, H::Draw.Scale(15)), GetColorU32(ImVec4(Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2), 1.f)));
 				else if (IsItemClicked())
 				{
 					float* pVar = !pVar2 || GetMousePos().x - vDrawPos.x - vOriginalPos2.x < flWidth / 2 ? pVar1 : pVar2;
@@ -1594,9 +1601,9 @@ namespace ImGui
 			PopStyleVar();
 	}
 
-	inline bool FDropdownSelectable(const char* label, ImVec4* color, float rounding = 0.f, bool selected = false, ImGuiSelectableFlags flags = ImGuiSelectableFlags_None)
+	inline bool FDropdownSelectable(const char* label, ImVec4* color, float rounding = 0.f, bool selected = false, ImGuiSelectableFlags flags = ImGuiSelectableFlags_None, const ImVec2& size = {})
 	{
-		const bool pressed = FSelectable(label, color, rounding, selected, flags);
+		const bool pressed = FSelectable(label, color, rounding, selected, flags, size);
 		GetWindowDrawList()->AddRect(GetItemRectMin(), GetItemRectMax(), GetColorU32(ImGuiCol_Border));
 		return pressed;
 	}
@@ -1616,7 +1623,7 @@ namespace ImGui
 			: std::max(H::Draw.Scale(20), valueHeight + H::Draw.Scale(6));
 	}
 
-	inline bool FDropdown(const char* sLabel, int* pVar, std::vector<const char*> vEntries, std::vector<int> vValues = {}, int iFlags = FDropdownEnum::None, int iSizeOffset = 0, const char* sDefaultPreview = "None", bool* pHovered = nullptr, int* pModified = nullptr)
+	inline bool FDropdown(const char* sLabel, int* pVar, std::vector<const char*> vEntries, std::vector<int> vValues = {}, int iFlags = FDropdownEnum::None, int iSizeOffset = 0, const char* sDefaultPreview = "None", bool* pHovered = nullptr, int* pModified = nullptr, std::function<void()> rowAccessory = {}, int accessoryValue = 0)
 	{
 		// Consume once: bind-editor popups must not inherit the parent row's inset.
 		const float leadingWidth = AttachedDropdownWidth;
@@ -1739,7 +1746,9 @@ namespace ImGui
 					bool bFlagActive = *pVar & vValues[i];
 
 					ImVec2 vOriginalPos2 = GetCursorPos();
-					if (FDropdownSelectable(std::format("##{}{}", sEntry, i).c_str(), nullptr, 0, bFlagActive, ImGuiSelectableFlags_DontClosePopups))
+					const bool hasAccessory = rowAccessory && vValues[i] == accessoryValue;
+					const ImVec2 selectableSize = hasAccessory ? ImVec2(std::max(H::Draw.Scale(50), GetContentRegionAvail().x - H::Draw.Scale(28)), 0) : ImVec2();
+					if (FDropdownSelectable(std::format("##{}{}", sEntry, i).c_str(), nullptr, 0, bFlagActive, ImGuiSelectableFlags_DontClosePopups, selectableSize))
 					{
 						if (bFlagActive)
 							*pVar &= ~vValues[i];
@@ -1755,6 +1764,11 @@ namespace ImGui
 
 					SetCursorPos(vOriginalPos2 + ImVec2(H::Draw.Scale(15), H::Draw.Scale(-1)));
 					FDropdownIcon(bFlagActive ? ICON_MD_CHECK_BOX : ICON_MD_CHECK_BOX_OUTLINE_BLANK, bFlagActive ? F::Render.Accent : F::Render.Inactive);
+					if (hasAccessory)
+					{
+						SetCursorPos({ GetContentRegionMax().x - H::Draw.Scale(20), vOriginalPos2.y });
+						PushID(i);rowAccessory();PopID();
+					}
 					SetCursorPos(vOriginalPos3);
 				}
 				else
@@ -1807,7 +1821,7 @@ namespace ImGui
 			{
 				SetCursorPos({ vOriginalPos2.x + H::Draw.Scale(6), previewTop + H::Draw.Scale(3) });
 				PushFont(F::Render.FontSmall);
-				TextColored(F::Render.Inactive, TruncateText(StripDoubleHash(sLabel), vSize.x - H::Draw.Scale(30)).c_str());
+				TextColored(MenuTitleColour(), "%s", TruncateText(StripDoubleHash(sLabel), vSize.x - H::Draw.Scale(30)).c_str());
 				PopFont();
 
 				SetCursorPos({ vOriginalPos2.x + H::Draw.Scale(6), valueY });
@@ -2022,7 +2036,7 @@ namespace ImGui
 			{
 				SetCursorPos({ vOriginalPos2.x + H::Draw.Scale(6), previewTop + H::Draw.Scale(3) });
 				PushFont(F::Render.FontSmall);
-				TextColored(F::Render.Inactive, TruncateText(StripDoubleHash(sLabel), vSize.x - H::Draw.Scale(vEntries.empty() ? 12 : 30)).c_str());
+				TextColored(MenuTitleColour(), "%s", TruncateText(StripDoubleHash(sLabel), vSize.x - H::Draw.Scale(vEntries.empty() ? 12 : 30)).c_str());
 				PopFont();
 
 				SetCursorPos({ vOriginalPos2.x + H::Draw.Scale(6), valueY });
@@ -2038,7 +2052,7 @@ namespace ImGui
 				{
 					ImVec2 vDrawPos = GetDrawPos() + ImVec2(vOriginalPos2.x + H::Draw.Scale(6), valueY + GetTextLineHeight() + H::Draw.Scale(1));
 					vDrawPos.x = floorf(vDrawPos.x), vDrawPos.y = floorf(vDrawPos.y);
-					GetWindowDrawList()->AddRectFilled(vDrawPos, vDrawPos + ImVec2(vSize.x - H::Draw.Scale(vEntries.empty() ? 12 : 30), H::Draw.Scale(2)), ActiveMap[uHash] ? F::Render.Active : F::Render.Inactive);
+					GetWindowDrawList()->AddRectFilled(vDrawPos, vDrawPos + ImVec2(vSize.x - H::Draw.Scale(vEntries.empty() ? 12 : 30), H::Draw.Scale(2)), GetColorU32(ImVec4(Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2), 1.f)));
 				}
 			}
 			else
@@ -2056,7 +2070,7 @@ namespace ImGui
 				{
 					ImVec2 vDrawPos = GetDrawPos() + ImVec2(vOriginalPos2.x + H::Draw.Scale(6), valueY + GetTextLineHeight() + H::Draw.Scale(1));
 					vDrawPos.x = floorf(vDrawPos.x), vDrawPos.y = floorf(vDrawPos.y);
-					GetWindowDrawList()->AddRectFilled(vDrawPos, vDrawPos + ImVec2(vSize.x - H::Draw.Scale(vEntries.empty() ? 12 : 30), H::Draw.Scale(2)), ActiveMap[uHash] ? F::Render.Active : F::Render.Inactive);
+					GetWindowDrawList()->AddRectFilled(vDrawPos, vDrawPos + ImVec2(vSize.x - H::Draw.Scale(vEntries.empty() ? 12 : 30), H::Draw.Scale(2)), GetColorU32(ImVec4(Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2), 1.f)));
 				}
 			}
 
@@ -2455,7 +2469,7 @@ namespace ImGui
 			{
 				SetCursorPos({ vOriginalPos2.x + H::Draw.Scale(6), previewTop + H::Draw.Scale(3) });
 				PushFont(F::Render.FontSmall);
-				TextColored(F::Render.Inactive, TruncateText(StripDoubleHash(sLabel), vSize.x - H::Draw.Scale(30)).c_str());
+				TextColored(MenuTitleColour(), "%s", TruncateText(StripDoubleHash(sLabel), vSize.x - H::Draw.Scale(30)).c_str());
 				PopFont();
 
 				SetCursorPos({ vOriginalPos2.x + H::Draw.Scale(6), valueY });

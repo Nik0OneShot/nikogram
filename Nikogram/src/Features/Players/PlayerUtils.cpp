@@ -70,11 +70,19 @@ void CPlayerlistUtils::AddTag(int iIndex, int iID, bool bSave, const char* sName
 }
 void CPlayerlistUtils::AddTag(uint32_t uAccountID, int iID, bool bSave, const char* sName)
 {
+	if (iID == TagToIndex(CHEATER_TAG) && m_sAutomaticCheaterTags.erase(uAccountID)) m_bSave = true;
 	AddTag(uAccountID, iID, bSave, sName, m_mPlayerTags);
+}
+void CPlayerlistUtils::AddAutomaticCheaterTag(uint32_t uAccountID, const char* sName)
+{
+	const int tag = TagToIndex(CHEATER_TAG);
+	if (!uAccountID || HasTag(uAccountID, tag)) return;
+	AddTag(uAccountID, tag, true, sName, m_mPlayerTags);
+	m_sAutomaticCheaterTags.insert(uAccountID);
 }
 void CPlayerlistUtils::AddTag(int iIndex, int iID, bool bSave, const char* sName)
 {
-	AddTag(iIndex, iID, bSave, sName, m_mPlayerTags);
+	AddTag(GetAccountID(iIndex), iID, bSave, sName);
 }
 
 void CPlayerlistUtils::RemoveTag(uint32_t uAccountID, int iID, bool bSave, const char* sName, std::unordered_map<uint32_t, std::vector<int>>& mPlayerTags)
@@ -108,11 +116,12 @@ void CPlayerlistUtils::RemoveTag(int iIndex, int iID, bool bSave, const char* sN
 }
 void CPlayerlistUtils::RemoveTag(uint32_t uAccountID, int iID, bool bSave, const char* sName)
 {
+	if (iID == TagToIndex(CHEATER_TAG) && m_sAutomaticCheaterTags.erase(uAccountID)) m_bSave = true;
 	RemoveTag(uAccountID, iID, bSave, sName, m_mPlayerTags);
 }
 void CPlayerlistUtils::RemoveTag(int iIndex, int iID, bool bSave, const char* sName)
 {
-	RemoveTag(iIndex, iID, bSave, sName, m_mPlayerTags);
+	RemoveTag(GetAccountID(iIndex), iID, bSave, sName);
 }
 
 bool CPlayerlistUtils::HasTags(uint32_t uAccountID, std::unordered_map<uint32_t, std::vector<int>>& mPlayerTags)

@@ -175,6 +175,10 @@ NAMESPACE_BEGIN(Vars)
 
 		CVar(BindWindow, "Bind window", true);
 		CVar(BindWindowTitle, "Bind window title", true);
+		CVar(BindWindowHorizontal, "Horizontal binds list", false, VISUAL | NOBIND);
+		CVar(BindTextGlow, "Active bind text glow", true, VISUAL | NOBIND);
+		CVar(BindTextGlowCustom, "Custom bind glow colour", false, VISUAL | NOBIND);
+		CVar(BindTextGlowColour, "Bind glow colour", Color_t(255, 235, 140, 255), VISUAL | NOBIND);
 		CVar(MenuShowsBinds, "Menu shows binds", false, NOBIND);
 
 		CVarEnum(Indicators, "Indicators", 0b00000, VISUAL | DROPDOWN_MULTI, nullptr,
@@ -185,6 +189,17 @@ NAMESPACE_BEGIN(Vars)
 		CVar(TicksDisplay, "Ticks display", DragBox_t(), VISUAL | NOBIND);
 		CVar(CritsDisplay, "Crits display", DragBox_t(), VISUAL | NOBIND);
 		CVar(SpectatorsDisplay, "Spectators display", DragBox_t(), VISUAL | NOBIND);
+		CVarEnum(SpectatorScope, "Spectator scope", 0, VISUAL | NOBIND, nullptr, VA_LIST("All players", "Watching me"), All = 0, Local = 1);
+		CVarEnum(SpectatorLayout, "Spectator layout", 0, VISUAL | NOBIND, nullptr, VA_LIST("Vertical", "Horizontal"), Vertical = 0, Horizontal = 1);
+		CVar(SpectatorGroup, "Group by target", false, VISUAL | NOBIND);
+		CVarEnum(SpectatorStates, "Include states", 15, VISUAL | NOBIND | DROPDOWN_MULTI, nullptr, VA_LIST("Dead", "Freezetime", "Spectating", "Presumed"), Dead = 1, Freeze = 2, Spectating = 4, Presumed = 8);
+		CVarEnum(SpectatorViews, "Include views", 63, VISUAL | NOBIND | DROPDOWN_MULTI, nullptr, VA_LIST("First person", "Third person", "Free camera", "Fixed camera", "Death / freeze camera", "Unknown"), First = 1, Third = 2, Free = 4, Fixed = 8, Death = 16, Unknown = 32);
+		CVar(SpectatorTargets, "Show target names", true, VISUAL | NOBIND);
+		CVar(SpectatorLabels, "Show state / view labels", true, VISUAL | NOBIND);
+		CVar(SpectatorRespawn, "Show respawn timer", true, VISUAL | NOBIND);
+		CVar(SpectatorPage, "Spectator page", 1, NOBIND | NOSAVE, 1, 101, 1);
+		CVar(SpectatorWidth, "Spectator custom width", 0, VISUAL | NOBIND);
+		CVar(SpectatorHeight, "Spectator custom height", 0, VISUAL | NOBIND);
 		CVar(PingDisplay, "Ping display", DragBox_t(), VISUAL | NOBIND);
 		CVar(ConditionsDisplay, "Conditions display", DragBox_t(), VISUAL | NOBIND);
 		CVar(SeedPredictionDisplay, "Seed prediction display", DragBox_t(), VISUAL | NOBIND);
@@ -195,8 +210,8 @@ NAMESPACE_BEGIN(Vars)
 		NAMESPACE_BEGIN(Theme)
 			CVar(Accent, "Accent color", Color_t(175, 150, 255, 255), VISUAL);
 			CVar(Background, "Background color", Color_t(0, 0, 0, 250), VISUAL);
-			CVar(Active, "Active color", Color_t(255, 255, 255, 255), VISUAL);
-			CVar(Inactive, "Inactive color", Color_t(150, 150, 150, 255), VISUAL);
+			CVar(Active, "Text active", Color_t(255, 255, 255, 255), VISUAL);
+			CVar(Inactive, "Text inactive color", Color_t(150, 150, 150, 255), VISUAL);
 		NAMESPACE_END(Theme)
 	NAMESPACE_END(Menu)
 
@@ -717,6 +732,25 @@ NAMESPACE_BEGIN(Vars)
 	NAMESPACE_END(Visuals)
 
 	NAMESPACE_BEGIN(Misc)
+		NAMESPACE_BEGIN(Blockbot)
+			CVar(Enabled, "Blockbot", false);
+			CVarEnum(Target, "Target selection", 0, NONE, nullptr,
+				VA_LIST("Closest target", "Priority select", "Manual select"), Closest, Priority, Manual);
+			CVarEnum(Team, "Target team", 0, NONE, nullptr,
+				VA_LIST("Enemies", "Teammates", "Both"), Enemies, Teammates, Both);
+			CVarEnum(Behavior, "Enemy behavior", 0, NONE, nullptr,
+				VA_LIST("Automatic", "Ground obstruction", "Head riding"), Automatic, Ground, Head);
+			CVar(Range, "Acquisition range", 600.f, SLIDER_CLAMP, 100.f, 1500.f, 50.f);
+			CVar(ResumeDelay, "Resume delay", 0.5f, SLIDER_MIN | SLIDER_PRECISION, 0.f, 1.f, 0.05f, "%gs");
+			CVar(WhileMenuOpen, "Continue with menu open", false);
+			CVar(WhileCrouching, "Continue while crouching", false);
+			CVar(ContinueFollowing, "Continue following", false);
+			CVar(IgnoreDanger, "Ignore danger", false);
+			CVar(Acceleration, "Acceleration response", 100.f, SLIDER_CLAMP, 25.f, 200.f, 5.f, "%g%%");
+			CVar(Deceleration, "Deceleration response", 100.f, SLIDER_CLAMP, 25.f, 200.f, 5.f, "%g%%");
+			CVarEnum(TeammateBehavior, "Teammate behavior", 1, NONE, nullptr,
+				VA_LIST("Stand in front", "Obstruct projectiles"), Front, Projectiles);
+		NAMESPACE_END(Blockbot)
 		NAMESPACE_BEGIN(Movement)
 			CVarEnum(AutoStrafe, "Auto strafe", 0, NONE, nullptr,
 				VA_LIST("Off", "Legit", "Directional"),

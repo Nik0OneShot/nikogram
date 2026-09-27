@@ -1,6 +1,8 @@
 #include "Events.h"
 
 #include "../../Core/Core.h"
+#include "../../Features/Statistics/Statistics.h"
+#include "../../Features/LearningAccess.h"
 #include "../../Features/Aimbot/AutoHeal/AutoHeal.h"
 #include "../../Features/Backtrack/Backtrack.h"
 #include "../../Features/CheatDetection/CheatDetection.h"
@@ -28,6 +30,10 @@ bool CEventListener::Initialize()
 		}
 	}
 
+	// Optional feature event: an unavailable schema must not prevent the rest
+	// of Nikogram from loading. Statistics reports that limitation in its UI.
+	const bool deathEvents = I::GameEventManager->AddListener(this, "player_death", false);
+	Statistics::DeathEventsAvailable(deathEvents && I::GameEventManager->FindListener(this, "player_death"));
 	return !m_bFailed;
 }
 
@@ -40,6 +46,8 @@ void CEventListener::FireGameEvent(IGameEvent* pEvent)
 {
 	if (!pEvent)
 		return;
+	Statistics::Event(pEvent);
+	PrivateLearning::Event(pEvent);
 
 	auto pLocal = H::Entities.GetLocal();
 	auto uHash = FNV1A::Hash32(pEvent->GetName());

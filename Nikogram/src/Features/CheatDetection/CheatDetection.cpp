@@ -91,7 +91,7 @@ void CCheatDetection::Infract(CTFPlayer* pEntity, const char* sReason)
 	if (bMark)
 	{
 		mData[pEntity].m_iDetections = 0;
-		F::PlayerUtils.AddTag(mData[pEntity].m_uAccountID, F::PlayerUtils.TagToIndex(CHEATER_TAG), true, mData[pEntity].m_sName);
+		F::PlayerUtils.AddAutomaticCheaterTag(mData[pEntity].m_uAccountID, mData[pEntity].m_sName);
 	}
 }
 

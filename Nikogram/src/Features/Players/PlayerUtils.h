@@ -1,5 +1,6 @@
 #pragma once
 #include "../../SDK/SDK.h"
+#include <unordered_set>
 
 #define DEFAULT_TAG 0
 #define IGNORED_TAG (DEFAULT_TAG-1)
@@ -56,6 +57,8 @@ class CPlayerlistUtils
 public:
 	std::unordered_map<uint32_t, std::vector<int>> m_mPlayerTags = {};
 	std::unordered_map<uint32_t, std::string> m_mPlayerAliases = {};
+	// Provenance for newly auto-detected tags. Legacy lists had no origin field.
+	std::unordered_set<uint32_t> m_sAutomaticCheaterTags;
 
 	std::vector<PriorityLabel_t> m_vTags = {
 		{ "Default", { 200, 200, 200, 255 }, 0, false, false, true },
@@ -102,6 +105,7 @@ public:
 
 	void AddTag(uint32_t uAccountID, int iID, bool bSave, const char* sName, std::unordered_map<uint32_t, std::vector<int>>& mPlayerTags);
 	void AddTag(uint32_t uAccountID, int iID, bool bSave = true, const char* sName = nullptr);
+	void AddAutomaticCheaterTag(uint32_t uAccountID, const char* sName);
 	void AddTag(int iIndex, int iID, bool bSave, const char* sName, std::unordered_map<uint32_t, std::vector<int>>& mPlayerTags);
 	void AddTag(int iIndex, int iID, bool bSave = true, const char* sName = nullptr);
 	void RemoveTag(uint32_t uAccountID, int iID, bool bSave, const char* sName, std::unordered_map<uint32_t, std::vector<int>>& mPlayerTags);

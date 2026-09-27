@@ -5,6 +5,7 @@
 #include "../Features/CritHack/CritHack.h"
 #include "../Features/EnginePrediction/EnginePrediction.h"
 #include "../Features/Misc/Misc.h"
+#include "../Features/Blockbot/Blockbot.h"
 #include "../Features/NoSpread/NoSpread.h"
 #include "../Features/NoSpread/NoSpreadHitscan/NoSpreadHitscan.h"
 #include "../Features/PacketManip/PacketManip.h"
@@ -132,6 +133,7 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 	auto pWeapon = H::Entities.GetWeapon();
 	if (!pLocal)
 	{
+		F::Blockbot.Reset();
 		F::Visuals.ResetLocalAnimationQueue();
 		return;
 	}

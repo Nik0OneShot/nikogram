@@ -34,6 +34,7 @@ Index of this file:
 #endif
 
 #include "imgui.h"
+#include "../../src/Features/ImGui/TextStyle.h" // Nikogram: one text-colour policy, including explicitly coloured labels.
 #ifndef IMGUI_DISABLE
 #include "imgui_internal.h"
 #ifdef IMGUI_ENABLE_FREETYPE
@@ -1497,6 +1498,10 @@ void ImDrawList::AddLine(const ImVec2& p1, const ImVec2& p2, ImU32 col, float th
 // Note we don't render 1 pixels sized rectangles properly.
 void ImDrawList::AddRect(const ImVec2& p_min, const ImVec2& p_max, ImU32 col, float rounding, ImDrawFlags flags, float thickness)
 {
+    // Shared menu/HUD outline palette. Preserve caller alpha for fades and halos.
+    // Filled rectangles (accent highlights, swatches and progress) remain untouched.
+    col = (col & IM_COL32_A_MASK) | IM_COL32(int(Workspace::BorderChannel(0) * 255),
+        int(Workspace::BorderChannel(1) * 255), int(Workspace::BorderChannel(2) * 255), 0);
     if ((col & IM_COL32_A_MASK) == 0)
         return;
     if (Flags & ImDrawListFlags_AntiAliasedLines)
@@ -5745,6 +5750,7 @@ void ImFont::RenderChar(ImDrawList* draw_list, float size, const ImVec2& pos, Im
 // DO NOT CALL DIRECTLY THIS WILL CHANGE WILDLY IN 2026. Use ImDrawList::AddText().
 void ImFont::RenderText(ImDrawList* draw_list, float size, const ImVec2& pos, ImU32 col, const ImVec4& clip_rect, const char* text_begin, const char* text_end, float wrap_width, ImDrawTextFlags flags)
 {
+    // Respect the widget's active/inactive or semantic text colour.
     // Align to be pixel perfect
 begin:
     float x = IM_TRUNC(pos.x);

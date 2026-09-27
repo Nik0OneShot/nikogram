@@ -49,6 +49,7 @@
     <ClCompile Include="src\Features\CritHack\CritHack.cpp" />
     <ClCompile Include="src\Features\EnginePrediction\EnginePrediction.cpp" />
     <ClCompile Include="src\Features\Misc\Misc.cpp" />
+    <ClCompile Include="src\Features\Blockbot\Blockbot.cpp" />
     <ClCompile Include="src\Features\NetworkFix\NetworkFix.cpp" />
     <ClCompile Include="src\Features\NoSpread\NoSpread.cpp" />
     <ClCompile Include="src\Features\NoSpread\NoSpreadHitscan\NoSpreadHitscan.cpp" />
@@ -402,6 +403,9 @@
     <ClInclude Include="src\Features\CritHack\CritHack.h" />
     <ClInclude Include="src\Features\EnginePrediction\EnginePrediction.h" />
     <ClInclude Include="src\Features\Misc\Misc.h" />
+    <ClInclude Include="src\Features\Blockbot\Blockbot.h" />
+    <ClInclude Include="src\Features\Blockbot\Model.h" />
+    <ClInclude Include="src\Features\Blockbot\Hazards.h" />
     <ClInclude Include="src\Features\NetworkFix\NetworkFix.h" />
     <ClInclude Include="src\Features\NoSpread\NoSpread.h" />
     <ClInclude Include="src\Features\NoSpread\NoSpreadHitscan\NoSpreadHitscan.h" />

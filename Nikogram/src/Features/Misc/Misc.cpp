@@ -1,4 +1,5 @@
 #include "Misc.h"
+#include "../Blockbot/Blockbot.h"
 
 #include "../Backtrack/Backtrack.h"
 #include "../Ticks/Ticks.h"
@@ -10,9 +11,11 @@ void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
 	CheatsBypass();
 	WeaponSway();
-	AntiAFK(pLocal, pCmd);
 	InstantRespawnMVM(pLocal);
 	NoisemakerSpam(pLocal);
+	if (F::Blockbot.Run(pLocal, pCmd))
+		return;
+	AntiAFK(pLocal, pCmd);
 	if (!pLocal->IsAlive() || pLocal->IsAGhost() || pLocal->m_MoveType() != MOVETYPE_WALK || pLocal->IsSwimming()
 		|| pLocal->IsTaunting() || pLocal->InCond(TF_COND_SHIELD_CHARGE))
 		return;
@@ -33,6 +36,11 @@ void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
 
 void CMisc::RunPost(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
+	if (F::Blockbot.Controlling())
+	{
+		F::Blockbot.Apply(pCmd);
+		return;
+	}
 	if (!pLocal->IsAlive() || pLocal->IsAGhost() || pLocal->m_MoveType() != MOVETYPE_WALK || pLocal->IsSwimming()
 		|| pLocal->InCond(TF_COND_SHIELD_CHARGE))
 		return;

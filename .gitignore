@@ -361,3 +361,18 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Never commit captured private learning data or accidentally publish private source.
+*.learn
+*.learn.bak
+**/PrivateLearning/
+Nikogram/src/Private/
+PRIVATE-LEARNING.md
+**/TrainingRuns/
+**/EvaluationRuns/
+**/Recordings/
+**/VisitTrainingRuns/
+**/VisitEvaluationRuns/
+**/EngineComparisonRuns/
+*evaluation-report.json
+*model-report.json

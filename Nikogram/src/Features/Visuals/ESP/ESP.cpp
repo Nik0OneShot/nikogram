@@ -5,6 +5,7 @@
 #include "../../Spectate/Spectate.h"
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
 #include "../../Simulation/ProjectileSimulation/ProjectileSimulation.h"
+#include "../../ImGui/TextStyle.h"
 
 static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* pGroup, std::unordered_map<CBaseEntity*, PlayerCache_t>& mCache)
 {
@@ -35,7 +36,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 	if (pResource)
 	{
 		if (pGroup->m_iESP & ESPEnum::Name)
-			tCache.m_vText.emplace_back(ALIGN_TOP, F::PlayerUtils.GetPlayerName(iIndex, pResource->GetName(iIndex)), pGroup->NameColor(), Vars::Menu::Theme::Background.Value);
+			tCache.m_vText.emplace_back(ALIGN_TOP, F::PlayerUtils.GetPlayerName(iIndex, pResource->GetName(iIndex)), pGroup->NameColor(), Vars::Menu::Theme::Background.Value, true);
 
 		if (pGroup->m_iESP & (ESPEnum::Labels | ESPEnum::Priority) && !pResource->IsFakePlayer(iIndex))
 		{
@@ -403,7 +404,7 @@ static inline void StoreBuilding(CBaseObject* pBuilding, CTFPlayer* pLocal, Grou
 		case ETFClassID::CObjectDispenser: sName = "Dispenser"; break;
 		case ETFClassID::CObjectTeleporter: sName = pBuilding->m_iObjectMode() ? "Teleporter Exit" : "Teleporter Entrance";
 		}
-		tCache.m_vText.emplace_back(ALIGN_TOP, sName, pGroup->NameColor(), Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_TOP, sName, pGroup->NameColor(), Vars::Menu::Theme::Background.Value, true);
 	}
 
 	float flHealth = pBuilding->m_iHealth(), flMaxHealth = std::max(float(pBuilding->m_iMaxHealth()), 1.f);
@@ -514,7 +515,7 @@ static inline void StoreProjectile(CBaseEntity* pProjectile, CTFPlayer* pLocal, 
 	}
 
 	if (pGroup->m_iESP & ESPEnum::Name)
-		tCache.m_vText.emplace_back(ALIGN_TOP, GetProjectileName(pProjectile), pGroup->NameColor(), Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_TOP, GetProjectileName(pProjectile), pGroup->NameColor(), Vars::Menu::Theme::Background.Value, true);
 
 	if (pGroup->m_iESP & ESPEnum::Owner && pOwner)
 	{
@@ -615,7 +616,7 @@ static inline void StoreObjective(CBaseEntity* pObjective, CTFPlayer* pLocal, Gr
 		auto pIntel = pObjective->As<CCaptureFlag>();
 
 		if (pGroup->m_iESP & ESPEnum::Name)
-			tCache.m_vText.emplace_back(ALIGN_TOP, "Intel", Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+			tCache.m_vText.emplace_back(ALIGN_TOP, "Intel", pGroup->NameColor(), Vars::Menu::Theme::Background.Value, true);
 
 		if (pGroup->m_iESP & ESPEnum::Flags)
 		{
@@ -705,7 +706,7 @@ static inline void StoreMisc(CBaseEntity* pEntity, CTFPlayer* pLocal, Group_t* p
 		case ETFClassID::CHalloweenGiftPickup: sName = "Gargoyle"; break;
 		}
 
-		tCache.m_vText.emplace_back(ALIGN_TOP, sName, pGroup->NameColor(), Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_TOP, sName, pGroup->NameColor(), Vars::Menu::Theme::Background.Value, true);
 	}
 }
 
@@ -825,8 +826,9 @@ void CESP::DrawPlayers()
 			}
 		}
 
-		for (auto& [iMode, sText, tColor, tOutline] : tCache.m_vText)
+		for (auto& [iMode, sText, tColor, tOutline, preserveColour] : tCache.m_vText)
 		{
+			Workspace::ScopedTextColour nameColour(preserveColour);
 			switch (iMode)
 			{
 			case ALIGN_TOP:
@@ -928,8 +930,9 @@ void CESP::DrawBuildings()
 			}
 		}
 
-		for (auto& [iMode, sText, tColor, tOutline] : tCache.m_vText)
+		for (auto& [iMode, sText, tColor, tOutline, preserveColour] : tCache.m_vText)
 		{
+			Workspace::ScopedTextColour nameColour(preserveColour);
 			switch (iMode)
 			{
 			case ALIGN_TOP:
@@ -979,8 +982,9 @@ void CESP::DrawWorld()
 			H::Draw.LineRectOutline(x, y, w, h, tCache.m_tColor, { 0, 0, 0, 255 });
 
 
-		for (auto& [iMode, sText, tColor, tOutline] : tCache.m_vText)
+		for (auto& [iMode, sText, tColor, tOutline, preserveColour] : tCache.m_vText)
 		{
+			Workspace::ScopedTextColour nameColour(preserveColour);
 			switch (iMode)
 			{
 			case ALIGN_TOP:

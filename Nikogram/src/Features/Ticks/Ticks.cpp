@@ -1,4 +1,9 @@
 #include "Ticks.h"
+#include "TickIndicatorStyle.h"
+#include "../ImGui/Workspace.h"
+#include "../ImGui/Menu/Menu.h"
+#include "../ImGui/Menu/BindLayout.h"
+#include "../ImGui/Notifications/NotificationStyle.h"
 
 #include "../PacketManip/AntiAim/AntiAim.h"
 #include "../EnginePrediction/EnginePrediction.h"
@@ -408,34 +413,96 @@ bool CTicks::IsTimingUnsure()
 
 void CTicks::Draw(CTFPlayer* pLocal)
 {
-	if (!(Vars::Menu::Indicators.Value & Vars::Menu::IndicatorsEnum::Ticks) || !pLocal->IsAlive())
+	if (!(Vars::Menu::Indicators.Value & Vars::Menu::IndicatorsEnum::Ticks) || !pLocal || !pLocal->IsAlive())
 		return;
 
-	const DragBox_t dtPos = Vars::Menu::TicksDisplay.Value;
-	const auto& fFont = H::Fonts.GetFont(FONT_INDICATORS);
-
-	if (m_bSpeedhack)
-		return H::Draw.StringOutlined(fFont, dtPos.x, dtPos.y + 2, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, std::format("Speedhack x{}", Vars::Speedhack::Scale.Value).c_str());
-	
-	int iAntiAimTicks = F::AntiAim.YawOn() ? F::AntiAim.AntiAimTicks() : 0;
-	int iTicks = std::clamp(m_iShiftedTicks + std::max(I::ClientState->chokedcommands - iAntiAimTicks, 0), 0, m_iMaxUsrCmdProcessTicks);
-	int iMax = std::max(m_iMaxUsrCmdProcessTicks - iAntiAimTicks, 0);
-
-	float flRatio = iMax ? float(iTicks) / float(iMax) : 0.f;
-	int iSizeX = H::Draw.Scale(100, Scale_Round), iSizeY = H::Draw.Scale(12, Scale_Round);
-	int iPosX = dtPos.x - iSizeX / 2, iPosY = dtPos.y + fFont.m_nTall + H::Draw.Scale(4) + 1;
-
-	H::Draw.StringOutlined(fFont, dtPos.x, dtPos.y + 2, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, std::format("Ticks {} / {}", iTicks, iMax).c_str());
-	if (m_iWait)
-		H::Draw.StringOutlined(fFont, dtPos.x, dtPos.y + fFont.m_nTall + H::Draw.Scale(18, Scale_Round) + 1, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, "Not Ready");
-
-	H::Draw.LineRoundRect(iPosX, iPosY, iSizeX, iSizeY, H::Draw.Scale(4, Scale_Round), Vars::Menu::Theme::Accent.Value, 16);
-	if (flRatio)
+	const int antiAimTicks = F::AntiAim.YawOn() ? F::AntiAim.AntiAimTicks() : 0;
+	const int maximum = std::max(m_iMaxUsrCmdProcessTicks - antiAimTicks, 0);
+	const int ticks = std::clamp(m_iShiftedTicks + std::max(I::ClientState->chokedcommands - antiAimTicks, 0), 0, maximum);
+	const char* status = TickIndicatorStyle::Status(ticks, maximum, m_bSpeedhack, m_bWarp);
+	const std::string count = m_bSpeedhack ? std::format("x{}", Vars::Speedhack::Scale.Value) : std::format("{:02} / {:02}", ticks, maximum);
+	const char* countLabel = m_bSpeedhack ? "SCALE" : "STORED";
+	// Readiness if attack were pressed now; do not require attack to already be held.
+	auto weapon = H::Entities.GetWeapon();
+	const bool dtReady = weapon && ValidWeapon(weapon) && Vars::Doubletap::Doubletap.Value
+		&& !m_iWait && !m_bWarp && !m_bRecharge && !m_bSpeedhack
+		&& !F::AutoRocketJump.IsRunning() && GetTicks(weapon) > 0
+		&& (G::CanPrimaryAttack || G::Reloading);
+	const char* dtStatus = dtReady ? "DT READY" : "DT NOT READY";
+	const auto& labelFont = H::Fonts.GetFont(FONT_CRIT_LABEL);
+	const auto& detailFont = labelFont;
+	const auto& countFont = H::Fonts.GetFont(FONT_CRIT_COUNT);
+	const float scale = std::max(.1f, H::Draw.Scale());
+	const int padding = std::max(3, int(H::Draw.Scale(6, Scale_Round)));
+	const int gap = std::max(2, int(H::Draw.Scale(3, Scale_Round)));
+	const int barHeight = std::max(5, int(H::Draw.Scale(10, Scale_Round)));
+	int width = int(H::Draw.Scale(196, Scale_Round));
+	width = std::max(width, int(H::Draw.GetTextSize("TICKS", labelFont).x + H::Draw.GetTextSize(status, labelFont).x) + padding * 2 + gap * 3);
+	width = std::max(width, int(H::Draw.GetTextSize(count.c_str(), countFont).x + H::Draw.GetTextSize(countLabel, labelFont).x) + padding * 2 + gap * 3);
+	width = std::max(width, int(H::Draw.GetTextSize(count.c_str(), countFont).x + H::Draw.GetTextSize(dtStatus, detailFont).x) + padding * 2 + gap * 3);
+	const int bodyHeight = std::max(countFont.m_nTall, detailFont.m_nTall + gap + labelFont.m_nTall);
+	const int height = padding * 2 + labelFont.m_nTall + bodyHeight + gap * 2 + barHeight;
+	m_vIndicatorSize = { float(width), float(height) };
+	const auto position = Vars::Menu::TicksDisplay.Value;
+	const int left = int(BindLayout::ClampAxis(float(position.x - width / 2), float(width), 0.f, float(H::Draw.m_nScreenW)));
+	const float taskbar = F::Menu.m_bIsOpen ? H::Draw.Scale(26) : 0.f;
+	const int top = int(BindLayout::ClampAxis(float(position.y), float(height), Workspace::TopTaskbar ? taskbar : 0.f,
+		H::Draw.m_nScreenH - (Workspace::TopTaskbar ? 0.f : taskbar)));
+	const Color_t accent(int(Workspace::Accent[0] * 255), int(Workspace::Accent[1] * 255), int(Workspace::Accent[2] * 255), 255);
+	const float ratio = TickIndicatorStyle::Charge(ticks, maximum, m_bSpeedhack);
+	const bool full = TickIndicatorStyle::Full(ticks, maximum, m_bSpeedhack);
+	const Color_t textColour(int(Workspace::TextChannel(0) * 255), int(Workspace::TextChannel(1) * 255), int(Workspace::TextChannel(2) * 255), 255);
+	const Color_t rightColour = textColour.Lerp({ 0, 0, 0, 255 }, 1.f - TickIndicatorStyle::LabelBrightness(ratio));
+	// Preserve intentional charge tinting while respecting the user's base text colour.
+	Workspace::ScopedTextColour preserveTextColour;
+	auto drawText = [&](const Font_t& font, int textX, int textY, EAlign alignment, const char* text, bool right)
 	{
-		iSizeX -= H::Draw.Scale(2, Scale_Ceil) * 2, iSizeY -= H::Draw.Scale(2, Scale_Ceil) * 2;
-		iPosX += H::Draw.Scale(2, Scale_Round), iPosY += H::Draw.Scale(2, Scale_Round);
-		H::Draw.StartClipping(iPosX, iPosY, iSizeX * flRatio, iSizeY);
-		H::Draw.FillRoundRect(iPosX, iPosY, iSizeX, iSizeY, H::Draw.Scale(3, Scale_Round), Vars::Menu::Theme::Accent.Value, 16);
-		H::Draw.EndClipping();
+		Color_t colour = right ? rightColour : textColour;
+		if (full)
+		{
+			colour = textColour.Lerp({ 255, 255, 255, 255 }, .05f);
+			Color_t halo = colour; halo.a = 10;
+			const int offset = std::max(1, int(std::round(scale)));
+			H::Draw.String(font, textX - offset, textY, halo, alignment, text);
+			H::Draw.String(font, textX + offset, textY, halo, alignment, text);
+			H::Draw.String(font, textX, textY - offset, halo, alignment, text);
+			H::Draw.String(font, textX, textY + offset, halo, alignment, text);
+		}
+		H::Draw.String(font, textX, textY, colour, alignment, text);
+	};
+	H::Draw.FillRect(left, top, width, height, { 0, 0, 0, 255 });
+	H::Draw.LineRect(left, top, width, height, Color_t(int(Workspace::BorderChannel(0) * 255), int(Workspace::BorderChannel(1) * 255), int(Workspace::BorderChannel(2) * 255), 255));
+	int y = top + padding;
+	drawText(labelFont, left + padding, y, ALIGN_TOPLEFT, "TICKS", false);
+	drawText(labelFont, left + width - padding, y, ALIGN_TOPRIGHT, status, true);
+	y += labelFont.m_nTall + gap;
+	drawText(countFont, left + padding, y + (bodyHeight - countFont.m_nTall) / 2, ALIGN_TOPLEFT, count.c_str(), false);
+	// Keep this independent of reserve glow: a full reserve need not mean usable DT.
+	const int storedY = y + bodyHeight - labelFont.m_nTall;
+	const int detailY = (top + padding + storedY) / 2;
+	H::Draw.String(detailFont, left + width - padding, detailY,
+		dtReady ? textColour : textColour.Lerp({ 0, 0, 0, 255 }, .35f), ALIGN_TOPRIGHT, dtStatus);
+	drawText(labelFont, left + width - padding, storedY, ALIGN_TOPRIGHT, countLabel, true);
+	y += bodyHeight + gap;
+	const auto layout = NotificationStyle::Layout(float(width - padding * 2), scale);
+	if (full)
+	{
+		// Keep the halo inside the panel's padding, including at screen/taskbar boundaries.
+		for (int ring = 2; ring >= 1; --ring)
+		{
+			const int spread = std::max(1, int(std::round(ring * scale)));
+			Color_t halo = accent; halo.a = ring == 2 ? 10 : 20;
+			H::Draw.LineRect(left + padding - spread, y - spread, width - padding * 2 + spread * 2, barHeight + spread * 2, halo);
+		}
+	}
+	const int filled = NotificationStyle::Filled(ratio, layout.count);
+	for (int i = 0; i < layout.count; ++i)
+	{
+		const int cellX = left + padding + int(layout.Left(i));
+		const int cellWidth = std::max(1, int(layout.Right(i)) - int(layout.Left(i)));
+		if (i < filled)
+			H::Draw.GradientRect(cellX, y, cellWidth, barHeight, accent.Lerp({ 255, 255, 255, 255 }, full ? .15f : .10f), accent.Lerp({ 0, 0, 0, 255 }, full ? .35f : .45f), false);
+		else
+			H::Draw.FillRect(cellX, y, cellWidth, barHeight, { 35, 35, 35, 255 });
 	}
 }
