@@ -1,4 +1,5 @@
 #include "ProjectileSimulation.h"
+#include "../../Aimbot/BowChargePolicy.h"
 
 #include "../../EnginePrediction/EnginePrediction.h"
 #include "../../NoSpread/NoSpreadProjectile/NoSpreadProjectile.h"
@@ -22,7 +23,7 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 
 	Vec3 vPos, vAngle;
 
-	if (bCorrectRandomAngles)
+	if (bCorrectRandomAngles && !(iFlags & ProjSimEnum::DiagnosticDeterministic))
 	{
 		int iOriginalAttacking = G::Attacking;
 		bool bOriginalSilent = G::PSilentAngles;
@@ -46,7 +47,7 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 		return true;
 	}
 
-	if (!bInterp && G::CurrentUserCmd)
+	if (!bInterp && G::CurrentUserCmd && !(iFlags & ProjSimEnum::DiagnosticDeterministic))
 	{
 		switch (pWeapon->GetWeaponID())
 		{
@@ -181,7 +182,8 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 			SDK::GetProjectileFireSetup(pPlayer, vAngles, { 23.5f, 8.f, -3.f }, vPos, vAngle, bRedirect ? 2000.f : 0.f, 0.1f, bInterp);
 
 		auto uType = FNV1A::Hash32Const("models/weapons/w_models/w_arrow.mdl");
-		float flCharge = pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() > 0.f ? I::GlobalVars->curtime - pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() : 0.f;
+        const float flCharge=BowChargePolicy::Fraction(I::GlobalVars->curtime,
+            pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),pWeapon->ApplyFireDelay(1.f));
 		float flSpeed = bMaxSpeed ? 2600.f : Math::RemapVal(flCharge, 0.f, 1.f, 1800.f, 2600.f);
 		flGravity = Math::RemapVal(flCharge, 0.f, 1.f, 0.5f, 0.1f) * flGravity;
 		tProjInfo = { pPlayer, pWeapon, uType, vPos, vAngle, { 1.f, 1.f, 1.f }, flSpeed, flGravity, 10.f };
@@ -373,6 +375,16 @@ void CProjectileSimulation::GetInfo(CBaseEntity* pProjectile, ProjectileInfo& tP
 	tProjInfo.m_flGravity = GetGravity(pProjectile, tProjInfo.m_pWeapon);
 }
 
+void CProjectileSimulation::ReleaseDiagnostic()
+{
+    if(m_pEnv && m_pObj) m_pEnv->DestroyObject(m_pObj);
+    m_pObj=nullptr;
+    if(m_pEnv) I::Physics->DestroyEnvironment(m_pEnv);
+    m_pEnv=nullptr;
+    if(m_pOwnedCollide) I::PhysicsCollision->DestroyCollide(m_pOwnedCollide);
+    m_pOwnedCollide=nullptr;m_pCurrent=nullptr;
+}
+
 bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate, bool bWorld)
 {
 	if (!m_pEnv)
@@ -380,7 +392,15 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 
 	if (!m_pObj && m_pEnv)
 	{
-		CPhysCollide* pCollide = I::PhysicsCollision->BBoxToCollide({ -2.f, -2.f, -2.f }, { 2.f, 2.f, 2.f });
+        CPhysCollide* pCollide=nullptr;
+        if(tProjInfo.m_iFlags & ProjSimEnum::DiagnosticDeterministic) {
+            // Explicitly owned model; do not destroy a potentially cached BBoxToCollide result.
+            if(!m_pOwnedCollide) {
+                auto* convex=I::PhysicsCollision->BBoxToConvex({-2,-2,-2},{2,2,2});
+                if(convex) m_pOwnedCollide=I::PhysicsCollision->ConvertConvexToCollide(&convex,1);
+            }
+            pCollide=m_pOwnedCollide;
+        } else pCollide=I::PhysicsCollision->BBoxToCollide({-2,-2,-2},{2,2,2});
 		objectparams_t tParams = m_tPhysDefaultObjectParams;
 		tParams.damping = 0.f;
 		tParams.rotdamping = 0.f;
@@ -506,7 +526,7 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 			case FNV1A::Hash32Const("models/weapons/w_models/w_stickybomb2.mdl"):
 			case FNV1A::Hash32Const("models/weapons/w_models/w_cannonball.mdl"):
 				vVelocity += vUp * 200.f;
-				if (!(tProjInfo.m_iFlags & ProjSimEnum::Interp) && G::CurrentUserCmd)
+				if (!(tProjInfo.m_iFlags & (ProjSimEnum::Interp | ProjSimEnum::DiagnosticDeterministic)) && G::CurrentUserCmd)
 				{
 					Vec3 vNewVelocity = vVelocity + vUp * SDK::RandomFloat(-10.f, 10.f) + vRight * SDK::RandomFloat(-10.f, 10.f);
 					if (!(tProjInfo.m_iFlags & ProjSimEnum::NoRandomAngles))

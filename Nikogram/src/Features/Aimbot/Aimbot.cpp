@@ -1,4 +1,6 @@
 #include "Aimbot.h"
+#include "AutoDetonateDiagnostics.h"
+#include "MeleeDiagnostics.h"
 
 #include "AimbotHitscan/AimbotHitscan.h"
 #include "AimbotProjectile/AimbotProjectile.h"
@@ -12,11 +14,13 @@
 
 bool CAimbot::ShouldRun(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
-	if (!pWeapon || !pLocal->CanAttack()
-		|| !SDK::AttribHookValue(1, "mult_dmg", pWeapon)
-		|| I::EngineVGui->IsGameUIVisible()
-		|| pCmd->weaponselect)
-		return false;
+	MeleeDiagnostics::Event("entry_check");
+	// Keep the original short-circuit order; values identify the blocking gate.
+	if (!pWeapon) { AutoDetonateDiagnostics::Event(AutoDetonateDiagnostics::Gate,-1,1); return false; }
+	if (!pLocal->CanAttack()) { AutoDetonateDiagnostics::Event(AutoDetonateDiagnostics::Gate,-1,2); return false; }
+	if (!SDK::AttribHookValue(1, "mult_dmg", pWeapon)) { AutoDetonateDiagnostics::Event(AutoDetonateDiagnostics::Gate,-1,3); return false; }
+	if (I::EngineVGui->IsGameUIVisible()) { AutoDetonateDiagnostics::Event(AutoDetonateDiagnostics::Gate,-1,4); return false; }
+	if (pCmd->weaponselect) { AutoDetonateDiagnostics::Event(AutoDetonateDiagnostics::Gate,-1,5); return false; }
 
 	return true;
 }
@@ -59,8 +63,10 @@ void CAimbot::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 		G::AimPoint = {};
 
 	F::AutoRocketJump.Run(pLocal, pWeapon, pCmd);
+	AutoDetonateDiagnostics::Command autodetDiagnostic(pCmd);
+	MeleeDiagnostics::Command meleeDiagnostic(pWeapon,pCmd);
 	if (!ShouldRun(pLocal, pWeapon, pCmd))
-		return;
+	{ MeleeDiagnostics::Event("entry_rejected"); return; }
 
 	F::AutoDetonate.Run(pLocal, pCmd);
 	F::AutoAirblast.Run(pLocal, pWeapon, pCmd);

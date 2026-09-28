@@ -70,6 +70,8 @@ struct History_t
 {
 	Vec3 m_vOrigin;
 	int m_iSimtime;
+    float m_flObservationTime=0.f;
+    bool m_bObservationGround=false;
 #ifdef NIKOGRAM_PRIVATE_LEARNING
     float m_flDiagnosticSim=0, m_flDiagnosticNetworkSim=0;
     bool m_bDiagnosticGround=false;
@@ -120,6 +122,12 @@ private:
 #endif
 
 	int CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate = true);
+    int CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate);
+    bool CandidateAngleAllowed(const Vec3& angle,const Vec3& point,const Vec3& origin);
+    bool m_bAdaptivePass=false, m_bAdaptiveRetained=false;
+    float m_flAdaptiveTargetFov=180.f,m_flAdaptiveDistance=10000.f;
+    int m_iAdaptiveEntity=-1,m_iAdaptiveTick=-1000;
+    Vec3 m_vAdaptiveMins={},m_vAdaptiveMaxs={};
 	bool RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
 
 	bool CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CBaseEntity* pProjectile);
@@ -147,6 +155,12 @@ private:
 	int m_iResult = false;
 	bool m_bUpdate = true;
 	bool m_bPreviewOnly = false;
+    float m_flObservationFlight=0.f;
+    float m_flObservationTime=0.f;
+    bool m_bObservationGround=false;
+    bool m_bObservationStartGround=false;
+    unsigned long m_nObservationHandle=0;
+    int m_iObservationEntity=-1;
 
 public:
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);

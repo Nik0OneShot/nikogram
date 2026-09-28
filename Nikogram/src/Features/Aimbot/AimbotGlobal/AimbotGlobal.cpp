@@ -1,4 +1,5 @@
 #include "AimbotGlobal.h"
+#include "../TargetPolicy.h"
 
 #include "../Aimbot.h"
 #include "../../Players/PlayerUtils.h"
@@ -14,7 +15,11 @@ std::vector<Target_t> CAimbotGlobal::ManageTargets(std::vector<Target_t>(*GetTar
 	{	// keep prioritized targets when truncating
 		return a.m_nPriority > b.m_nPriority;
 	});
-	vTargets.resize(std::min(size_t(iMaxTargets), vTargets.size()));
+	const bool hasPriority = std::any_of(vTargets.begin(), vTargets.end(), [](const Target_t& target) { return target.m_nPriority > 0; });
+	std::vector<Target_t> selected;
+	for (auto index : TargetPolicy::Candidates(vTargets.size(), iMaxTargets, hasPriority, unsigned(I::GlobalVars->tickcount)))
+		selected.push_back(vTargets[index]);
+	vTargets = std::move(selected);
 	SortTargetsPost(vTargets, iMethod);
 	return vTargets;
 }
@@ -245,10 +250,12 @@ bool CAimbotGlobal::ShouldIgnore(CBaseEntity* pEntity, CTFPlayer* pLocal, CTFWea
 				{
 				case TF_WEAPON_FLAMETHROWER:
 				case TF_WEAPON_FLAREGUN:
+				case TF_WEAPON_FLAREGUN_REVENGE:
 					if (pPlayer->InCond(TF_COND_MEDIGUN_UBER_FIRE_RESIST))
 						return true;
 					break;
 				case TF_WEAPON_COMPOUND_BOW:
+				case TF_WEAPON_CROSSBOW:
 					if (pPlayer->InCond(TF_COND_MEDIGUN_UBER_BULLET_RESIST))
 						return true;
 					break;

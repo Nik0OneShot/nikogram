@@ -1,4 +1,5 @@
 #include "Events.h"
+#include "../../Features/Aimbot/SelfDamageDiagnostics.h"
 
 #include "../../Core/Core.h"
 #include "../../Features/Statistics/Statistics.h"
@@ -64,6 +65,8 @@ void CEventListener::FireGameEvent(IGameEvent* pEvent)
 	{
 	case FNV1A::Hash32Const("player_hurt"):
 	{
+		if(SelfDamageDiagnostics::Enabled() && I::EngineClient->GetPlayerForUserID(pEvent->GetInt("userid"))==I::EngineClient->GetLocalPlayer())
+			SelfDamageDiagnostics::Write("local_hurt",std::format("damage={} health={} self={} weaponid={} crit={}",pEvent->GetInt("damageamount"),pEvent->GetInt("health"),pEvent->GetInt("attacker")==pEvent->GetInt("userid"),pEvent->GetInt("weaponid"),pEvent->GetBool("crit")));
 		F::Resolver.PlayerHurt(pEvent);
 		F::CheatDetection.ReportDamage(pEvent);
 		return;

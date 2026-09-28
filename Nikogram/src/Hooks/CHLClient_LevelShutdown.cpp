@@ -1,6 +1,7 @@
 #include "../SDK/SDK.h"
 
 #include "../Features/EnginePrediction/EnginePrediction.h"
+#include "../Features/Simulation/MovementSimulation/MovementSimulation.h"
 #include "../Features/Spectate/Spectate.h"
 #include "../Features/Blockbot/Blockbot.h"
 #include "../Features/Visuals/AnimInterp/AnimInterp.h"
@@ -15,6 +16,7 @@ MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 	F::AnimInterp.Reset();
 	F::Visuals.ResetLocalAnimationQueue();
 	H::Entities.Clear(true);
+	F::MoveSim.Clear();
 	F::EnginePrediction.Unload();
 	F::Spectate.Reset();
 	F::Blockbot.Reset();

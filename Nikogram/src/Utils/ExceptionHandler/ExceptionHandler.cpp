@@ -1,4 +1,5 @@
 #include "ExceptionHandler.h"
+#include "CrashLog.h"
 
 #include "../../Features/Configs/Configs.h"
 
@@ -50,7 +51,7 @@ static inline std::deque<Frame_t> StackTrace(PCONTEXT pContext)
 
 	CONTEXT tContext = *pContext;
 
-	while (StackWalk64(IMAGE_FILE_MACHINE_AMD64, hProcess, hThread, &tStackFrame, &tContext, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
+	while (vTrace.size() < 64 && StackWalk64(IMAGE_FILE_MACHINE_AMD64, hProcess, hThread, &tStackFrame, &tContext, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
 	{
 		vTrace.push_back({ .m_uAddress = tStackFrame.AddrPC.Offset });
 		Frame_t& tFrame = vTrace.back();
@@ -115,7 +116,7 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 	{
 	case STATUS_ACCESS_VIOLATION: sError = "ACCESS VIOLATION"; break;
 	case STATUS_HEAP_CORRUPTION: sError = "HEAP CORRUPTION"; break;
-	case STATUS_STACK_OVERFLOW: // almost no stack is left, so walking/formatting here would just fault again
+	case STATUS_STACK_OVERFLOW: return EXCEPTION_CONTINUE_SEARCH; // No safe stack budget here.
 	case STATUS_RUNTIME_ERROR:
 	case EXCEPTION_BREAKPOINT:
 	case DBG_PRINTEXCEPTION_C:
@@ -131,6 +132,16 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 	if (s_bInHandler)
 		return EXCEPTION_CONTINUE_SEARCH;
 	struct Guard_t { Guard_t() { s_bInHandler = true; } ~Guard_t() { s_bInHandler = false; } } tGuard;
+
+	// Persist the essential record before symbol walking or allocation can fail.
+	// VEH observes first-chance exceptions, so this deliberately does not claim a fatal crash.
+	if (ExceptionInfo->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION ||
+		ExceptionInfo->ExceptionRecord->ExceptionCode == STATUS_HEAP_CORRUPTION ||
+		ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION ||
+		ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_IN_PAGE_ERROR)
+		CrashLog::Basic(ExceptionInfo, s_lpParam, __DATE__ " " __TIME__ " " __CONFIGURATION__);
+	if (ExceptionInfo->ExceptionRecord->ExceptionCode == STATUS_HEAP_CORRUPTION)
+		return EXCEPTION_CONTINUE_SEARCH; // Do not allocate on a potentially corrupt heap.
 
 	// a vectored handler sees every first-chance exception in the process, including ones the game
 	// catches and handles itself. only report exceptions that happen in, or were called from, our module
@@ -207,24 +218,16 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 		ssErrorStream << "\n";
 	}
 
-	try
-	{
-		std::ofstream file;
-		file.open(F::Configs.m_sConfigPath + "crash_log.txt", std::ios_base::app);
-		file << ssErrorStream.str() + "\n\n\n";
-		file.close();
-
-		ssErrorStream << "\n";
-		ssErrorStream << "Ctrl + C to copy. \n";
-		ssErrorStream << "Logged to Nikogram\\crash_log.txt. ";
-	}
-	catch (...) {}
+	const auto detail = ssErrorStream.str() + "\n\n";
+	const bool saved = CrashLog::Write(detail.data(), DWORD(detail.size()));
+	ssErrorStream << (saved ? "\nSaved to the game's Nikogram\\crash_log.txt. "
+		: "\nCould not save the detailed crash log. Check folder write permissions. ");
 
 	switch (ExceptionInfo->ExceptionRecord->ExceptionCode)
 	{
 	case STATUS_ACCESS_VIOLATION:
 	case STATUS_HEAP_CORRUPTION:
-		SDK::Output("Unhandled exception", ssErrorStream.str().c_str(), {}, OUTPUT_DEBUG, nullptr, MB_OK | MB_ICONERROR);
+		MessageBoxA(nullptr, ssErrorStream.str().c_str(), "Nikogram exception", MB_OK | MB_ICONERROR);
 	}
 
 	return EXCEPTION_CONTINUE_SEARCH;
@@ -232,10 +235,14 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 
 void CExceptionHandler::Initialize(LPVOID lpParam)
 {
-	s_pHandle = AddVectoredExceptionHandler(1, ExceptionFilter);
 	s_lpParam = lpParam;
+	wchar_t executable[32768] = {};
+	const DWORD length = GetModuleFileNameW(nullptr, executable, _countof(executable));
+	if (length && length < _countof(executable)) CrashLog::Open(executable);
+	s_pHandle = AddVectoredExceptionHandler(1, ExceptionFilter);
 }
 void CExceptionHandler::Unload()
 {
 	RemoveVectoredExceptionHandler(s_pHandle);
+	CrashLog::Close();
 }

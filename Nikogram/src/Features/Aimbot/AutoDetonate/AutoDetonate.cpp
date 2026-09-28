@@ -1,4 +1,9 @@
 #include "AutoDetonate.h"
+#include "../SelfDamage.h"
+#include "../AmmoLifetimeDiagnostics.h"
+#include "../AutoDetonateDiagnostics.h"
+#include "../AutoDetonateCandidates.h"
+namespace AD = AutoDetonateDiagnostics;
 
 void CAutoDetonate::PredictPlayers(CTFPlayer* pLocal, float flLatency, bool bLocal)
 {
@@ -36,14 +41,14 @@ bool CAutoDetonate::GetRadius(EntityEnum::EntityEnum eGroup, CBaseEntity* pProje
 	{
 		pWeapon = H::Entities.GetWeapon();
 		if (!pWeapon)
-			return false;
+		{ AD::Event(AD::NoLauncher); return false; }
 	}
 
 	if (eGroup == EntityEnum::LocalStickies)
 	{
 		auto pPipebomb = pProjectile->As<CTFGrenadePipebombProjectile>();
 		if (!pPipebomb->m_flCreationTime() || I::GlobalVars->curtime < pPipebomb->m_flCreationTime() + SDK::AttribHookValue(0.8f, "sticky_arm_time", pWeapon))
-			return false;
+		{ AD::Event(AD::Unarmed,-1,I::GlobalVars->curtime-pPipebomb->m_flCreationTime()); return false; }
 
 		flRadius *= TF_ROCKET_RADIUS;
 		if (!pPipebomb->m_bTouched())
@@ -86,45 +91,62 @@ bool CAutoDetonate::CheckEntity(CBaseEntity* pEntity, CTFPlayer* pLocal, CTFWeap
 	Vec3 vPos; pEntity->m_Collision()->CalcNearestPoint(vOrigin, &vPos);
 	float flRadiusSqr = powf(flRadius, 2);
 	if (vOrigin.DistToSqr(vPos) > flRadiusSqr)
-		return false;
+	{ AD::Event(AD::Range,pEntity->entindex(),vOrigin.DistTo(vPos)); return false; }
 
 	if (pEntity != pLocal
 		? !SDK::VisPosCollideable(pProjectile, pEntity, vOrigin, pEntity->IsPlayer() ? pEntity->GetAbsOrigin() + pEntity->As<CTFPlayer>()->GetViewOffset() : pEntity->GetCenter(), MASK_SHOT)
 		: !SDK::VisPosWorld(pProjectile, pEntity, vOrigin, pEntity->GetAbsOrigin() + pEntity->As<CTFPlayer>()->m_vecViewOffset(), MASK_SHOT))
-		return false;
+	{ AD::Event(AD::Visibility,pEntity->entindex()); return false; }
 
 	if (pCmd && pWeapon->GetWeaponID() == TF_WEAPON_PIPEBOMBLAUNCHER && pWeapon->As<CTFPipebombLauncher>()->GetDetonateType() == TF_DETONATE_MODE_DOT)
 	{
 		if (G::Attacking == 1 || I::ClientState->chokedcommands)
-			return false;
+		{ AD::Event(AD::SelectiveBusy,pEntity->entindex()); return false; }
 
 		m_vAimPos = vOrigin;
 	}
 
+	AD::Event(AD::Accepted,pEntity->entindex());
 	return true;
 }
 
 bool CAutoDetonate::CheckEntities(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, CBaseEntity* pProjectile, float flRadius, Vec3 vOrigin)
 {
 	flRadius -= 1;
-	
-	CBaseEntity* pEntity;
-	for (CEntitySphereQuery sphere(vOrigin, flRadius);
-		pEntity = sphere.GetCurrentEntity();
-		sphere.NextEntity())
+	int enumerated=0, directPlayers=0;
+	auto checkCandidate = [&](CBaseEntity* pEntity)
 	{
-		if (pEntity == pLocal || pEntity->IsPlayer() && (!pEntity->As<CTFPlayer>()->IsAlive() || pEntity->As<CTFPlayer>()->IsAGhost())
-			|| !SDK::FriendlyFire() && pEntity->m_iTeamNum() == pLocal->m_iTeamNum()
-			|| F::AimbotGlobal.ShouldIgnore(pEntity, pLocal, pWeapon))
-			continue;
+		// Preserve short-circuit order; filter values: local/dead/team/general-ignore.
+		if (pEntity == pLocal) { AD::Event(AD::Filtered,pEntity->entindex(),1); return false; }
+		if (pEntity->IsPlayer() && (!pEntity->As<CTFPlayer>()->IsAlive() || pEntity->As<CTFPlayer>()->IsAGhost()))
+		{ AD::Event(AD::Filtered,pEntity->entindex(),2); return false; }
+		if (!SDK::FriendlyFire() && pEntity->m_iTeamNum() == pLocal->m_iTeamNum())
+		{ AD::Event(AD::Filtered,pEntity->entindex(),3); return false; }
+		if (F::AimbotGlobal.ShouldIgnore(pEntity, pLocal, pWeapon))
+		{ AD::Event(AD::Filtered,pEntity->entindex(),4); return false; }
 
 		if (Vars::Aimbot::Projectile::AutoDetonate.Value & Vars::Aimbot::Projectile::AutoDetonateEnum::IgnoreInvisible && pEntity->IsPlayer() && pEntity->As<CTFPlayer>()->IsInvisible(Vars::Aimbot::General::IgnoreInvisible.Value / 100.f))
-			continue;
+		{ AD::Event(AD::Invisible,pEntity->entindex()); return false; }
 
-		if (CheckEntity(pEntity, pLocal, pWeapon, pCmd, pProjectile, flRadius, vOrigin))
-			return true;
+		return CheckEntity(pEntity, pLocal, pWeapon, pCmd, pProjectile, flRadius, vOrigin);
+	};
+	// PredictPlayers changes player bounds before both passes. Read those bounds
+	// directly instead of relying on a possibly stale spatial-partition query.
+	if (AutoDetonateCandidates::CheckPlayers(H::Entities.GetGroup(EntityEnum::PlayerAll), [&](CBaseEntity* player)
+		{ ++directPlayers; return checkCandidate(player); }))
+	{ AD::Query(pLocal,vOrigin,flRadius,enumerated,directPlayers); return true; }
+
+	CBaseEntity* pEntity;
+	for (CEntitySphereQuery sphere(vOrigin, flRadius);
+		pEntity = sphere.GetCurrentEntity(); sphere.NextEntity())
+	{
+		++enumerated;
+		if (pEntity->IsPlayer()) continue; // Already checked through the direct list.
+		if (checkCandidate(pEntity))
+		{ AD::Query(pLocal,vOrigin,flRadius,enumerated,directPlayers); return true; }
 	}
 
+	AD::Query(pLocal,vOrigin,flRadius,enumerated,directPlayers);
 	return false;
 }
 
@@ -132,22 +154,27 @@ bool CAutoDetonate::CheckTargets(CTFPlayer* pLocal, EntityEnum::EntityEnum eGrou
 {
 	auto& vProjectiles = H::Entities.GetGroup(eGroup);
 	if (vProjectiles.empty())
-		return false;
+	{ AD::Event(AD::Empty); return false; }
 
 	float flLatency = F::Backtrack.GetReal();
 	for (auto pProjectile : vProjectiles)
 	{
+		if(AD::current) { AD::current->projectile=pProjectile->entindex(); AD::current->phase="arming"; }
 		float flRadius = flRadiusScale;
 		CTFWeaponBase* pWeapon = nullptr;
 		if (!GetRadius(eGroup, pProjectile, flRadius, pWeapon))
 			continue;
 
 		PredictPlayers(pLocal, flLatency);
+		if(AD::current) AD::current->phase="predicted";
 		bool bCheck = CheckEntities(pLocal, pWeapon, nullptr, pProjectile, flRadius, GetOrigin(pProjectile, eGroup, flLatency));
+		if(!bCheck) AD::Event(AD::PredictedMiss,-1,flLatency);
 		if (bCheck)
 		{	// only run the current position checks if the predicted ones passed
 			PredictPlayers(pLocal, 0.f);
+			if(AD::current) AD::current->phase="current";
 			bCheck = CheckEntities(pLocal, pWeapon, pCmd, pProjectile, flRadius, GetOrigin(pProjectile, eGroup));
+			if(!bCheck) AD::Event(AD::CurrentMiss);
 		}
 		RestorePlayers();
 		if (bCheck)
@@ -168,6 +195,7 @@ bool CAutoDetonate::CheckSelf(CTFPlayer* pLocal, EntityEnum::EntityEnum eGroup)
 
 	float flLatency = F::Backtrack.GetReal();
 
+	float totalDamage=0.f;
 	for (auto pProjectile : vProjectiles)
 	{
 		float flRadius = 1.f;
@@ -175,11 +203,16 @@ bool CAutoDetonate::CheckSelf(CTFPlayer* pLocal, EntityEnum::EntityEnum eGroup)
 		if (!GetRadius(eGroup, pProjectile, flRadius, pWeapon))
 			continue;
 
-		PredictPlayers(pLocal, 0.f, true);
-		bool bCheck = CheckEntity(pLocal, pLocal, pWeapon, nullptr, pProjectile, flRadius, GetOrigin(pProjectile, eGroup, flLatency))
-				   && CheckEntity(pLocal, pLocal, pWeapon, nullptr, pProjectile, flRadius, GetOrigin(pProjectile, eGroup));
+		const Vec3 current=pLocal->GetAbsOrigin();
+		const Vec3 explosionNow=GetOrigin(pProjectile,eGroup), explosionLater=GetOrigin(pProjectile,eGroup,flLatency);
+		float damage=std::max(SelfDamage::Estimate(pLocal,pWeapon,explosionNow,current,flRadius),
+			SelfDamage::Estimate(pLocal,pWeapon,explosionLater,current,flRadius));
+		PredictPlayers(pLocal, flLatency, true);
+		damage=std::max(damage,SelfDamage::Estimate(pLocal,pWeapon,explosionLater,pLocal->GetAbsOrigin(),flRadius));
 		RestorePlayers();
-		if (bCheck)
+		totalDamage+=damage;
+		if(SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("autodet_self",std::format("projectile={} damage={} total={} protection={} blocked={}",pProjectile->entindex(),damage,totalDamage,Vars::Aimbot::Projectile::SelfDamageProtection.Value,SelfDamage::Block(pLocal,totalDamage)),true);
+		if (SelfDamage::Block(pLocal,totalDamage))
 			return true;
 	}
 
@@ -188,11 +221,14 @@ bool CAutoDetonate::CheckSelf(CTFPlayer* pLocal, EntityEnum::EntityEnum eGroup)
 
 bool CAutoDetonate::Check(CTFPlayer* pLocal, CUserCmd* pCmd, EntityEnum::EntityEnum eGroup, int iFlag)
 {
+	if(AD::current) { AD::current->source=iFlag; AD::current->projectile=-1; AD::current->phase="source"; }
 	if (!(Vars::Aimbot::Projectile::AutoDetonate.Value & iFlag))
-		return false;
+	{ AD::Event(AD::Disabled); return false; }
 
-	return CheckTargets(pLocal, eGroup, Vars::Aimbot::Projectile::AutodetRadius.Value / 100, pCmd)
-		&& !CheckSelf(pLocal, eGroup);
+	if(!CheckTargets(pLocal, eGroup, Vars::Aimbot::Projectile::AutodetRadius.Value / 100, pCmd)) return false;
+	if(AD::current) AD::current->phase="self";
+	if(CheckSelf(pLocal,eGroup)) { AD::Event(AD::SelfBlocked); return false; }
+	return true;
 }
 
 void CAutoDetonate::Run(CTFPlayer* pLocal, CUserCmd* pCmd)
@@ -201,10 +237,13 @@ void CAutoDetonate::Run(CTFPlayer* pLocal, CUserCmd* pCmd)
 		return;
 
 	m_vAimPos = std::nullopt;
-	if (Check(pLocal, pCmd, EntityEnum::LocalStickies, Vars::Aimbot::Projectile::AutoDetonateEnum::Stickies)
-		|| Check(pLocal, pCmd, EntityEnum::LocalFlares, Vars::Aimbot::Projectile::AutoDetonateEnum::Flares))
+	const bool stickyRequest = Check(pLocal, pCmd, EntityEnum::LocalStickies, Vars::Aimbot::Projectile::AutoDetonateEnum::Stickies);
+	const bool flareRequest = !stickyRequest && Check(pLocal, pCmd, EntityEnum::LocalFlares, Vars::Aimbot::Projectile::AutoDetonateEnum::Flares);
+	if (stickyRequest || flareRequest)
 	{
+		AD::Event(AD::Requested);
 		pCmd->buttons |= IN_ATTACK2;
+		AmmoLifetimeDiagnostics::AutoRequest(pCmd->command_number, stickyRequest ? 1 : 2); // 1: sticky, 2: flare
 
 		if (m_vAimPos)
 		{

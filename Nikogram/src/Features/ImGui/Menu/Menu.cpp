@@ -679,6 +679,8 @@ void CMenu::MenuAimbot(int iTab)
 					FDropdown(Vars::Aimbot::General::TargetSelection, FDropdownEnum::Right);
 					FDropdown(Vars::Aimbot::General::Target, FDropdownEnum::Left);
 					FDropdown(Vars::Aimbot::General::Ignore, FDropdownEnum::Right);
+                    FDropdown(Vars::Aimbot::General::LeadAndRestrict, FDropdownEnum::InlineTitle);
+                    if(IsItemHovered()) SetTooltip("Off: restrict current target position. Strict: restrict calculated firing direction and search alternative projectile candidates. Adaptive: first search strictly, then allow bounded close-range projectile exceptions for targets inside your FOV. Hitscan and melee use Strict in Adaptive mode. Auto-airblast is unchanged. Self-damage prevention still applies.");
 					FSlider(Vars::Aimbot::General::AimFOV);
 					FSlider(Vars::Aimbot::General::MaxTargets, FSliderEnum::Left);
 					PushTransparent(!(Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Invisible));
@@ -695,8 +697,7 @@ void CMenu::MenuAimbot(int iTab)
 					FColorPicker(Vars::Colors::FOVCircle);
 					FToggle(Vars::Aimbot::General::AutoShoot, FToggleEnum::Left);
 					FToggle(Vars::Aimbot::General::FOVCircle, FToggleEnum::Right);
-					FToggle(Vars::Aimbot::General::LeadAndRestrict, FToggleEnum::Left);
-					FToggle(Vars::Aimbot::General::NoSpread, FToggleEnum::Right);
+					FToggle(Vars::Aimbot::General::NoSpread, FToggleEnum::Left);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
@@ -811,7 +812,9 @@ void CMenu::MenuAimbot(int iTab)
 #endif
 				if (Section("Projectile"))
 				{
-					FDropdown(Vars::Aimbot::Projectile::StrafePrediction, FDropdownEnum::Left);
+					bool predictHovered = false;
+					FDropdown(Vars::Aimbot::Projectile::StrafePrediction, FDropdownEnum::Left, 0, &predictHovered);
+					FTooltip("Counter strafe predict: detects repeated tight left/right movement and biases prediction toward its moving centre. Hit chance uses reversal balance, not measured hit probability.\nLedge aware prediction: when recent braking or reversal suggests an uncertain walk-off, checks hull support ahead and predicts slowing near the edge. Does not hold airborne targets on ledges. Uses your existing splash setting. Both options are experimental.", predictHovered);
 					FDropdown(Vars::Aimbot::Projectile::SplashPrediction, FDropdownEnum::Right);
 					FDropdown(Vars::Aimbot::Projectile::AutoDetonate, FDropdownEnum::Left);
 					FDropdown(Vars::Aimbot::Projectile::AutoAirblast, FDropdownEnum::Right);
@@ -825,6 +828,17 @@ void CMenu::MenuAimbot(int iTab)
 					PopTransparent();
 					FSlider(Vars::Aimbot::Projectile::AutodetRadius, FSliderEnum::Left);
 					FSlider(Vars::Aimbot::Projectile::SplashRadius, FSliderEnum::Right);
+					FSlider(Vars::Aimbot::Projectile::SelfDamageProtection);
+					if(IsItemHovered()) SetTooltip("Shared by projectile and auto-detonator Prevent self damage. 0%%: no restriction. 100%%: block any estimated damage. Allowed damage = max HP * (1 - protection/100). Positive protection also blocks estimated lethal damage. Conservative estimate, not an exact damage forecast.");
+					FToggle(Vars::Aimbot::Projectile::SelfDamageDiagnostics);
+					if(IsItemHovered()) SetTooltip("Writes Nikogram/Logs/self-damage-diagnostic.log next to the game executable. Works with self-damage protection OFF. Samples projectile candidate, simulation, collision and firing decisions twice per second, plus shot/damage events. Local only; contains entity indices, settings, positions and commands. Keeps up to three 2 MiB logs. Disable after testing.");
+					FToggle(Vars::Aimbot::Projectile::AmmoEvidenceDiagnostics);
+					if(IsItemHovered()) SetTooltip("Requires Projectile / self damage diagnostics. Own pill/sticky lifetime observations and secondary-fire request edges run without aim selection or Auto shoot; held requests refresh at most four times per second. Sampled enemy exposure screening still requires an aimed candidate and Auto shoot. Logs ammo_lifetime, ammo_detonation_request, ammo_evidence and ammo_shadow. Disappearance is NOT a confirmed explosion; requests are NOT confirmed detonations. No shot suppression or target switching.");
+					FDropdown(Vars::Aimbot::Projectile::AmmoEvidenceSources);
+					FToggle(Vars::Aimbot::Projectile::AmmoConservation);
+					if(IsItemHovered()) SetTooltip("Experimental live behavior, OFF by default. Grenade-launcher Auto shoot only, while Auto detonate requests normal stickies. Own settled stickies at least 5 seconds old; excludes uncertain defenses, fast/airborne targets, high delay and nearby threats. Validates replacement targets through the normal solver. Up to 100 ms of diversion/wait, then 1 second of normal firing. Manual input is untouched. Pills and charged weapons are not supported yet. Independent of diagnostic toggles/source selection.");
+					FDropdown(Vars::Aimbot::Projectile::AmmoConservationFallback);
+					if(IsItemHovered()) SetTooltip("When a conservatively covered target has no validated replacement: briefly withhold Auto shoot within the 100 ms action window, or shoot the original target anyway. A request is not a confirmed detonation; normal firing resumes when evidence is uncertain.");
 					PushTransparent(!Vars::Aimbot::Projectile::AutoRelease.Value);
 					{
 						FSlider(Vars::Aimbot::Projectile::AutoRelease);

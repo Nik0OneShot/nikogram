@@ -236,6 +236,13 @@ template <> void CConfigs::LoadJson(const boost::property_tree::ptree& t, const 
 {
 	auto& v = c->Map[i];
 	LoadJson(t, s, v);
+    // Preserve the previous bool setting, including visual configs and binds.
+    if(c==&Vars::Aimbot::General::LeadAndRestrict)
+    {
+        const auto old=t.get_optional<std::string>(s);
+        if(old && *old=="true") v=1;
+        else if(old && *old=="false") v=0;
+    }
 
 	if (!c->m_vValues.empty())
 	{
@@ -595,6 +602,19 @@ bool CConfigs::LoadConfig(const std::string& sConfigName, bool bNotify)
 				else Load(Gradient_t, *tSub)
 				else Load(DragBox_t, *tSub)
 				else Load(WindowBox_t, *tSub)
+			}
+			// Migrate the former standalone toggle, including bound overrides, on old configs.
+			if(auto legacy=tSub->get_child_optional("Vars::Aimbot::Projectile::PreventSelfDamage"))
+			{
+				auto& modifiers=Vars::Aimbot::Projectile::Modifiers;
+				for(const auto& [key,value]:*legacy)
+				{
+					const int bind=std::stoi(key);
+					if(bind!=DEFAULT_BIND && (bind<0 || bind>=int(F::Binds.m_vBinds.size()))) continue;
+					int flags=modifiers.Map.contains(bind)?modifiers.Map[bind]:modifiers.Map[DEFAULT_BIND];
+					const int bit=Vars::Aimbot::Projectile::ModifiersEnum::PreventSelfDamage;
+					modifiers.Map[bind]=value.get_value<bool>()?flags|bit:flags&~bit;
+				}
 			}
 		}
 		else

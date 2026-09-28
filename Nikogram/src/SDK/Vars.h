@@ -287,7 +287,8 @@ NAMESPACE_BEGIN(Vars)
 			CVar(TickTolerance, "Tick tolerance", 4, SLIDER_CLAMP, 0, 21);
 			CVar(AutoShoot, "Auto shoot", true);
 			CVar(FOVCircle, "FOV Circle", true, VISUAL);
-			CVar(LeadAndRestrict, "Lead and restrict", false, VISUAL);
+			CVarEnum(LeadAndRestrict, "Lead and restrict", 0, VISUAL, nullptr,
+				VA_LIST("Off", "Strict", "Adaptive"), Off, Strict, Adaptive);
 			CVar(NoSpread, "No spread", false);
 
 			CVarEnum(AimHoldsFire, "Aim holds fire", 2, NOSAVE | DEBUGVAR, nullptr,
@@ -324,8 +325,8 @@ NAMESPACE_BEGIN(Vars)
 
 		NAMESPACE_BEGIN(Projectile)
 			CVarEnum(StrafePrediction, VA_LIST("Predict", "Strafe prediction"), 0b11, DROPDOWN_MULTI, "Off",
-				VA_LIST("Air strafing", "Ground strafing"),
-				Air = 1 << 0, Ground = 1 << 1);
+				VA_LIST("Air strafing", "Ground strafing", "Counter strafe predict", "Ledge aware prediction"),
+				Air = 1 << 0, Ground = 1 << 1, CounterStrafe = 1 << 2, LedgeAware = 1 << 3);
 			CVarEnum(SplashPrediction, VA_LIST("Splash", "Splash prediction"), 0, NONE, nullptr,
 				VA_LIST("Off", "Include", "Prefer", "Only"),
 				Off, Include, Prefer, Only);
@@ -339,13 +340,21 @@ NAMESPACE_BEGIN(Vars)
 				VA_LIST("Auto", "##Divider", "Head", "Body", "Feet", "##Divider", "Bodyaim if lethal", "Prioritize feet"),
 				Auto = 1 << 0, Head = 1 << 1, Body = 1 << 2, Feet = 1 << 3, BodyaimIfLethal = 1 << 4, PrioritizeFeet = 1 << 5);
 			CVarEnum(Modifiers, VA_LIST("Modifiers", "Projectile modifiers"), 0b0010, DROPDOWN_MULTI, nullptr,
-				VA_LIST("Charge weapon", "Cancel charge", "Use arm time", "Air splash", "Lob angles", "Target dormant"),
-				ChargeWeapon = 1 << 0, CancelCharge = 1 << 1, UseArmTime = 1 << 2, AirSplash = 1 << 3, LobAngles = 1 << 4, TargetDormant = 1 << 5);
+				VA_LIST("Charge weapon", "Cancel charge", "Use arm time", "Air splash", "Lob angles", "Target dormant", "Prevent self damage"),
+				ChargeWeapon = 1 << 0, CancelCharge = 1 << 1, UseArmTime = 1 << 2, AirSplash = 1 << 3, LobAngles = 1 << 4, TargetDormant = 1 << 5, PreventSelfDamage = 1 << 6);
 			CVar(MaxSimulationTime, "Max simulation time", 1.f, SLIDER_MIN | SLIDER_PRECISION, 0.1f, 2.5f, 0.25f, "%gs");
 			CVar(HitChance, "Hit chance", 0.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
 			CVar(AutodetRadius, "Autodet radius", 90.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
 			CVar(SplashRadius, "Splash radius", 90.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
 			CVar(AutoRelease, "Auto release", 0.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 5.f, "%g%%");
+			CVar(SelfDamageProtection, "Self damage protection", 100.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 5.f, "%g%%");
+			CVar(SelfDamageDiagnostics, "Projectile / self damage diagnostics", true);
+			CVar(AmmoEvidenceDiagnostics, "Ammo conservation diagnostics (no gameplay changes)", false);
+			CVar(AmmoConservation, "Ammo conservation / smart switching (experimental)", false);
+			CVarEnum(AmmoConservationFallback, "When no alternative is available", 0, 0, nullptr,
+				VA_LIST("Briefly wait", "Shoot anyway"), BrieflyWait = 0, ShootAnyway = 1);
+			CVarEnum(AmmoEvidenceSources, "Diagnostic explosive sources", 3, DROPDOWN_MULTI, nullptr,
+				VA_LIST("Pills", "Stickies"), Pills = 1, Stickies = 2);
 
 			CVar(GroundSamples, "Samples", 33, NOSAVE | DEBUGVAR, 3, 66);
 			CVar(GroundStraightFuzzyValue, "Straight fuzzy value", 100.f, NOSAVE | DEBUGVAR | SLIDER_PRECISION, 0.f, 500.f, 25.f);

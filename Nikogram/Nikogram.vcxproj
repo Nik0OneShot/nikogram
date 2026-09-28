@@ -1093,6 +1093,7 @@
     <ClCompile Include="src\SDK\SDK.cpp" />
     <ClCompile Include="src\SDK\Helpers\ConVars\ConVars.cpp" />
     <ClCompile Include="src\Utils\ExceptionHandler\ExceptionHandler.cpp" />
+    <ClCompile Include="src\Hooks\IMoveHelper_SetHost.cpp" />
     <ClCompile Include="src\Utils\Hooks\Hooks.cpp" />
     <ClCompile Include="src\Utils\Interfaces\Interfaces.cpp" />
     <ClCompile Include="src\Utils\KeyHandler\KeyHandler.cpp" />

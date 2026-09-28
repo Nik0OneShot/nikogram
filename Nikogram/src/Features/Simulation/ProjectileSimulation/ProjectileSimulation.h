@@ -9,7 +9,8 @@ Enum(ProjSim,
 	PredictCmdNum = 1 << 3, // use crithack to predict command number
 	MaxSpeed = 1 << 4, // default projectile speeds to their maximum
 	NoRandomAngles = 1 << 5, // don't do angle stuff for aimbot, nospread will pick that up
-	CorrectRandomAngles = 1 << 6 // or do, position matters
+	CorrectRandomAngles = 1 << 6, // or do, position matters
+    DiagnosticDeterministic = 1 << 7 // isolated nominal audit; never seed or consume global RNG
 )
 
 #define DEFAULT_GRAVITY 800.f
@@ -215,6 +216,8 @@ public:
 	}
 
 	IPhysicsEnvironment* m_pEnv = nullptr;
+    CPhysCollide* m_pOwnedCollide = nullptr;
+    void ReleaseDiagnostic();
 
 	IPhysicsObject* m_pObj = nullptr;
 	PhysicsObject_t m_tObj = {};

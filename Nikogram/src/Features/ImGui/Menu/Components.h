@@ -23,7 +23,7 @@ Enum(FButton, None = 0, Left = 1 << 0, Right = 1 << 1, Fit = 1 << 2, SameLine = 
 Enum(FKeybind, None = 0, AllowNone = 1 << 5);
 Enum(FToggle, None = 0, Left = 1 << 0, Right = 1 << 1, PlainColor = 1 << 2, Invert = TOGGLE_INVERT);
 Enum(FSlider, None = 0, Left = 1 << 0, Right = 1 << 1, Clamp = 1 << 2, Min = 1 << 3, Max = 1 << 4, Precision = 1 << 5, NoAutoUpdate = 1 << 6);
-Enum(FDropdown, None = 0, Left = 1 << 0, Right = 1 << 1, Multi = 1 << 2, Modifiable = 1 << 3, NoSanitization = 1 << 4);
+Enum(FDropdown, None = 0, Left = 1 << 0, Right = 1 << 1, Multi = 1 << 2, Modifiable = 1 << 3, NoSanitization = 1 << 4, InlineTitle = 1 << 5);
 Enum(FSDropdown, None = 0, Custom = 1 << 2, AutoUpdate = 1 << 3);
 Enum(FColorPicker, None = 0, Left = 1 << 0, Right = 1 << 1, Full = 1 << 2, SameLine = 1 << 3, Tooltip = 1 << 4, NoTooltip = 1 << 5, RetainPosition = 1 << 6, HoverContents = 1 << 7, RemoveVisuals = 1 << 8);
 
@@ -1693,7 +1693,8 @@ namespace ImGui
 		if (sPreview.empty())
 			sPreview = sDefaultPreview;
 
-		ImVec2 vSize = { GetWindowWidth(), CompactDropdownHeight(bTitle) };
+		const bool inlineTitle = bTitle && (iFlags & FDropdownEnum::InlineTitle);
+		ImVec2 vSize = { GetWindowWidth(), CompactDropdownHeight(bTitle && !inlineTitle) };
 		if (iFlags & (FDropdownEnum::Left | FDropdownEnum::Right))
 			vSize.x = vSize.x / 2 - GetStyle().WindowPadding.x * 1.5f;
 		else
@@ -1817,7 +1818,25 @@ namespace ImGui
 				: previewTop + (vSize.y - GetTextLineHeight()) * 0.5f;
 			const float arrowY = previewTop + (vSize.y - H::Draw.Scale(16)) * 0.5f;
 
-			if (bTitle)
+			if (inlineTitle)
+			{
+                PushFont(F::Render.FontSmall);
+                const float padding = H::Draw.Scale(6);
+                const float available = std::max(0.f, vSize.x - H::Draw.Scale(30) - padding);
+                const std::string value = TruncateText(sPreview, available * .4f);
+                const float valueWidth = CalcTextSize(value.c_str()).x;
+                const float valueX = vOriginalPos2.x + vSize.x - H::Draw.Scale(30) - valueWidth;
+                const float rowY = previewTop + (vSize.y - GetTextLineHeight()) * .5f;
+                const float labelWidth = std::max(0.f, valueX - vOriginalPos2.x - padding * 2.f);
+                SetCursorPos({vOriginalPos2.x + padding, rowY});
+                TextColored(MenuTitleColour(), "%s", TruncateText(StripDoubleHash(sLabel), labelWidth).c_str());
+                SetCursorPos({valueX, rowY});
+                TextUnformatted(value.c_str());
+                PopFont();
+                SetCursorPos({vOriginalPos2.x + vSize.x - H::Draw.Scale(20), arrowY});
+                IconImage(bActive ? ICON_MD_KEYBOARD_ARROW_UP : ICON_MD_KEYBOARD_ARROW_DOWN);
+			}
+			else if (bTitle)
 			{
 				SetCursorPos({ vOriginalPos2.x + H::Draw.Scale(6), previewTop + H::Draw.Scale(3) });
 				PushFont(F::Render.FontSmall);

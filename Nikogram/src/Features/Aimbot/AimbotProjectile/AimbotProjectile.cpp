@@ -1,6 +1,16 @@
 #include "AimbotProjectile.h"
+#include "../TargetPolicy.h"
+#include "../SelfDamage.h"
+#include "../RocketSafetyGeometry.h"
+#include "../GrenadeCollisionPolicy.h"
+#include "../BowChargePolicy.h"
 
 #include "../Aimbot.h"
+#include "../ProjectileDiagnostics.h"
+#include "../AmmoEvidenceDiagnostics.h"
+#include "../AmmoConservation.h"
+#include "../PredictionObservation.h"
+#include "../LeadRestrictPolicy.h"
 #include "../../Ticks/Ticks.h"
 #include "../../EnginePrediction/EnginePrediction.h"
 #include "../../LearningAccess.h"
@@ -321,15 +331,27 @@ static inline int GetHitboxPriority(int nHitbox, Target_t& tTarget, Info_t& tInf
 			if (Vars::Aimbot::Projectile::Hitboxes.Value & Vars::Aimbot::Projectile::HitboxesEnum::BodyaimIfLethal
 				&& bHeadshot && !pProjectile && tInfo.m_pWeapon->m_hOwner().GetEntryIndex() == I::EngineClient->GetLocalPlayer())
 			{
-				float flCharge = I::GlobalVars->curtime - tInfo.m_pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime();
-				float flDamage = Math::RemapVal(flCharge, 0.f, 1.f, 50.f, 120.f);
-				if (tInfo.m_pLocal->IsMiniCritBoosted())
-					flDamage *= 1.36f;
-				if (flDamage >= tTarget.m_pEntity->As<CTFPlayer>()->m_iHealth())
-					bHeadshot = false;
-
-				if (tInfo.m_pLocal->IsCritBoosted()) // for reliability
-					bHeadshot = false;
+                auto target=tTarget.m_pEntity->As<CTFPlayer>();
+                const float maxCharge=tInfo.m_pWeapon->ApplyFireDelay(1.f);
+                const float fraction=BowChargePolicy::Fraction(I::GlobalVars->curtime,
+                    tInfo.m_pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),maxCharge);
+                const bool mini=tInfo.m_pLocal->IsMiniCritBoosted() || target->InCond(TF_COND_URINE)
+                    || target->InCond(TF_COND_MARKEDFORDEATH) || target->InCond(TF_COND_MARKEDFORDEATH_SILENT);
+                const float boost=tInfo.m_pLocal->IsCritBoosted()?3.f:mini?1.35f:1.f;
+                float resistance=SDK::AttribHookValue(1.f,"mult_dmgtaken",target);
+                resistance=SDK::AttribHookValue(resistance,"mult_dmgtaken_from_bullets",target);
+                const bool uncertain=target->IsInvulnerable() || target->InCond(TF_COND_MEDIGUN_UBER_BULLET_RESIST)
+                    || target->InCond(TF_COND_MEDIGUN_SMALL_BULLET_RESIST) || target->InCond(TF_COND_DEFENSEBUFF)
+                    || target->InCond(TF_COND_DEFENSEBUFF_NO_CRIT_BLOCK) || target->InCond(TF_COND_DEFENSEBUFF_HIGH)
+                    || target->InCond(TF_COND_RUNE_RESIST) || target->InCond(TF_COND_STEALTHED_USER_BUFF_FADING)
+                    || target->InCond(TF_COND_STEALTHED) || target->m_bFeignDeathReady()
+                    || !std::isfinite(maxCharge) || maxCharge<=0;
+                const float damage=BowChargePolicy::BodyDamage(fraction,
+                    SDK::AttribHookValue(50.f,"mult_dmg",tInfo.m_pWeapon),tInfo.m_pWeapon->GetDamage(),boost,resistance);
+                const bool lethal=BowChargePolicy::Lethal(damage,target->m_iHealth(),uncertain);
+                if(lethal) bHeadshot=false;
+                if(ProjectileDiagnostics::MovementSample()) ProjectileDiagnostics::Ledge("huntsman_body_decision",
+                    std::format("target={} fraction={} charge_max={} damage_estimate={} health={} boost={} resistance={} uncertain={} lethal={} policy=conservative_visible_state",target->entindex(),fraction,maxCharge,damage,target->m_iHealth(),boost,resistance,uncertain,lethal));
 			}
 		}
 		if (bHeadshot)
@@ -366,11 +388,16 @@ Directs_t CAimbotProjectile::GetDirects()
 		iFlags |= PointFlagsEnum::Lob;
 
 	const Vec3 vMins = tTarget.m_pEntity->m_vecMins(), vMaxs = tTarget.m_pEntity->m_vecMaxs();
+    const bool grenadeFeet=!m_tInfo.m_pProjectile && m_tInfo.m_pWeapon
+        && m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER
+        && tTarget.m_iTargetType==TargetEnum::Player
+        && (Vars::Aimbot::Projectile::Hitboxes.Value & Vars::Aimbot::Projectile::HitboxesEnum::PrioritizeFeet);
 	for (int i = 0; i < 3; i++)
 	{
 		int iPriority = GetHitboxPriority(i, tTarget, m_tInfo, m_tInfo.m_pProjectile);
 		if (iPriority == -1)
 			continue;
+        if (grenadeFeet) iPriority*=2; // Reserve the next slot for the lower-body fallback.
 
 		switch (i)
 		{
@@ -415,7 +442,17 @@ Directs_t CAimbotProjectile::GetDirects()
 			mDirects[iPriority] = { Vec3(0, 0, (vMins.z + vMaxs.z) / 2), iFlags };
 			break;
 		case BOUNDS_FEET:
-			mDirects[iPriority] = { Vec3(0, 0, vMins.z + Vars::Aimbot::Projectile::VerticalShift.Value), iFlags };
+            if (grenadeFeet)
+            {
+                const auto heights=GrenadeCollisionPolicy::FeetHeights(vMins.z,vMaxs.z,m_tInfo.m_vHull.z,Vars::Aimbot::Projectile::VerticalShift.Value);
+                mDirects[iPriority]={Vec3(0,0,heights[0]),iFlags};
+                if (heights[1]>heights[0]+.01f)
+                    mDirects[iPriority+1]={Vec3(0,0,heights[1]),iFlags};
+                ProjectileDiagnostics::Ledge("grenade_feet_points",std::format("entity={} primary_z={} fallback_z={} hull_z={} height={} priority={}",
+                    tTarget.m_pEntity->entindex(),heights[0],heights[1],m_tInfo.m_vHull.z,vMaxs.z-vMins.z,iPriority));
+            }
+            else
+                mDirects[iPriority] = { Vec3(0, 0, vMins.z + Vars::Aimbot::Projectile::VerticalShift.Value), iFlags };
 			break;
 		}
 	}
@@ -1149,8 +1186,116 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 
 
 
+struct SafetyPlayerHull
+{
+    CTFPlayer* player;
+    Vec3 origin, networkOrigin, mins, maxs;
+};
+
+static std::vector<SafetyPlayerHull> SafetyPlayers(CTFPlayer* local)
+{
+    std::vector<SafetyPlayerHull> result;
+    for(auto entity:H::Entities.GetGroup(EntityEnum::PlayerAll))
+    {
+        auto player=entity->As<CTFPlayer>();
+        if(player==local || !player->IsAlive() || player->IsAGhost() || player->IsDormant()
+            || (!SDK::FriendlyFire() && player->m_iTeamNum()==local->m_iTeamNum())) continue;
+        // Use collision bounds, not a chosen aim hitbox or a distant predicted target position.
+        result.push_back({player,player->GetAbsOrigin(),player->m_vecOrigin(),player->m_vecMins(),player->m_vecMaxs()});
+    }
+    return result;
+}
+
+static bool SafetyPlayerCollision(const Vec3& from,const Vec3& to,const Vec3& hull,
+    const std::vector<SafetyPlayerHull>& players,CGameTrace& trace)
+{
+    if(trace.startsolid || trace.allsolid) return false;
+    const auto xyz=[](const Vec3& v)->RocketSafetyGeometry::V3{return {v.x,v.y,v.z};};
+    bool changed=false;
+    for(const auto& p:players)
+    {
+        for(const auto& origin:{p.origin,p.networkOrigin})
+        {
+            float fraction=1.f; RocketSafetyGeometry::V3 normal={};
+            if(!RocketSafetyGeometry::SegmentBox(xyz(from),xyz(to),xyz(origin+p.mins-hull),xyz(origin+p.maxs+hull),fraction,normal)
+                || fraction>trace.fraction) continue;
+            trace.fraction=fraction; trace.endpos=from+(to-from)*fraction;
+            trace.plane.normal={normal[0],normal[1],normal[2]}; trace.m_pEnt=p.player;
+            changed=true;
+        }
+    }
+    return changed;
+}
+
+static bool WouldSplashLocal(CTFPlayer* local, CTFWeaponBase* weapon, const Vec3& impact, float flightTime, bool diagnosticPriority=false)
+{
+    if (!(Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::PreventSelfDamage) ||
+        Vars::Aimbot::Projectile::SelfDamageProtection.Value<=0 || local->IsInvulnerable())
+        return false;
+    if (weapon->m_iItemDefinitionIndex() == Soldier_m_RocketJumper ||
+        weapon->m_iItemDefinitionIndex() == Demoman_s_StickyJumper)
+        return false;
+    float radius = 0.f;
+    switch (weapon->GetWeaponID())
+    {
+    case TF_WEAPON_ROCKETLAUNCHER:
+    case TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT:
+    case TF_WEAPON_PARTICLE_CANNON:
+        // Attacker blast radius is distinct from reduced enemy splash radius (e.g. Direct Hit).
+        radius = std::max(float(TF_ROCKET_RADIUS),F::AimbotProjectile.GetSplashRadius(weapon, local, 1.f)); break;
+    case TF_WEAPON_GRENADELAUNCHER:
+    case TF_WEAPON_CANNON:
+        radius = SDK::AttribHookValue(TF_ROCKET_RADIUS, "mult_explosion_radius", weapon); break;
+    case TF_WEAPON_FLAREGUN:
+    case TF_WEAPON_FLAREGUN_REVENGE:
+        if (weapon->As<CTFFlareGun>()->GetFlareGunType() == FLAREGUN_SCORCHSHOT)
+            radius = SDK::AttribHookValue(TF_FLARE_DET_RADIUS, "mult_explosion_radius", weapon);
+        break;
+    default: return false; // Sticky/manual detonation has its own existing safety option.
+    }
+    // Bounded, world-colliding local projection. Do not nest another engine movesim
+    // inside target prediction or assume that a straight path can pass through walls.
+    const Vec3 origin = local->GetAbsOrigin();
+    Vec3 predicted = origin, velocity = local->m_vecVelocity();
+    bool grounded = local->IsOnGround();
+    const bool usableHorizon = std::isfinite(flightTime) && flightTime > 0.f && flightTime <= 2.f
+        && std::isfinite(velocity.x) && std::isfinite(velocity.y) && std::isfinite(velocity.z);
+    if (usableHorizon)
+    {
+        const int steps = std::clamp(int(std::ceil(flightTime / TICK_INTERVAL)), 1, 16);
+        const float dt = flightTime / steps;
+        CTraceFilterWorldAndPropsOnly filter; filter.pSkip = local;
+        for (int i=0;i<steps;++i)
+        {
+            if (grounded) velocity.z=0.f;
+            Vec3 displacement = velocity * dt;
+            if (!grounded && !local->IsSwimming())
+            { displacement.z -= SDK::GetGravity()*dt*dt*.5f; velocity.z -= SDK::GetGravity()*dt; }
+            CGameTrace trace = {};
+            SDK::TraceHull(predicted, predicted+displacement, local->m_vecMins(), local->m_vecMaxs(), MASK_PLAYERSOLID, &filter, &trace);
+            if (trace.startsolid || trace.allsolid) { predicted=origin; break; }
+            predicted=trace.endpos;
+            if (trace.DidHit()) break; // Conservative stop; no invented sliding or step-up.
+            if (grounded)
+            {
+                CGameTrace floor = {};
+                SDK::TraceHull(predicted, predicted-Vec3(0,0,2), local->m_vecMins(), local->m_vecMaxs(), MASK_PLAYERSOLID, &filter, &floor);
+                grounded = floor.DidHit() && floor.plane.normal.z >= .707f;
+            }
+        }
+    }
+    // Never assume future movement alone will rescue a face-range shot.
+    float damage=std::max(SelfDamage::Estimate(local,weapon,impact,origin,radius,diagnosticPriority),
+        SelfDamage::Estimate(local,weapon,impact,predicted,radius,diagnosticPriority));
+    const bool blocked=SelfDamage::Block(local,damage);
+    if(SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("splash_decision",std::format("final_guard={} blocked={} damage={} protection={} hp={} maxhp={} flight={} projection_valid={} current={},{},{} predicted={},{},{}",diagnosticPriority,blocked,damage,Vars::Aimbot::Projectile::SelfDamageProtection.Value,local->m_iHealth(),local->GetMaxHealth(),flightTime,usableHorizon,origin.x,origin.y,origin.z,predicted.x,predicted.y,predicted.z),!diagnosticPriority);
+    return blocked;
+}
+
 bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int iSimTime, uint8_t iType, uint8_t iFlags, bool bSecondTest)
 {
+    ProjectileDiagnostics::Add(ProjectileDiagnostics::Tests);
+    if(iSimTime<=0) ProjectileDiagnostics::Add(ProjectileDiagnostics::NoTicks);
 #ifdef NIKOGRAM_PRIVATE_LEARNING
     m_DiagnosticScratch.clear();m_DiagnosticScratchCount=0;
     m_DiagnosticRecording=!bSecondTest&&PrivateLearning::EngineReplayWanted(&m_tMoveStorage);
@@ -1160,6 +1305,18 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 	auto& tTarget = *m_tInfo.m_pTarget;
 
 	int iSimFlags = ProjSimEnum::Redirect | ProjSimEnum::InitCheck | ProjSimEnum::PredictCmdNum | (Vars::Aimbot::General::NoSpread.Value ? ProjSimEnum::CorrectRandomAngles : ProjSimEnum::NoRandomAngles);
+    auto* capture=ProjectileDiagnostics::current;
+    const int grenadeTest=capture && pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER ? ++capture->grenades[m_bPreviewOnly?1:0] : 0;
+    const bool logGrenade=grenadeTest>0 && grenadeTest<=(m_bPreviewOnly?2:6);
+    int grenadeComparisons=0;
+    const int reviewWeapon=pWeapon->GetWeaponID();
+    const bool reviewSupported=reviewWeapon==TF_WEAPON_CROSSBOW || reviewWeapon==TF_WEAPON_COMPOUND_BOW
+        || reviewWeapon==TF_WEAPON_FLAREGUN || reviewWeapon==TF_WEAPON_FLAREGUN_REVENGE;
+    const bool logReview=capture && reviewSupported && !m_bPreviewOnly
+        && iType==PointTypeEnum::Direct && tTarget.m_pEntity->IsPlayer() && capture->weaponReviews++<3;
+    int reviewComparisons=0;
+    int grenadeSteps=0,grenadeCollisionStep=-1;
+    const char* grenadeReason="no_valid_intercept";
 #ifdef SPLASH_DEBUG5
 	if (Vars::Visuals::Trajectory::Override.Value)
 	{
@@ -1189,7 +1346,17 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 	m_tProjInfo = {};
 	if (!F::ProjSim.GetInfo(pLocal, pWeapon, vAngles, m_tProjInfo, iSimFlags)
 		|| !F::ProjSim.Initialize(m_tProjInfo))
+	{
+        ProjectileDiagnostics::Add(ProjectileDiagnostics::SetupFailed);
+        if(logGrenade) ProjectileDiagnostics::Ledge("grenade_setup_failed",std::format("test={} entity={} type={} flags={} expected_ticks={}",grenadeTest,tTarget.m_pEntity->entindex(),iType,iFlags,iSimTime));
 		return false;
+	}
+
+    if(logGrenade) {
+        const auto velocity=F::ProjSim.GetVelocity();
+        const auto mins=tTarget.m_pEntity->m_vecMins(),maxs=tTarget.m_pEntity->m_vecMaxs();
+        ProjectileDiagnostics::Ledge("grenade_launch",std::format("test={} entity={} item={} type={} flags={} second_test={} expected_ticks={} latency={} nospread={} physics={} angle={},{},{} launch_angle={},{},{} muzzle={},{},{} velocity={},{},{} speed={} gravity={} lifetime={} hull={},{},{} aim_point={},{},{} target_origin={},{},{} target_mins={},{},{} target_maxs={},{},{}",grenadeTest,tTarget.m_pEntity->entindex(),pWeapon->m_iItemDefinitionIndex(),iType,iFlags,bSecondTest,iSimTime,m_tInfo.m_flLatency,Vars::Aimbot::General::NoSpread.Value,F::ProjSim.m_bPhysics,vAngles.x,vAngles.y,vAngles.z,m_tProjInfo.m_vAng.x,m_tProjInfo.m_vAng.y,m_tProjInfo.m_vAng.z,m_tProjInfo.m_vPos.x,m_tProjInfo.m_vPos.y,m_tProjInfo.m_vPos.z,velocity.x,velocity.y,velocity.z,m_tProjInfo.m_flVelocity,m_tProjInfo.m_flGravity,m_tProjInfo.m_flLifetime,m_tProjInfo.m_vHull.x,m_tProjInfo.m_vHull.y,m_tProjInfo.m_vHull.z,vPoint.x,vPoint.y,vPoint.z,tTarget.m_vPos.x,tTarget.m_vPos.y,tTarget.m_vPos.z,mins.x,mins.y,mins.z,maxs.x,maxs.y,maxs.z));
+    }
 
 	CGameTrace trace = {};
 	CTraceFilterCollideable filter = {};
@@ -1230,7 +1397,11 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 		G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(m_tProjInfo.m_vPos, trace.endpos), I::GlobalVars->curtime + 5.f, Color_t(0, 0, 0));
 #endif
 		if (Math::FullFraction(m_tProjInfo.m_vPos, vPoint, trace) < 0.999f && trace.m_pEnt != tTarget.m_pEntity)
+		{
+            ProjectileDiagnostics::Add(ProjectileDiagnostics::Obstructed);
+            ProjectileDiagnostics::Trace("pretrace_rejected",trace,tTarget.m_pEntity->entindex(),iType,0,iSimTime,0);
 			return false;
+		}
 	}
 
 #ifdef SPLASH_DEBUG4
@@ -1253,8 +1424,32 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 	tTarget.m_pEntity->SetAbsOrigin(tTarget.m_vPos);
 	tTarget.m_pEntity->m_vecMins() = { std::clamp(tTarget.m_pEntity->m_vecMins().x, -24.f, 0.f), std::clamp(tTarget.m_pEntity->m_vecMins().y, -24.f, 0.f), tTarget.m_pEntity->m_vecMins().z };
 	tTarget.m_pEntity->m_vecMaxs() = { std::clamp(tTarget.m_pEntity->m_vecMaxs().x, 0.f, 24.f), std::clamp(tTarget.m_pEntity->m_vecMaxs().y, 0.f, 24.f), tTarget.m_pEntity->m_vecMaxs().z };
+    // Predicted entities may not be enumerated by the world's spatial lookup.
+    // Clip explicitly, but only replace a later world hit, never a nearer blocker.
+    const bool clipGrenadeTarget=pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER
+        && iType==PointTypeEnum::Direct && tTarget.m_pEntity->IsPlayer();
+    auto mergeGrenadeTarget=[&](const Vec3& from,const Vec3& to,CGameTrace& world,int step,bool retest)
+    {
+        if (!clipGrenadeTarget || world.m_pEnt==tTarget.m_pEntity) return;
+        auto targetFilter=filter;
+        const bool allowed=targetFilter.ShouldHitEntity(tTarget.m_pEntity,nMask);
+        if (!allowed) return;
+        Ray_t ray; ray.Init(from,to,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull);
+        CGameTrace targetTrace={};
+        I::EngineTrace->ClipRayToEntity(ray,nMask,tTarget.m_pEntity,&targetTrace);
+        const bool replace=GrenadeCollisionPolicy::PreferTarget(allowed,
+            targetTrace.DidHit() && targetTrace.m_pEnt==tTarget.m_pEntity,targetTrace.fraction,
+            world.DidHit(),world.fraction,world.startsolid,world.allsolid);
+        if (logGrenade && targetTrace.DidHit())
+            ProjectileDiagnostics::Ledge("grenade_target_merge",std::format(
+                "test={} step={} retest={} target={} recovered={} world_entity={} world_fraction={} world_startsolid={} world_allsolid={} target_fraction={} target_startsolid={}",
+                grenadeTest,step,retest,tTarget.m_pEntity->entindex(),replace,world.m_pEnt?world.m_pEnt->entindex():-1,
+                world.fraction,world.startsolid,world.allsolid,targetTrace.fraction,targetTrace.startsolid));
+        if (replace) world=targetTrace;
+    };
 	for (int n = 1; n <= iSimTime; n++)
 	{
+        grenadeSteps=n;
 		F::ProjSim.RunTick(m_tProjInfo);
 
 		if (bDidHit)
@@ -1271,6 +1466,55 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
         CGameTrace diagnosticVisibility={};bool diagnosticHasVisibility=false;
 #endif
 		SDK::TraceHull(vOld, vNew, -m_tProjInfo.m_vHull, m_tProjInfo.m_vHull, nMask, &filter, &trace);
+        if(logReview && reviewComparisons<2 && (trace.DidHit() || n==iSimTime
+            || (reviewComparisons==0 && vNew.DistTo(vPoint)<32.f))) {
+            ++reviewComparisons;
+            Ray_t ray; ray.Init(vOld,vNew,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull);
+            CGameTrace clipped={};
+            I::EngineTrace->ClipRayToEntity(ray,nMask,tTarget.m_pEntity,&clipped);
+            auto checkFilter=filter;
+            const bool allowed=checkFilter.ShouldHitEntity(tTarget.m_pEntity,nMask);
+            const bool recoverable=GrenadeCollisionPolicy::PreferTarget(allowed,
+                clipped.DidHit() && clipped.m_pEnt==tTarget.m_pEntity,clipped.fraction,
+                trace.DidHit(),trace.fraction,trace.startsolid,trace.allsolid);
+            ProjectileDiagnostics::Ledge("weapon_collision_compare",std::format(
+                "weapon={} item={} target={} step={} expected={} local_team={} target_team={} filter_allowed={} live_entity={} live_fraction={} live_startsolid={} live_allsolid={} clip_entity={} clip_fraction={} clip_startsolid={} clip_allsolid={} recoverable={} speed={} gravity={} hull={},{},{} from={},{},{} to={},{},{} charge_begin={} note=read_only_not_hit_or_headshot_confirmation",
+                reviewWeapon,pWeapon->m_iItemDefinitionIndex(),tTarget.m_pEntity->entindex(),n,iSimTime,
+                pLocal->m_iTeamNum(),tTarget.m_pEntity->m_iTeamNum(),allowed,
+                trace.m_pEnt?trace.m_pEnt->entindex():-1,trace.fraction,trace.startsolid,trace.allsolid,
+                clipped.m_pEnt?clipped.m_pEnt->entindex():-1,clipped.fraction,clipped.startsolid,clipped.allsolid,
+                recoverable && trace.m_pEnt!=tTarget.m_pEntity,m_tProjInfo.m_flVelocity,m_tProjInfo.m_flGravity,
+                m_tProjInfo.m_vHull.x,m_tProjInfo.m_vHull.y,m_tProjInfo.m_vHull.z,
+                vOld.x,vOld.y,vOld.z,vNew.x,vNew.y,vNew.z,
+                reviewWeapon==TF_WEAPON_COMPOUND_BOW?pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime():0.f));
+        }
+        // Read-only comparison: never substitute these results for the live trace.
+        if (logGrenade && !m_bPreviewOnly && iType == PointTypeEnum::Direct
+            && tTarget.m_pEntity->IsPlayer() && grenadeComparisons < 2
+            && (trace.DidHit() || n == iSimTime || (grenadeComparisons == 0 && vNew.DistTo(vPoint) < 32.f)))
+        {
+            ++grenadeComparisons;
+            const int teamMask=nMask | CONTENTS_REDTEAM | CONTENTS_BLUETEAM;
+            Ray_t ray; ray.Init(vOld,vNew,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull);
+            CGameTrace clipped={},clippedTeams={},worldTeams={};
+            I::EngineTrace->ClipRayToEntity(ray,nMask,tTarget.m_pEntity,&clipped);
+            I::EngineTrace->ClipRayToEntity(ray,teamMask,tTarget.m_pEntity,&clippedTeams);
+            auto teamFilter=filter;
+            SDK::TraceHull(vOld,vNew,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull,teamMask,&teamFilter,&worldTeams);
+            auto checkFilter=filter;
+            const bool allowed=checkFilter.ShouldHitEntity(tTarget.m_pEntity,nMask);
+            const auto origin=tTarget.m_pEntity->GetAbsOrigin();
+            const auto mins=tTarget.m_pEntity->m_vecMins(),maxs=tTarget.m_pEntity->m_vecMaxs();
+            ProjectileDiagnostics::Ledge("grenade_collision_compare",std::format(
+                "test={} step={} target={} local_team={} target_team={} filter_allowed={} mask={} team_mask={} live_entity={} live_fraction={} clip_hit={} clip_entity={} clip_fraction={} clip_solid={} team_clip_hit={} team_clip_entity={} team_clip_fraction={} team_clip_solid={} team_world_entity={} team_world_fraction={} team_world_solid={} origin={},{},{} mins={},{},{} maxs={},{},{} from={},{},{} to={},{},{}",
+                grenadeTest,n,tTarget.m_pEntity->entindex(),pLocal->m_iTeamNum(),tTarget.m_pEntity->m_iTeamNum(),allowed,nMask,teamMask,
+                trace.m_pEnt?trace.m_pEnt->entindex():-1,trace.fraction,
+                clipped.DidHit(),clipped.m_pEnt?clipped.m_pEnt->entindex():-1,clipped.fraction,clipped.startsolid,
+                clippedTeams.DidHit(),clippedTeams.m_pEnt?clippedTeams.m_pEnt->entindex():-1,clippedTeams.fraction,clippedTeams.startsolid,
+                worldTeams.m_pEnt?worldTeams.m_pEnt->entindex():-1,worldTeams.fraction,worldTeams.startsolid,
+                origin.x,origin.y,origin.z,mins.x,mins.y,mins.z,maxs.x,maxs.y,maxs.z,vOld.x,vOld.y,vOld.z,vNew.x,vNew.y,vNew.z));
+        }
+        mergeGrenadeTarget(vOld,vNew,trace,n,false);
 #ifdef NIKOGRAM_PRIVATE_LEARNING
         RecordDiagnosticQuery(vOld,vNew,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull,nMask,filter,trace,1,true);
 #endif
@@ -1293,6 +1537,11 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 
 		if (bHit)
 		{
+            if(logGrenade && grenadeCollisionStep<0) {
+                grenadeCollisionStep=n;
+                ProjectileDiagnostics::Ledge("grenade_first_collision",std::format("test={} target={} hit_entity={} type={} step={} expected={} tolerance={} trace_interval={} mask={} fraction={} startsolid={} allsolid={} normal={},{},{} from={},{},{} to={},{},{} impact={},{},{} distance_to_aim={}",grenadeTest,tTarget.m_pEntity->entindex(),trace.m_pEnt?trace.m_pEnt->entindex():-1,iType,n,iSimTime,iTimingTolerance,iTraceInterval,nMask,trace.fraction,trace.startsolid,trace.allsolid,trace.plane.normal.x,trace.plane.normal.y,trace.plane.normal.z,vOld.x,vOld.y,vOld.z,vNew.x,vNew.y,vNew.z,trace.endpos.x,trace.endpos.y,trace.endpos.z,trace.endpos.DistTo(vPoint)));
+            }
+            ProjectileDiagnostics::Trace("terminal",trace,tTarget.m_pEntity->entindex(),iType,n,iSimTime,iTimingTolerance);
 			bool bValid = false, bTarget = true;
 			switch (iType)
 			{
@@ -1303,6 +1552,7 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 			case PointTypeEnum::Air:
 				bValid = !trace.DidHit(); break;
 			}
+            if(!bValid) grenadeReason=iType==PointTypeEnum::Direct ? (!bTarget?"direct_hit_wrong_entity":"direct_hit_timing") : "impact_outside_candidate";
 
 			if (bValid && iType != PointTypeEnum::Direct)
 			{
@@ -1312,6 +1562,8 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
                 RecordDiagnosticQuery(trace.endpos+trace.plane.normal*m_tInfo.m_flNormalOffset,tTarget.m_vPos+m_tInfo.m_vTargetEye,{},{},MASK_SHOT,filter,trace2,2,false);
 #endif
 				bValid = trace2.fraction == 1.f;
+                if(!bValid) ProjectileDiagnostics::Add(ProjectileDiagnostics::VisibilityFailed);
+                if(!bValid) grenadeReason="splash_visibility";
 #ifdef NIKOGRAM_PRIVATE_LEARNING
                 diagnosticVisibility=trace2;diagnosticHasVisibility=true;
 #endif
@@ -1343,6 +1595,7 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 				{
 					vOld = m_tProjInfo.m_vPath[i - 1], vNew = m_tProjInfo.m_vPath[i];
 					SDK::TraceHull(vOld, vNew, -m_tProjInfo.m_vHull, m_tProjInfo.m_vHull, nMask, &filter, &trace2);
+                    mergeGrenadeTarget(vOld,vNew,trace2,i,true);
 #ifdef NIKOGRAM_PRIVATE_LEARNING
                     RecordDiagnosticQuery(vOld,vNew,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull,nMask,filter,trace2,3,true);
 #endif
@@ -1371,36 +1624,47 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 						m_tProjInfo.m_vPath.pop_back();
 				}
 
-				// attempted to have a headshot check though this seems more detrimental than useful outside of smooth aimbot
-				if (tTarget.m_nAimedHitbox == HITBOX_HEAD && !bSecondTest &&
-					(Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Smooth
-					|| Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Assistive))
+				const bool headGate=Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Smooth
+                    || Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Assistive;
+                const bool logHead=reviewWeapon==TF_WEAPON_COMPOUND_BOW && capture && capture->headReviews<3;
+				if (tTarget.m_nAimedHitbox == HITBOX_HEAD && !bSecondTest && (headGate || logHead))
 				{	// loop and see if closest hitbox is head
 					auto aBones = F::Backtrack.GetBones(tTarget.m_pEntity);
-					if (!aBones)
-						break;
-
 					auto pSet = tTarget.m_pEntity->As<CTFPlayer>()->GetHitboxSet();
-					if (!pSet)
-						break;
+                    if(!aBones || !pSet) {
+                        if(logHead) { ++capture->headReviews; ProjectileDiagnostics::Ledge("huntsman_head_check",std::format("target={} available=false gate={} reason=missing_bones_or_hitboxes",tTarget.m_pEntity->entindex(),headGate)); }
+                        if(headGate) break;
+                    }
+                    else {
 
 					Vec3 vOffset = tOriginal.m_vOrigin - tTarget.m_vPos;
 					Vec3 vPos = trace.endpos + F::ProjSim.GetVelocity().Normalized() * 16 + vOffset;
 
 					float flLowestDistance = std::numeric_limits<float>::max(); int iClosest = -1;
+                    float oldDistance=std::numeric_limits<float>::max(); int oldClosest=-1;
 					for (int nHitbox = 0; nHitbox < pSet->numhitboxes; ++nHitbox)
 					{
 						auto pBox = pSet->pHitbox(nHitbox);
 						if (!pBox) continue;
 
-						Vec3 vCenter; Math::VectorTransform({}, aBones[pBox->bone], vCenter);
+                        Vec3 boneOrigin; Math::VectorTransform({},aBones[pBox->bone],boneOrigin);
+                        const float boneDistance=vPos.DistToSqr(boneOrigin);
+                        if(boneDistance<oldDistance) {oldDistance=boneDistance;oldClosest=nHitbox;}
+                        const Vec3 localCenter={BowChargePolicy::Center(pBox->bbmin.x,pBox->bbmax.x),
+                            BowChargePolicy::Center(pBox->bbmin.y,pBox->bbmax.y),BowChargePolicy::Center(pBox->bbmin.z,pBox->bbmax.z)};
+						Vec3 vCenter; Math::VectorTransform(localCenter, aBones[pBox->bone], vCenter);
 
 						const float flDistance = vPos.DistToSqr(vCenter);
 						if (flDistance < flLowestDistance)
 							iClosest = nHitbox, flLowestDistance = flDistance;
 					}
-					if (iClosest != HITBOX_HEAD)
+                    if(logHead) {
+                        ++capture->headReviews;
+                        ProjectileDiagnostics::Ledge("huntsman_head_check",std::format("target={} available=true gate={} closest_center={} closest_bone={} head={} center_distance={} bone_distance={} step={} charge_begin={} note=nearest_center_heuristic_not_server_headshot",tTarget.m_pEntity->entindex(),headGate,iClosest,oldClosest,int(HITBOX_HEAD),std::sqrt(flLowestDistance),std::sqrt(oldDistance),n,pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime()));
+                    }
+					if (headGate && iClosest != HITBOX_HEAD)
 						break;
+                    }
 				}
 
 #ifdef NIKOGRAM_PRIVATE_LEARNING
@@ -1435,6 +1699,14 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
                     PrivateLearning::EngineCollisionResult(&m_tMoveStorage,result);
                 }
 #endif
+				// Keep this separate from hit feasibility; disabled means no self-damage restriction.
+				if (!m_bPreviewOnly && WouldSplashLocal(pLocal, pWeapon, trace.endpos + trace.plane.normal * .5f,
+					TICKS_TO_TIME(n) + m_tInfo.m_flLatency))
+				{
+                    ProjectileDiagnostics::Add(ProjectileDiagnostics::SafetyRejected);
+                    grenadeReason="self_damage";
+					break;
+				}
 				bDidHit = true;
 			}
 			else if (bTarget && iType == PointTypeEnum::Direct && m_tInfo.m_iArmTime)
@@ -1461,7 +1733,28 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 	tTarget.m_pEntity->m_vecMaxs() = tOriginal.m_vMaxs;
 	m_tProjInfo.m_vPath.push_back(trace.endpos);
 
+    ProjectileDiagnostics::Add(bDidHit ? ProjectileDiagnostics::Hit : ProjectileDiagnostics::Miss);
+    if(logGrenade) {
+        const auto end=F::ProjSim.GetOrigin();
+        ProjectileDiagnostics::Ledge("grenade_result",std::format("test={} entity={} hit={} reason={} steps={} first_collision_step={} expected_ticks={} final_origin={},{},{} distance_to_aim={}",grenadeTest,tTarget.m_pEntity->entindex(),bDidHit,bDidHit?"accepted":grenadeReason,grenadeSteps,grenadeCollisionStep,iSimTime,end.x,end.y,end.z,end.DistTo(vPoint)));
+    }
 	return bDidHit;
+}
+
+bool CAimbotProjectile::CandidateAngleAllowed(const Vec3& angle,const Vec3& point,const Vec3& origin)
+{
+    if(m_tInfo.m_pProjectile) return true; // Do not change auto-airblast behavior.
+    if(!std::isfinite(angle.x)||!std::isfinite(angle.y)||!std::isfinite(angle.z)) return false;
+    if(F::AimbotGlobal.ShouldAimAtAngle(angle)) return true;
+    if(!m_bAdaptivePass || m_tInfo.m_pProjectile) return false;
+    const Vec3 relative=point-origin;
+    const Vec3 nearest={std::clamp(relative.x,m_vAdaptiveMins.x,m_vAdaptiveMaxs.x),std::clamp(relative.y,m_vAdaptiveMins.y,m_vAdaptiveMaxs.y),std::clamp(relative.z,m_vAdaptiveMins.z,m_vAdaptiveMaxs.z)};
+    const float shotFov=Math::CalcFov(I::EngineClient->GetViewAngles(),angle);
+    const char* reason=LeadRestrictPolicy::Exception(m_flAdaptiveTargetFov,shotFov,Vars::Aimbot::General::AimFOV.Value,m_flAdaptiveDistance,relative.DistTo(nearest),m_bAdaptiveRetained);
+    // At most a few detailed reasons per sampled command, not per simulation tick.
+    if(ProjectileDiagnostics::current && ProjectileDiagnostics::current->angles++<4)
+        SelfDamageDiagnostics::Write("lead_restrict",std::format("cmd={} reason={} target_fov={} shot_fov={} limit={} distance={}",ProjectileDiagnostics::current->command,reason,m_flAdaptiveTargetFov,shotFov,Vars::Aimbot::General::AimFOV.Value,m_flAdaptiveDistance));
+    return std::string_view(reason)=="close_range_exception";
 }
 
 bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flPitch, float flYaw, float flTime, const Vec3& vPoint, uint8_t iType, uint8_t iFlags)
@@ -1469,6 +1762,15 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
 	bool bReturn = false;
 
 	Vec3 vAngles; Aim(G::CurrentUserCmd->viewangles, { flPitch, flYaw, 0.f }, vAngles);
+    if(auto* capture=ProjectileDiagnostics::current;capture && !m_tInfo.m_pProjectile && m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER && capture->points[m_bPreviewOnly?1:0]++<(m_bPreviewOnly?2:6))
+        ProjectileDiagnostics::Ledge("grenade_candidate",std::format("entity={} type={} flags={} flight={} sim_ticks={} latency={} calculated_angle={},{} applied_angle={},{},{} point={},{},{} predicted_target={},{},{}",m_tInfo.m_pTarget->m_pEntity->entindex(),iType,iFlags,flTime,iSimTime,m_tInfo.m_flLatency,flPitch,flYaw,vAngles.x,vAngles.y,vAngles.z,vPoint.x,vPoint.y,vPoint.z,vOrigin.x,vOrigin.y,vOrigin.z));
+    // Reject this candidate before it can replace the chosen solution or stop
+    // the search. Collision and self-damage validation still follow normally.
+    if(!CandidateAngleAllowed(vAngles,vPoint,vOrigin))
+    {
+        ProjectileDiagnostics::Add(ProjectileDiagnostics::AngleRejected);
+        return false;
+    }
 	m_tInfo.m_pTarget->m_vPos = vOrigin;
 
 	int iOriginalSimTime = iSimTime;
@@ -1506,7 +1808,30 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
 
 	if (bReturn && m_bUpdate)
 	{
+        if(!m_bPreviewOnly) m_iObservationEntity=-1; // Splash or a later candidate must not reuse a direct sample.
 		m_vAngleTo = vAngles, m_vTarget = vPoint, m_vPredicted = vOrigin;
+        const auto& tTarget=*m_tInfo.m_pTarget;
+        if (m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER && tTarget.m_pEntity->IsPlayer())
+        {
+            const auto actual=m_tMoveStorage.m_vDiagnosticStartOrigin;
+            const auto velocity=m_tMoveStorage.m_vDiagnosticStartVelocity;
+            const auto direct=Math::CalcAngle(m_tInfo.m_vLocalEye,actual+m_tInfo.m_vTargetEye);
+            if(ProjectileDiagnostics::current && m_tMoveStorage.m_CounterStrafe.valid) {
+                const auto& c=m_tMoveStorage.m_CounterStrafe;
+                const float start=actual.x*c.ax+actual.y*c.ay;
+                const float projected=vOrigin.x*c.ax+vOrigin.y*c.ay;
+                const float lateral=velocity.x*c.ax+velocity.y*c.ay;
+                const float elapsed=m_tMoveStorage.m_flCounterTime;
+                const float driftOffset=CounterStrafe::DriftOffset(c,elapsed);
+                ProjectileDiagnostics::Ledge("counter_selected_decomposition",std::format("entity={} flight={} counter_elapsed={} start_lateral={} initial_velocity={} selected_offset={} center_offset={} drift_offset={} projected_center_offset={} residual_to_projected_center={} opposite_current_velocity={} confidence={} note=geometric_breakdown_not_causal_attribution",tTarget.m_pEntity->entindex(),flTime,elapsed,start,lateral,projected-start,c.center-start,driftOffset,c.center+driftOffset-start,projected-(c.center+driftOffset),std::fabs(lateral)>5.f && (projected-start)*lateral<0.f,c.confidence));
+            }
+            ProjectileDiagnostics::Ledge("grenade_selected_prediction",std::format(
+                "entity={} result={} flight={} ticks={} target_grounded={} counter={} yaw_per_tick={} actual={},{},{} predicted={},{},{} displacement={} velocity={},{},{} direct_angle={},{} selected_angle={},{} yaw_delta={}",
+                tTarget.m_pEntity->entindex(),m_iResult,flTime,iSimTime,m_tMoveStorage.m_bDiagnosticStartGrounded,
+                m_tMoveStorage.m_CounterStrafe.valid,m_tMoveStorage.m_flAverageYaw,actual.x,actual.y,actual.z,
+                vOrigin.x,vOrigin.y,vOrigin.z,actual.DistTo(vOrigin),velocity.x,velocity.y,velocity.z,direct.x,direct.y,
+                vAngles.x,vAngles.y,std::remainder(vAngles.y-direct.y,360.f)));
+        }
 		m_vPlayerPath.clear(), m_vProjectilePath = m_tProjInfo.m_vPath;
 		if (m_tMoveStorage.m_vPath.empty())
 			return true;
@@ -1622,6 +1947,14 @@ bool CAimbotProjectile::HandleDirect(DirectHistory_t& mDirectHistory, size_t* di
 		if (diagnosticTests) ++*diagnosticTests;
 		if (HandlePoint(tHistory.m_vOrigin, tHistory.m_iSimtime, tHistory.m_flPitch, tHistory.m_flYaw, tHistory.m_flTime, tHistory.m_vPoint, PointTypeEnum::Direct, iType))
 		{
+            if(!m_bPreviewOnly && m_iResult==1 && !m_tMoveStorage.m_bFailed) {
+                m_flObservationTime=tHistory.m_flObservationTime;
+                m_flObservationFlight=tHistory.m_flTime;
+                m_bObservationGround=tHistory.m_bObservationGround;
+                m_bObservationStartGround=m_tMoveStorage.m_bDiagnosticStartGrounded;
+                m_iObservationEntity=m_tInfo.m_pTarget->m_pEntity->entindex();
+                m_nObservationHandle=m_tInfo.m_pTarget->m_pEntity->GetRefEHandle().ToInt();
+            }
 #ifdef NIKOGRAM_PRIVATE_LEARNING
             SnapshotSelectedPath(tHistory,tHistory.m_flTime,PointTypeEnum::Direct,iType,tHistory.m_vPoint);
             // Read-only preflight. Do NOT call CalculateAngle/TestAngle again:
@@ -1711,6 +2044,42 @@ bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
 
 int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate)
 {
+    const auto original=tTarget;
+    const auto position=tTarget.m_pEntity->GetAbsOrigin();
+    m_vAdaptiveMins=tTarget.m_pEntity->m_vecMins();
+    m_vAdaptiveMaxs=tTarget.m_pEntity->m_vecMaxs();
+    m_flAdaptiveDistance=position.DistTo(pLocal->GetAbsOrigin());
+    m_flAdaptiveTargetFov=Math::CalcFov(I::EngineClient->GetViewAngles(),Math::CalcAngle(pLocal->GetShootPos(),position+(m_vAdaptiveMins+m_vAdaptiveMaxs)*.5f));
+    const int tick=I::GlobalVars->tickcount;
+    m_bAdaptiveRetained=m_iAdaptiveEntity==tTarget.m_pEntity->entindex() && tick>=m_iAdaptiveTick && tick-m_iAdaptiveTick<=TIME_TO_TICKS(.25f);
+    m_bAdaptivePass=false;
+    int result=CanHitPass(tTarget,pLocal,pWeapon,bUpdate);
+    if(result || Vars::Aimbot::General::LeadAndRestrict.Value!=Vars::Aimbot::General::LeadAndRestrictEnum::Adaptive || tTarget.m_iTargetType!=TargetEnum::Player)
+    {
+        if(result) ProjectileDiagnostics::Stage(Vars::Aimbot::General::LeadAndRestrict.Value?"strict_solution":"unrestricted_solution",result);
+        return result;
+    }
+    // No strict solution: retry only for a nearby target already inside the
+    // user's cone. Every candidate must still pass the bounded angle policy.
+    if(!(m_flAdaptiveTargetFov<Vars::Aimbot::General::AimFOV.Value) || m_flAdaptiveDistance>(m_bAdaptiveRetained?128.f:112.f)) return result;
+    tTarget=original;
+    m_bAdaptivePass=true;
+    ProjectileDiagnostics::Stage("adaptive_search");
+    result=CanHitPass(tTarget,pLocal,pWeapon,bUpdate);
+    m_bAdaptivePass=false;
+    if(result==1 && bUpdate && !m_bPreviewOnly)
+    {
+        m_iAdaptiveEntity=tTarget.m_pEntity->entindex(); m_iAdaptiveTick=tick;
+        ProjectileDiagnostics::Stage("adaptive_solution");
+    }
+    return result;
+}
+
+int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate)
+{
+    ProjectileDiagnostics::Candidate diagnostic(tTarget.m_pEntity,pLocal,pWeapon);
+    diagnostic.preview=m_bPreviewOnly; diagnostic.adaptive=m_bAdaptivePass;
+    if(ProjectileDiagnostics::current) {ProjectileDiagnostics::current->preview=m_bPreviewOnly;ProjectileDiagnostics::current->adaptive=m_bAdaptivePass;}
 #ifdef NIKOGRAM_PRIVATE_LEARNING
     m_DiagnosticSelected.clear();m_DiagnosticSelectedCount=0;m_DiagnosticSelectedSupported=false;
 #endif
@@ -1721,6 +2090,7 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 	m_tMoveStorage = {};
 	if (!F::MoveSim.Initialize(tTarget.m_pEntity, m_tMoveStorage) && tTarget.m_iTargetType == TargetEnum::Player)
 	{
+        diagnostic.reason="movement_setup_failed";
 		F::MoveSim.Restore(m_tMoveStorage);
 		return false;
 	}
@@ -1729,6 +2099,7 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 	if (!F::ProjSim.GetInfo(pLocal, pWeapon, {}, m_tProjInfo, ProjSimEnum::NoRandomAngles | ProjSimEnum::PredictCmdNum)
 		|| !F::ProjSim.Initialize(m_tProjInfo, false))
 	{
+        diagnostic.reason="projectile_setup_failed";
 		F::MoveSim.Restore(m_tMoveStorage);
 		return false;
 	}
@@ -1743,6 +2114,7 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 	m_tInfo.m_flVelocity = vVelocity.Length();
 	if (!m_tInfo.m_flVelocity)
 	{
+        diagnostic.reason="zero_projectile_speed";
 		F::MoveSim.Restore(m_tMoveStorage);
 		return false;
 	}
@@ -1783,7 +2155,8 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 			F::MoveSim.RunTick(m_tMoveStorage);
 			tTarget.m_vPos = m_tMoveStorage.m_vPredictedOrigin;
 		}
-		if (i < 0)
+		// A zero-tick solution consumed the point without ever running a collision trace.
+		if (!TargetPolicy::HasFlightTick(i))
 			continue;
 
 		for (auto it = mDirects.begin(); it != mDirects.end();)
@@ -1823,6 +2196,8 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 			{
 			case CalculateResultEnum::Good:
 				mDirectHistory[iType].emplace_back(History_t(tTarget.m_vPos, i), tSolution.m_flPitch, tSolution.m_flYaw, tSolution.m_flTime, vPoint, iIndex);
+                mDirectHistory[iType].back().m_flObservationTime=m_tMoveStorage.m_flDiagnosticNetworkOriginTime;
+                mDirectHistory[iType].back().m_bObservationGround=m_tMoveStorage.m_pPlayer && m_tMoveStorage.m_pPlayer->IsOnGround();
 #ifdef NIKOGRAM_PRIVATE_LEARNING
                 {auto& history=mDirectHistory[iType].back();history.m_flDiagnosticSim=m_tMoveStorage.m_flSimTime;history.m_flDiagnosticNetworkSim=m_tMoveStorage.m_flDiagnosticNetworkOriginTime;
                 history.m_bDiagnosticGround=!m_tMoveStorage.m_bFailed&&m_tMoveStorage.m_pPlayer&&m_tMoveStorage.m_pPlayer->IsOnGround()&&!m_tMoveStorage.m_pPlayer->IsSwimming();}
@@ -1911,8 +2286,13 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
     PrivateLearning::EnginePathAudit(&m_tMoveStorage,diagnosticGenerated,diagnosticTests,diagnosticSplash,diagnosticMin,diagnosticMax);
 #endif
 	F::MoveSim.Restore(m_tMoveStorage);
-	if (!F::AimbotGlobal.ShouldAimAtAngle(m_vAngleTo))
+	if (m_iResult && bUpdate && !CandidateAngleAllowed(m_vAngleTo,m_vTarget,m_vPredicted))
+	{
+        diagnostic.reason="angle_rejected";
 		return false;
+	}
+    diagnostic.result=m_iResult;
+    diagnostic.reason=m_iResult==1?"solution":m_iResult==2?"aim_only":"no_solution";
 #ifdef NIKOGRAM_PRIVATE_LEARNING
     if(m_iResult==1)ReplayFinalPath();
 #endif
@@ -2134,7 +2514,10 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 		pCmd->buttons |= IN_ATTACK;
 	if (!Vars::Aimbot::General::AimType.Value
 		|| !F::AimbotGlobal.ShouldAim() && nWeaponID != TF_WEAPON_FLAMETHROWER)
+	{
+        ProjectileDiagnostics::Stage("aim_gate");
 		return false;
+	}
 
 	if (Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon && iRealAimType
 		&& (nWeaponID == TF_WEAPON_COMPOUND_BOW || nWeaponID == TF_WEAPON_PIPEBOMBLAUNCHER || nWeaponID == TF_WEAPON_CANNON && G::LastUserCmd->buttons & IN_ATTACK))
@@ -2145,11 +2528,9 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 	}
 
 	auto vTargets = F::AimbotGlobal.ManageTargets(GetTargets, pLocal, pWeapon);
+    ProjectileDiagnostics::Stage("eligible_targets",int(vTargets.size()));
 	if (vTargets.empty())
 		return false;
-
-	if (!G::AimTarget.m_iEntIndex)
-		G::AimTarget = { vTargets.front().m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 
 #if defined(SPLASH_DEBUG1) || defined(SPLASH_DEBUG2) || defined(SPLASH_DEBUG4)
 	G::LineStorage.clear();
@@ -2163,8 +2544,14 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 #if defined(SPLASH_DEBUG2) && defined(DEBUG_TEXT)
 	F::Debug.ClearText();
 #endif
-	for (auto& tTarget : vTargets)
+	AmmoConservation::Context conservation(pLocal,pWeapon,pCmd);
+	const size_t originalCount=vTargets.size();
+	vTargets.reserve(originalCount+1);
+	int deferredTarget=-1;
+	for (size_t targetIndex=0; targetIndex<vTargets.size(); ++targetIndex)
 	{
+		auto& tTarget=vTargets[targetIndex];
+		const bool replay=targetIndex>=originalCount;
 		m_flTimeTo = std::numeric_limits<float>::max();
 		m_vPlayerPath.clear(); m_vProjectilePath.clear(); m_vBoxes.clear();
 
@@ -2193,12 +2580,45 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 		if (!iResult) continue;
 		if (iResult == 2)
 		{
+            // An aim-only alternative must not displace a fire-capable original.
+            if (deferredTarget>=0 && !replay) continue;
+            ProjectileDiagnostics::Stage("aim_only_no_fire",tTarget.m_pEntity->entindex());
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 			DrawVisuals(iResult, tTarget, m_vPlayerPath, m_vProjectilePath, m_vBoxes);
 			Aim(pCmd, tTarget.m_vAngleTo);
 			break;
 		}
 
+		if (deferredTarget>=0 && !replay && !conservation.Allow())
+		{
+			conservation.Log("action_window_expired",deferredTarget,-1);
+			continue; // Re-solve the original instead of switching on stale evidence.
+		}
+		if (conservation.Covered(tTarget.m_pEntity) && conservation.Allow())
+		{
+			if (!replay)
+			{
+				if (deferredTarget<0)
+				{
+					deferredTarget=tTarget.m_pEntity->entindex();
+					// Re-run the original solver at the end if no replacement passes.
+					// Never reuse simulation/aim state overwritten by another candidate.
+					vTargets.push_back(tTarget);
+				}
+				continue;
+			}
+			if (Vars::Aimbot::Projectile::AmmoConservationFallback.Value==Vars::Aimbot::Projectile::AmmoConservationFallbackEnum::BrieflyWait)
+			{
+				pCmd->buttons &= ~IN_ATTACK;
+				G::Attacking=0; F::Aimbot.m_bRan=false;
+				m_iObservationEntity=-1;
+				conservation.Log("brief_wait",deferredTarget,-1,true);
+				return true;
+			}
+		}
+		if (deferredTarget>=0)
+			conservation.Log(replay?"resume_original":"switch_validated",deferredTarget,replay?-1:tTarget.m_pEntity->entindex());
+		AmmoEvidenceDiagnostics::Selected(pLocal, pWeapon, tTarget.m_pEntity, pCmd);
 		if (Vars::Aimbot::General::AutoShoot.Value)
 		{
 			switch (nWeaponID)
@@ -2304,9 +2724,65 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 #include "../../LearningAccess.h"
 void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
+    PredictionObservation::Poll();
+    m_iObservationEntity=-1;
+    ProjectileDiagnostics::Command diagnosticCommand(pCmd);
 	// RunMain may temporarily restore a charged weapon's previous aim mode.
 	const bool bAimEnabled = Vars::Aimbot::General::AimType.Value != 0;
+	SelfDamageDiagnostics::Snapshot("projectile_entry",pLocal,pWeapon,pCmd);
 	const bool bSuccess = RunMain(pLocal, pWeapon, pCmd);
+    if(bSuccess && ProjectileDiagnostics::current && pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER
+        && m_iObservationEntity>=0 && m_iResult==1 && G::CanPrimaryAttack && (pCmd->buttons&IN_ATTACK))
+        PredictionObservation::Queue(pCmd->command_number,m_iObservationEntity,m_nObservationHandle,m_flObservationTime,
+            m_vPredicted,m_bObservationStartGround,m_bObservationGround,pLocal,pWeapon,m_vAngleTo,m_vTarget,m_flObservationFlight);
+    ProjectileDiagnostics::Stage("run_main_success",bSuccess);
+	SelfDamageDiagnostics::Snapshot("after_aim",pLocal,pWeapon,pCmd);
+	if(SelfDamageDiagnostics::Enabled() && G::CanPrimaryAttack && ((pCmd->buttons&IN_ATTACK) || (G::OriginalCmd.buttons&IN_ATTACK)))
+		SelfDamageDiagnostics::Write("guard_inputs",std::format("cmd={} aim_enabled={} should_aim={} can_fire={} attack={} modifier={} protection={} invuln={} jumper={} beggars={} weapon={} aim_success={}",pCmd->command_number,bAimEnabled,F::AimbotGlobal.ShouldAim(),G::CanPrimaryAttack,bool(pCmd->buttons&IN_ATTACK),bool(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::PreventSelfDamage),Vars::Aimbot::Projectile::SelfDamageProtection.Value,pLocal->IsInvulnerable(),pWeapon->m_iItemDefinitionIndex()==Soldier_m_RocketJumper,pWeapon->m_iItemDefinitionIndex()==Soldier_m_TheBeggarsBazooka,pWeapon->GetWeaponID(),bSuccess));
+	// Validate the actual outgoing rocket direction, including held attack and smoothed aim.
+	// Rejecting an aim candidate alone does not cancel an already-set IN_ATTACK button.
+	if(bAimEnabled && F::AimbotGlobal.ShouldAim() && G::CanPrimaryAttack && (pCmd->buttons & IN_ATTACK)
+		&& (Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::PreventSelfDamage)
+		&& Vars::Aimbot::Projectile::SelfDamageProtection.Value>0 && !pLocal->IsInvulnerable()
+		&& pWeapon->m_iItemDefinitionIndex()!=Soldier_m_RocketJumper
+		&& (pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER || pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT
+			|| pWeapon->GetWeaponID()==TF_WEAPON_PARTICLE_CANNON)
+		&& pWeapon->m_iItemDefinitionIndex()!=Soldier_m_TheBeggarsBazooka)
+	{
+		ProjectileInfo actual={};
+		bool unsafe=!F::ProjSim.GetInfo(pLocal,pWeapon,pCmd->viewangles,actual,ProjSimEnum::Redirect|ProjSimEnum::InitCheck|ProjSimEnum::PredictCmdNum)
+			|| !F::ProjSim.Initialize(actual);
+		bool collided=false; int collisionTick=0;
+		if(SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("guard_sim",std::format("cmd={} setup_failed={} muzzle={},{},{}",pCmd->command_number,unsafe,actual.m_vPos.x,actual.m_vPos.y,actual.m_vPos.z));
+		if(!unsafe)
+		{
+			const auto players=SafetyPlayers(pLocal);
+			CTraceFilterCollideable filter={}; filter.pSkip=pLocal; filter.iPlayer=SDK::FriendlyFire()?PLAYER_ALL:PLAYER_DEFAULT; filter.bMisc=true;
+			int mask=MASK_SOLID|CONTENTS_REDTEAM|CONTENTS_BLUETEAM; F::ProjSim.SetupTrace(filter,mask,pWeapon);
+			Vec3 from=actual.m_vPos;
+			if(SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("guard_launch",std::format("cmd={} angle={},{},{} speed={} hull={},{},{} mask={} player_hulls={}",pCmd->command_number,actual.m_vAng.x,actual.m_vAng.y,actual.m_vAng.z,actual.m_flVelocity,actual.m_vHull.x,actual.m_vHull.y,actual.m_vHull.z,mask,players.size()));
+			for(int tick=1;tick<=TIME_TO_TICKS(1.f);++tick)
+			{
+				F::ProjSim.RunTick(actual); const Vec3 to=F::ProjSim.GetOrigin(); CGameTrace hit={};
+				SDK::TraceHull(from,to,-actual.m_vHull,actual.m_vHull,mask,&filter,&hit);
+				const float engineFraction=hit.fraction;
+				const int engineEntity=hit.m_pEnt?hit.m_pEnt->entindex():-1;
+				const bool hullContact=SafetyPlayerCollision(from,to,actual.m_vHull,players,hit);
+				if(hullContact && SelfDamageDiagnostics::Enabled())
+					SelfDamageDiagnostics::Write("guard_player_hull",std::format("cmd={} step={} engine_fraction={} engine_entity={} hull_fraction={} hull_entity={} from={},{},{} to={},{},{}",pCmd->command_number,tick,engineFraction,engineEntity,hit.fraction,hit.m_pEnt->entindex(),from.x,from.y,from.z,to.x,to.y,to.z));
+				if(hullContact || hit.DidHit() || hit.startsolid || hit.allsolid)
+				{
+					collided=true; collisionTick=tick;
+					unsafe=hit.startsolid || hit.allsolid || WouldSplashLocal(pLocal,pWeapon,hit.endpos+hit.plane.normal*.5f,TICKS_TO_TIME(tick)+F::Backtrack.GetReal(),true);
+					if(SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("guard_collision",std::format("cmd={} step={} unsafe={} startsolid={} allsolid={} fraction={} entity={} impact={},{},{} normal={},{},{}",pCmd->command_number,tick,unsafe,hit.startsolid,hit.allsolid,hit.fraction,hit.m_pEnt?hit.m_pEnt->entindex():-1,hit.endpos.x,hit.endpos.y,hit.endpos.z,hit.plane.normal.x,hit.plane.normal.y,hit.plane.normal.z));
+					break;
+				}
+				from=to;
+			}
+		}
+		if(unsafe) { pCmd->buttons&=~IN_ATTACK; G::Attacking=0; F::Aimbot.m_bRan=false; }
+		if(SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("guard_result",std::format("cmd={} blocked={} collided={} collision_tick={} outgoing_attack={}",pCmd->command_number,unsafe,collided,collisionTick,bool(pCmd->buttons&IN_ATTACK)));
+	}
 #ifdef NIKOGRAM_PRIVATE_LEARNING
 	if (PrivateLearning::WantsAimObservation() && !F::Aimbot.m_bRunningSecondary)
 	{

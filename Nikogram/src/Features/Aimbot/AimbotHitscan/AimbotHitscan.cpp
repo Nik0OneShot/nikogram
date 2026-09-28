@@ -861,9 +861,6 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 			pCmd->buttons |= IN_ATTACK;
 	}
 
-	if (!G::AimTarget.m_iEntIndex)
-		G::AimTarget = { vTargets.front().m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
-
 	for (auto& tTarget : vTargets)
 	{
 		if (nWeaponID == TF_WEAPON_MEDIGUN && pWeapon->As<CWeaponMedigun>()->m_hHealingTarget().Get() == tTarget.m_pEntity)

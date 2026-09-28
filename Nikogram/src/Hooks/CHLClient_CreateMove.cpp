@@ -1,4 +1,6 @@
 #include "../SDK/SDK.h"
+#include "../Features/Aimbot/SelfDamageDiagnostics.h"
+#include "../Features/Aimbot/AmmoLifetimeDiagnostics.h"
 
 #include "../Features/Aimbot/Aimbot.h"
 #include "../Features/Backtrack/Backtrack.h"
@@ -133,6 +135,7 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 	auto pWeapon = H::Entities.GetWeapon();
 	if (!pLocal)
 	{
+		AmmoLifetimeDiagnostics::Reset("no_local");
 		F::Blockbot.Reset();
 		F::Visuals.ResetLocalAnimationQueue();
 		return;
@@ -153,6 +156,8 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 	I::Prediction->Update(I::ClientState->m_nDeltaTick, I::ClientState->m_nDeltaTick > 0, I::ClientState->last_command_ack, I::ClientState->lastoutgoingcommand + I::ClientState->chokedcommands);
 
 	UpdateInfo(pLocal, pWeapon, pCmd);
+	SelfDamageDiagnostics::Snapshot("command_start",pLocal,pWeapon,pCmd);
+	AmmoLifetimeDiagnostics::Begin(pCmd->command_number);
 		F::Spectate.CreateMove(pCmd);
 		F::Backtrack.CreateMove(pCmd);
 		F::Misc.RunPre(pLocal, pCmd);
@@ -172,6 +177,8 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 		F::Resolver.CreateMove();
 		F::NoSpreadHitscan.AskForPlayerPerf();
 	G::Choking = !*pSendPacket, G::LastUserCmd = pCmd;
+	SelfDamageDiagnostics::Snapshot("command_final",pLocal,pWeapon,pCmd);
+	AmmoLifetimeDiagnostics::Final(pLocal,pWeapon,pCmd);
 	if (s_iVerified != 1)
 		s_bSendPacket = bEngineSendPacket, G::Choking = false; // can't choke safely, hand the engine back its own value
 }

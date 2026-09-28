@@ -1,4 +1,8 @@
 #include "AimbotMelee.h"
+#include "../MeleeDiagnostics.h"
+#include "../MeleePredictionPolicy.h"
+#include "../MeleeTrace.h"
+namespace MD = MeleeDiagnostics;
 
 #include "../Aimbot.h"
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
@@ -39,11 +43,11 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 		for (auto pEntity : H::Entities.GetGroup(eGroup))
 		{
 			if (F::AimbotGlobal.ShouldIgnore(pEntity, pLocal, pWeapon))
-				continue;
+			{ MD::Event("target_filtered",pEntity->entindex()); continue; }
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
 			if (!F::AimbotGlobal.PlayerBoneInFOV(pEntity->As<CTFPlayer>(), vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
-				continue;
+			{ MD::Event("bone_fov_rejected",pEntity->entindex()); continue; }
 
 			float flDistTo = vLocalPos.DistToSqr(vPos);
 			bool bTeam = pEntity->m_iTeamNum() == pLocal->m_iTeamNum();
@@ -139,8 +143,25 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 	}
 
 	std::unordered_map<int, MoveStorage> mMoveStorage;
+	const Vec3 liveEye=m_vEyePos;
+	const float liveRange=m_flRange;
+	auto fallback=[&]()
+	{
+		for(auto& storage : mMoveStorage | std::views::values) F::MoveSim.Restore(storage);
+		m_mRecordMap.clear(); m_mPaths.clear();
+		m_vEyePos=liveEye; m_flRange=liveRange; m_bSimulatedLocal=false;
+		m_iSimulatedTicks=m_iSwingTicks=m_iDoubletapTicks=0;
+		m_bShouldSwing=G::CanPrimaryAttack;
+	};
+	auto usable=[](const MoveStorage& storage)
+	{
+		const auto& p=storage.m_MoveData.m_vecAbsOrigin;
+		return MeleePredictionPolicy::Usable(storage.m_bInitialized,storage.m_bFailed,p.x,p.y,p.z);
+	};
 
 	F::MoveSim.Initialize(pLocal, mMoveStorage[pLocal->entindex()], false, !m_iDoubletapTicks, false);
+	if(!usable(mMoveStorage[pLocal->entindex()]))
+	{ MD::Event("local_init_failed_live_fallback"); fallback(); return; }
 	for (auto& tTarget : vTargets)
 		F::MoveSim.Initialize(tTarget.m_pEntity, mMoveStorage[tTarget.m_pEntity->entindex()], false, true, false);
 
@@ -167,6 +188,8 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 				F::Ticks.AntiWarp(pLocal, pCmd->viewangles.y, tMoveStorage.m_MoveData.m_flForwardMove, tMoveStorage.m_MoveData.m_flSideMove, iMax - i - 1);
 
 			F::MoveSim.RunTick(tMoveStorage);
+			if(!usable(tMoveStorage))
+			{ MD::Event("local_tick_failed_live_fallback"); fallback(); return; }
 
 			vLocalOrigin = tMoveStorage.m_MoveData.m_vecAbsOrigin;
 			m_bSimulatedLocal = true;
@@ -311,7 +334,7 @@ bool CAimbotMelee::CanBackstab(CBaseEntity* pTarget, CTFPlayer* pLocal, Vec3 vEy
 int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 {
 	if (Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Unsimulated && H::Entities.GetChoke(tTarget.m_pEntity->entindex()) > Vars::Aimbot::General::TickTolerance.Value)
-		return false;
+	{ MD::Event("unsimulated_rejected",tTarget.m_pEntity->entindex()); return false; }
 
 	float flRange = SDK::AttribHookValue(m_flRange, "melee_range_multiplier", pWeapon);
 	float flHull = SDK::AttribHookValue(18, "melee_bounds_multiplier", pWeapon);
@@ -352,13 +375,13 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		for (auto iTimeMod : vTimeMods)
 			vRecords = F::Backtrack.GetValidRecords(vRecords, pLocal, true, -TICKS_TO_TIME(iTimeMod));
 		if (vRecords.empty())
-			return false;
+		{ MD::Event("no_valid_records",tTarget.m_pEntity->entindex()); return false; }
 	}
 	else
 	{
 		F::Backtrack.m_tRecord = { tTarget.m_pEntity->m_flSimulationTime(), tTarget.m_pEntity->m_vecOrigin(), tTarget.m_pEntity->m_vecMins(), tTarget.m_pEntity->m_vecMaxs() };
 		if (!tTarget.m_pEntity->SetupBones(F::Backtrack.m_tRecord.m_aBones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, tTarget.m_pEntity->m_flSimulationTime()))
-			return false;
+		{ MD::Event("bones_failed",tTarget.m_pEntity->entindex()); return false; }
 
 		vRecords = { &F::Backtrack.m_tRecord };
 	}
@@ -375,7 +398,7 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 			tTarget.m_vPos.x = pRecord->m_vOrigin.x, tTarget.m_vPos.y = pRecord->m_vOrigin.y;
 		Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(m_vEyePos, tTarget.m_vPos), tTarget.m_vAngleTo);
 		if (!F::AimbotGlobal.ShouldAimAtAngle(tTarget.m_vAngleTo))
-			continue;
+		{ MD::Event("angle_rejected",tTarget.m_pEntity->entindex()); continue; }
 
 		Vec3 vRestoreOrigin = tTarget.m_pEntity->GetAbsOrigin();
 		Vec3 vRestoreMins = tTarget.m_pEntity->m_vecMins();
@@ -389,11 +412,11 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		Vec3 vTraceEnd = m_vEyePos + vForward * flRange;
 
 		SDK::TraceHull(m_vEyePos, vTraceEnd, {}, {}, MASK_SOLID, &filter, &trace);
-		bool bReturn = trace.m_pEnt == tTarget.m_pEntity;
+		bool bReturn = MeleeTrace::Confirm(tTarget.m_pEntity,m_vEyePos,vTraceEnd,{},{},trace,filter);
 		if (!bReturn)
 		{
 			SDK::TraceHull(m_vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
-			bReturn = trace.m_pEnt == tTarget.m_pEntity;
+			bReturn = MeleeTrace::Confirm(tTarget.m_pEntity,m_vEyePos,vTraceEnd,vSwingMins,vSwingMaxs,trace,filter);
 		}
 
 		if (bReturn && Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE)
@@ -578,12 +601,13 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		pCmd->buttons |= IN_ATTACK;
 	if (!Vars::Aimbot::General::AimType.Value
 		|| !F::AimbotGlobal.ShouldAim() && pWeapon->m_flSmackTime() < 0.f)
-		return;
+	{ MD::Event("aim_inactive"); return; }
 
 	if (RunSapper(pLocal, pWeapon, pCmd))
 		return;
 
 	auto vTargets = F::AimbotGlobal.ManageTargets(GetTargets, pLocal, pWeapon, Vars::Aimbot::General::TargetSelectionEnum::Distance);
+	MD::Event("candidate_count",-1,float(vTargets.size()));
 	if (vTargets.empty())
 		return;
 
@@ -594,6 +618,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 	for (auto& tTarget : vTargets)
 	{
 		const auto iResult = CanHit(tTarget, pLocal, pWeapon);
+		MD::Event("can_hit_result",tTarget.m_pEntity->entindex(),float(iResult));
 		if (!iResult) continue;
 		if (iResult == 2)
 		{
@@ -604,6 +629,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 
 		if (Vars::Aimbot::General::AutoShoot.Value && pWeapon->m_flSmackTime() < 0.f)
 		{
+			MD::Event(m_bShouldSwing?"swing_allowed":"swing_timing_blocked",tTarget.m_pEntity->entindex(),float(m_iDoubletapTicks));
 			if (m_bShouldSwing)
 				pCmd->buttons |= IN_ATTACK;
 			if (m_iDoubletapTicks)
