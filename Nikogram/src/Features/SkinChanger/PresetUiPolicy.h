@@ -3,6 +3,17 @@
 
 namespace SkinPresetUi
 {
+    class DefaultActivation
+    {
+        bool attempted=false;
+    public:
+        bool Observe(bool enabled,bool catalogReady,bool unloading=false)
+        {
+            if(!enabled){attempted=false;return false;}
+            if(unloading||!catalogReady||attempted)return false;
+            attempted=true;return true;
+        }
+    };
     inline bool NameAllowed(std::string_view name)
     {return SkinModel::SafeName(name)&&SkinModel::Lower(std::string(name))!="current";}
     inline bool Default(std::string_view name)

@@ -98,6 +98,7 @@ namespace SkinChanger
     std::string RemoteSoundFor(int entity,const char* original,bool wave=false);
     std::string MuzzleFor(const void* particleProperty,const char* original);
     void ObserveCosmeticEffect(const char* kind,const std::string& name);
+    void ObserveSoundBuffer(const char* route,const char* phase,int count,int capacity);
     void ObserveParticleCreation(const char* kind,const char* original,const std::string& requested,bool created);
     void ObserveParticleLookup(const char* name,int index);
     bool CreateCosmeticTracer(const std::string& name,const Vector& start,const Vector& end,int entity,int attachment);

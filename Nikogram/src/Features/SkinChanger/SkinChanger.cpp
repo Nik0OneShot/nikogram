@@ -4,6 +4,7 @@
 #include "RenderPolicy.h"
 #include "JigglePhysics.h"
 #include "PresetUiPolicy.h"
+#include "PresetStorage.h"
 #include <shellapi.h>
 #include "../../SDK/Definitions/Main/ITextureCompositor.h"
 #include "../Visuals/Chams/Chams.h"
@@ -40,6 +41,7 @@ namespace SkinChanger
         std::recursive_mutex guard;
         std::atomic<bool> unloadRequested=false,unloadComplete=false;
         Catalog catalog;Preset preset;bool loaded=false,dirty=false,stopped=false;
+        SkinPresetUi::DefaultActivation defaultActivation;
         std::string activePreset;bool presetModified=false;
         std::map<std::string,std::set<std::string>> soundWaves;
         std::map<std::string,CosmeticEffects> weaponScriptEffects;
@@ -116,7 +118,7 @@ namespace SkinChanger
                 if(std::filesystem::exists(file)&&std::filesystem::file_size(file)>1024*1024)
                 {if(std::filesystem::exists(previous))std::filesystem::remove(previous);std::filesystem::rename(file,previous);}
                 SYSTEMTIME utc{};GetSystemTime(&utc);
-                std::ofstream(file,std::ios::app)<<"[skinchanger-v121] run="<<diagnosticRun<<" utc="
+                std::ofstream(file,std::ios::app)<<"[skinchanger-v124] run="<<diagnosticRun<<" utc="
                     <<std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",utc.wYear,utc.wMonth,utc.wDay,utc.wHour,utc.wMinute,utc.wSecond)
                     <<" ms="<<int64_t(Now()*1000)<<' '<<message<<'\n';}catch(...){}
         }
@@ -306,21 +308,15 @@ namespace SkinChanger
         {
             try
             {
-                boost::property_tree::ptree root,entries;root.put("format","nikogram-skin-presets");root.put("version",1);
+                auto root=SkinPresetStorage::Encode(data);
                 if(Lower(file.filename().string())=="current.json"&&SkinPresetUi::NameAllowed(activePreset))root.put("source_preset",activePreset);
-                for(const auto& [key,s]:data)
-                {
-                    boost::property_tree::ptree row;row.put("weapon",key.first);row.put("class",key.second);
-                    row.put("enabled",s.enabled);row.put("reskin",s.reskin);row.put("australium",s.australium);row.put("festive",s.festive);row.put("festivized",s.festivized);
-                    row.put("finish",s.finish);row.put("wear",s.wear);row.put("seed",s.seed);row.put("tier",s.tier);row.put("sheen",s.sheen);row.put("effect",s.effect);row.put("preview",s.preview);row.put("preview_count",s.previewCount);
-                    row.put("unusual",s.unusual);
-                    for(int axis=0;axis<3;++axis){row.put("position_"+std::to_string(axis),s.position[axis]);row.put("rotation_"+std::to_string(axis),s.rotation[axis]);}
-                    entries.push_back({"",row});
-                }
-                root.add_child("weapons",entries);std::filesystem::create_directories(file.parent_path());
+                std::filesystem::create_directories(file.parent_path());
                 auto temporary=file;temporary+=".tmp";boost::property_tree::write_json(temporary.string(),root);
                 if(!MoveFileExW(temporary.c_str(),file.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
                 {std::filesystem::remove(temporary);throw std::runtime_error("atomic replace failed");}
+                Diagnostic(std::format("event=preset_saved name={} entries={} enabled_entries={} finish_entries={} atomic_replace=true",file.stem().string(),data.size(),
+                    std::count_if(data.begin(),data.end(),[](const auto& entry){return entry.second.enabled;}),
+                    std::count_if(data.begin(),data.end(),[](const auto& entry){return entry.second.finish!=0;})));
                 return true;
             }
             catch(const std::exception& e){status="Could not save preset: "+std::string(e.what());return false;}
@@ -331,31 +327,14 @@ namespace SkinChanger
             {
                 if(std::filesystem::file_size(file)>256*1024)throw std::runtime_error("file exceeds 256 KB");
                 boost::property_tree::ptree root;boost::property_tree::read_json(file.string(),root);
-                if(root.get<std::string>("format","")!="nikogram-skin-presets"||root.get<int>("version",0)!=1)throw std::runtime_error("unsupported format/version");
-                Preset next;auto entries=root.get_child_optional("weapons");if(!entries)throw std::runtime_error("missing weapon entries");
-                if(entries->size()>512)throw std::runtime_error("too many entries");
-                for(const auto& [unused,row]:*entries)
-                {
-                    int weapon=row.get<int>("weapon",-1),cls=row.get<int>("class",-1);auto item=catalog.Find(weapon);
-                    if(!item||cls<0||cls>9||catalog.Canonical(weapon)!=weapon)throw std::runtime_error("unknown weapon/class");
-                    // Watch cosmetics were retired; keep the remaining entries
-                    // in older presets usable without re-enabling that feature.
-                    if(item->Watch())continue;
-                    Selection s;s.enabled=row.get<bool>("enabled",false);s.reskin=row.get<int>("reskin",0);s.australium=row.get<bool>("australium",false);
-                    s.festive=row.get<bool>("festive",false);s.festivized=row.get<bool>("festivized",false);s.finish=row.get<int>("finish",0);s.wear=row.get<float>("wear",0);
-                    s.seed=row.get<int>("seed",0);s.tier=row.get<int>("tier",0);s.sheen=row.get<int>("sheen",1);s.effect=row.get<int>("effect",2002);s.preview=row.get<bool>("preview",false);s.previewCount=row.get<int>("preview_count",5);
-                    s.unusual=row.get<int>("unusual",0);
-                    for(int axis=0;axis<3;++axis){s.position[axis]=row.get<float>("position_"+std::to_string(axis),0);s.rotation[axis]=row.get<float>("rotation_"+std::to_string(axis),0);}
-                    if(!s.Valid())throw std::runtime_error("invalid cosmetic values");
-                    if(s.reskin){auto variant=catalog.Find(s.reskin);bool valid=false;
-                        if(variant)for(int c=1;c<=9;++c)if((!cls||cls==c)&&item->Supports(c)&&catalog.CanReskin(*item,*variant,c))valid=true;
-                        if(!valid)throw std::runtime_error("incompatible reskin");}
-                    if(!next.emplace(Key{weapon,cls},s).second)throw std::runtime_error("duplicate weapon/class entry");
-                }
-                preset=std::move(next);dirty=true;presetModified=false;
+                auto decoded=SkinPresetStorage::Decode(root,catalog);
+                for(const auto& skipped:decoded.incompatible)
+                    Diagnostic(std::format("event=preset_entry_skipped name={} weapon={} class={} reskin={} reason=incompatible_reskin other_entries_retained=true",file.stem().string(),skipped.weapon,skipped.cls,skipped.reskin));
+                preset=std::move(decoded.selections);dirty=true;presetModified=false;
                 activePreset=Lower(file.filename().string())=="current.json"?root.get<std::string>("source_preset",""):file.stem().string();
                 if(!SkinPresetUi::NameAllowed(activePreset))activePreset.clear();
-                status="Preset loaded.";return true;
+                status=std::format("Loaded {} selections{}.",preset.size(),decoded.incompatible.empty()?std::string{}:std::format("; skipped {} incompatible entries",decoded.incompatible.size()));
+                Diagnostic(std::format("event=preset_loaded name={} entries={} skipped={} original_file_unchanged=true",file.stem().string(),preset.size(),decoded.incompatible.size()));return true;
             }
             catch(const std::exception& e){status="Preset not loaded: "+std::string(e.what());return false;}
         }
@@ -1247,7 +1226,11 @@ namespace SkinChanger
     }
     void Tick()
     {
-        std::lock_guard lock(guard);if(stopped)return;UpdateUnusualParticles();UpdateKillstreakParticles();
+        std::lock_guard lock(guard);if(stopped)return;
+        // Observe disabled frames even between the slower cosmetic maintenance
+        // ticks, so a quick off/on transition still arms one default load.
+        if(!V::Enabled.Value)defaultActivation.Observe(false,loaded,G::Unload);
+        UpdateUnusualParticles();UpdateKillstreakParticles();
         const double corpseNow=Now();
         // Prune before updating seen timestamps. The old ordering compared an
         // earlier frame timestamp with a just-refreshed one, deleted the live
@@ -1278,6 +1261,16 @@ namespace SkinChanger
             if(!diagnosticStarted){diagnosticStarted=true;WriteDiagnostic("event=run_start network_diagnostics=5 shared_actual_killstreaks=true preview_counts_local_only=true context=replicated_human_roster transport_context=initialized_tf2 local_host_supported=true defaults_unchanged=true local_logs_only=true");}
             if(!loaded){if(now-lastSave>=5){lastSave=now;CatalogLoad();}}
             if(!loaded){netLog.state="catalog_unavailable";NetworkReport(now);return;}
+            if(defaultActivation.Observe(V::Enabled.Value,loaded,G::Unload))
+            {
+                const auto file=Directory()/"default.json";
+                std::error_code error;
+                const bool exists=std::filesystem::exists(file,error);
+                const bool ok=exists&&!error&&Load(file);
+                if(!exists&&!error)status="Default skin preset not found; current selections retained.";
+                else if(error)status="Could not access default skin preset; current selections retained.";
+                Diagnostic(std::format("event=preset_activation_autoload name=default exists={} ok={} entries={} once_per_activation=true network_preferences_unchanged=true status={}",exists,ok,preset.size(),status));
+            }
             WarmEffectModels();
             // Placement speech is tied to the actual sapper's full handle,
             // never rendering frequency or a repeated kill/event delivery.
@@ -1699,6 +1692,12 @@ namespace SkinChanger
         }
         Diagnostic(std::format("event=cosmetic_profile remote={} item={} reskin={} team={} single={} critical={} melee_miss={} melee_hit={} melee_world={} source_hit={} source_world={} muzzle={} tracer={} source_muzzle={}",owner!=H::Entities.GetLocal(),id,chosen->id,owner->m_iTeamNum(),result.Sound(SINGLE),result.Sound(BURST),result.Sound(MELEE_MISS),result.Sound(MELEE_HIT),result.Sound(MELEE_HIT_WORLD),result.sourceSounds[MELEE_HIT],result.sourceSounds[MELEE_HIT_WORLD],result.muzzle,result.tracer,result.sourceMuzzle));
         return result;
+    }
+    void ObserveSoundBuffer(const char* route,const char* phase,int count,int capacity)
+    {
+        if(!V::Enabled.Value)return;std::lock_guard lock(guard);if(stopped)return;
+        WriteDiagnostic(std::format("event=sound_buffer route={} phase={} count={} capacity={} allocator=engine_memalloc tid={} sampled_non_death=true",
+            route,phase,count,capacity,GetCurrentThreadId()));
     }
     void ObserveCosmeticEffect(const char* kind,const std::string& name)
     {
@@ -2259,7 +2258,7 @@ namespace SkinChanger
             error.clear();
             if(request.action==Action::Load)
             {
-                if(Load(file))status="Loaded: "+request.name;
+                Load(file);
             }
             else if(request.action==Action::Create||request.action==Action::Save)
             {

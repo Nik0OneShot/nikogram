@@ -970,6 +970,8 @@
     <ClInclude Include="src\Features\SkinChanger\Model.h" />
     <ClInclude Include="src\Features\SkinChanger\Protocol.h" />
     <ClInclude Include="src\Features\SkinChanger\RenderPolicy.h" />
+    <ClInclude Include="src\Features\SkinChanger\SoundBufferPolicy.h" />
+    <ClInclude Include="src\Features\SkinChanger\PresetStorage.h" />
     <ClInclude Include="src\Features\SkinChanger\JigglePhysics.h" />
     <ClCompile Include="src\Features\Visuals\Visuals.cpp" />
     <ClCompile Include="src\Features\World\World.cpp" />

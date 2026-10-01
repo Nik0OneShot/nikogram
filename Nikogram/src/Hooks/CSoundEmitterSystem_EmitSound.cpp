@@ -1,6 +1,7 @@
 #include "../SDK/SDK.h"
 #include "../Features/SkinChanger/SkinChanger.h"
 #include "../Features/SkinChanger/RenderPolicy.h"
+#include "../Features/SkinChanger/SoundBufferPolicy.h"
 #include <atomic>
 
 MAKE_SIGNATURE(CSoundEmitterSystem_EmitSound, "client.dll", "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 41 56 48 81 EC ? ? ? ? 49 8B D9", 0x0);
@@ -89,8 +90,32 @@ struct EmitSound_t
 	bool m_bWarnOnMissingCloseCaption;
 	bool m_bWarnOnDirectWaveReference;
 	int m_nSpeakerEntity;
-	mutable CUtlVector<Vector> m_UtlVecSoundOrigin;  ///< Actual sound origin(s) (can be multiple if sound routed through speaker entity(ies) )
+	mutable SkinSound::Origins<Vector> m_UtlVecSoundOrigin;
 	mutable short m_hSoundScriptHandle;
+};
+
+static_assert(sizeof(SkinSound::Origins<Vector>)==sizeof(CUtlVector<Vector>));
+static_assert(sizeof(void*)!=8||offsetof(EmitSound_t,m_UtlVecSoundOrigin)==72);
+static_assert(sizeof(void*)!=8||sizeof(EmitSound_t)==112);
+
+struct OwnedEmitSound final:EmitSound_t
+{
+    IMemAlloc* allocator=I::MemAlloc;
+    const char* route;
+    bool trace;
+    explicit OwnedEmitSound(const char* source):route(source)
+    {
+        static thread_local unsigned samples=0;
+        trace=!strcmp(source,"death")||(++samples%128==1);
+    }
+    void Trace(const char* phase)const noexcept
+    {try{if(trace)SkinChanger::ObserveSoundBuffer(route,phase,m_UtlVecSoundOrigin.Count(),m_UtlVecSoundOrigin.capacity);}catch(...){}}
+    ~OwnedEmitSound() noexcept
+    {
+        Trace("cleanup_begin");
+        if(allocator)m_UtlVecSoundOrigin.Release(*allocator);
+        Trace("cleanup_complete");
+    }
 };
 
 const static std::vector<const char*> s_vFootsteps = { "footstep", "flesh_impact_hard", "body_medium_impact_soft", "ceiling_tile_step", "glass_sheet_step", "rubber_tire_impact_soft", "plastic_box_impact_soft", "plastic_barrel_impact_soft", "cardboard_box_impact_soft", "glass_impact_soft" };
@@ -175,18 +200,20 @@ MAKE_HOOK(CSoundEmitterSystem_EmitSound, S::CSoundEmitterSystem_EmitSound(), voi
         if(ShouldBlockSound(cosmetic.c_str()))return;
         // Don't mutate the caller's const parameters or shallow-copy its
         // CUtlVector. Preserve every scalar and deep-copy bounded origins.
-        if(ep.m_UtlVecSoundOrigin.Count()<0||ep.m_UtlVecSoundOrigin.Count()>128)return CALL_ORIGINAL(rcx,filter,entindex,ep);
-        EmitSound_t replacement;replacement.m_pSoundName=cosmetic.c_str();
+        if(!I::MemAlloc||!ep.m_UtlVecSoundOrigin.Valid())return CALL_ORIGINAL(rcx,filter,entindex,ep);
+        OwnedEmitSound replacement("replacement");replacement.m_pSoundName=cosmetic.c_str();
         replacement.m_nChannel=ep.m_nChannel;replacement.m_flVolume=ep.m_flVolume;
         replacement.m_SoundLevel=ep.m_SoundLevel;replacement.m_nFlags=ep.m_nFlags;replacement.m_nPitch=ep.m_nPitch;
         replacement.m_nSpecialDSP=ep.m_nSpecialDSP;replacement.m_pOrigin=ep.m_pOrigin;
         replacement.m_flSoundTime=ep.m_flSoundTime;replacement.m_pflSoundDuration=ep.m_pflSoundDuration;
         replacement.m_bEmitCloseCaption=ep.m_bEmitCloseCaption;replacement.m_bWarnOnMissingCloseCaption=ep.m_bWarnOnMissingCloseCaption;
         replacement.m_bWarnOnDirectWaveReference=ep.m_bWarnOnDirectWaveReference;replacement.m_nSpeakerEntity=ep.m_nSpeakerEntity;
-        replacement.m_UtlVecSoundOrigin=ep.m_UtlVecSoundOrigin;
+        if(!replacement.m_UtlVecSoundOrigin.CopyFrom(ep.m_UtlVecSoundOrigin,*replacement.allocator))return CALL_ORIGINAL(rcx,filter,entindex,ep);
+        replacement.Trace("emit_begin");
         CALL_ORIGINAL(rcx,filter,entindex,replacement);
+        replacement.Trace("emit_complete");
         // Native callers may inspect the generated origin list afterward.
-        if(replacement.m_UtlVecSoundOrigin.Count()<=128)ep.m_UtlVecSoundOrigin=replacement.m_UtlVecSoundOrigin;
+        if(!ep.m_UtlVecSoundOrigin.CopyFrom(replacement.m_UtlVecSoundOrigin,*replacement.allocator))replacement.Trace("copyback_skipped_invalid_or_unavailable");
         return;
     }
 
@@ -225,16 +252,18 @@ MAKE_HOOK(S_StartSound, S::S_StartSound(), int,
     {
         const auto cosmetic=SkinChanger::RemoteSoundFor(params.soundsource,params.pSfx->getname(),true);
         auto emitter=s_cosmeticSoundEmitter.load(std::memory_order_relaxed);
-        if(!cosmetic.empty()&&emitter&&Hooks::CSoundEmitterSystem_EmitSound::Hook.m_pOriginal)
+        if(!cosmetic.empty()&&emitter&&I::MemAlloc&&Hooks::CSoundEmitterSystem_EmitSound::Hook.m_pOriginal)
         {
             if(ShouldBlockSound(cosmetic.c_str()))return 0;
-            EmitSound_t ep;ep.m_pSoundName=cosmetic.c_str();ep.m_nChannel=params.entchannel;
+            OwnedEmitSound ep("remote_replay");ep.m_pSoundName=cosmetic.c_str();ep.m_nChannel=params.entchannel;
             ep.m_flVolume=params.fvol;ep.m_SoundLevel=params.soundlevel;ep.m_nFlags=params.flags;
             ep.m_nPitch=params.pitch;ep.m_nSpecialDSP=params.specialdsp;ep.m_pOrigin=&params.origin;
             ep.m_flSoundTime=I::GlobalVars->curtime+params.delay;ep.m_nSpeakerEntity=params.speakerentity;
             CosmeticSoundFilter filter;
             SkinRender::ViewmodelDrawScope replay(s_replayingCosmeticSound,true);s_cosmeticSoundGuid=0;
+            ep.Trace("emit_begin");
             Hooks::CSoundEmitterSystem_EmitSound::Hook.As<Hooks::CSoundEmitterSystem_EmitSound::FN>()(emitter,filter,params.soundsource,ep);
+            ep.Trace("emit_complete");
             if(s_cosmeticSoundGuid>0){SkinChanger::ObserveCosmeticEffect("sound_replay_started",cosmetic);return s_cosmeticSoundGuid;}
             SkinChanger::ObserveCosmeticEffect("sound_replay_failed_native_preserved",cosmetic);
         }
@@ -270,12 +299,14 @@ bool SkinChanger::PlayKillstreakMilestoneSound()
 {
     if(G::Unload||SDK::CleanScreenshot()||!I::EngineClient->IsInGame()||I::EngineClient->IsPlayingDemo())return false;
     auto emitter=s_cosmeticSoundEmitter.load(std::memory_order_relaxed);
-    if(!emitter||!Hooks::CSoundEmitterSystem_EmitSound::Hook.m_pOriginal)return false;
-    CosmeticSoundFilter filter;EmitSound_t sound;sound.m_pSoundName="Game.KillStreak";
+    if(!emitter||!I::MemAlloc||!Hooks::CSoundEmitterSystem_EmitSound::Hook.m_pOriginal)return false;
+    CosmeticSoundFilter filter;OwnedEmitSound sound("killstreak");sound.m_pSoundName="Game.KillStreak";
     sound.m_bEmitCloseCaption=false;
     // The native client-only recipient filter and local-player sound source:
     // no event is sent to the server or another client's sound system.
+    sound.Trace("emit_begin");
     Hooks::CSoundEmitterSystem_EmitSound::Hook.As<Hooks::CSoundEmitterSystem_EmitSound::FN>()(emitter,filter,-1,sound);
+    sound.Trace("emit_complete");
     return true;
 }
 
@@ -284,16 +315,18 @@ bool SkinChanger::PlaySapperVoice(int entity,const char* name)
     if(!name||(strcmp(name,"PSap.Deploy")&&strcmp(name,"Psap.Idle")&&strcmp(name,"PSap.Holster")&&strcmp(name,"Psap.Attached")&&strcmp(name,"PSap.Hacking"))||G::Unload||SDK::CleanScreenshot()
         ||!I::EngineClient->IsInGame()||I::EngineClient->IsPlayingDemo()||ShouldBlockSound(name))return false;
     auto emitter=s_cosmeticSoundEmitter.load(std::memory_order_relaxed);
-    if(!emitter||!Hooks::CSoundEmitterSystem_EmitSound::Hook.m_pOriginal)return false;
-    CosmeticSoundFilter filter;EmitSound_t sound;sound.m_pSoundName=name;sound.m_bEmitCloseCaption=false;
-    Hooks::CSoundEmitterSystem_EmitSound::Hook.As<Hooks::CSoundEmitterSystem_EmitSound::FN>()(emitter,filter,entity,sound);return true;
+    if(!emitter||!I::MemAlloc||!Hooks::CSoundEmitterSystem_EmitSound::Hook.m_pOriginal)return false;
+    CosmeticSoundFilter filter;OwnedEmitSound sound("sapper");sound.m_pSoundName=name;sound.m_bEmitCloseCaption=false;
+    sound.Trace("emit_begin");
+    Hooks::CSoundEmitterSystem_EmitSound::Hook.As<Hooks::CSoundEmitterSystem_EmitSound::FN>()(emitter,filter,entity,sound);
+    sound.Trace("emit_complete");return true;
 }
 
 bool SkinChanger::PlayCosmeticDeathSound(int entity,int effects)
 {
     if(G::Unload||SDK::CleanScreenshot()||!I::EngineClient->IsInGame()||I::EngineClient->IsPlayingDemo())return false;
     auto emitter=s_cosmeticSoundEmitter.load(std::memory_order_relaxed);
-    if(!emitter||!Hooks::CSoundEmitterSystem_EmitSound::Hook.m_pOriginal)
+    if(!emitter||!I::MemAlloc||!Hooks::CSoundEmitterSystem_EmitSound::Hook.m_pOriginal)
     {ObserveDeathSound(entity,false,0,"emitter_unavailable");return false;}
     const char* name=effects&SkinModel::DeathGold?"Saxxy.TurnGold":effects&SkinModel::DeathIce?"Icicle.TurnToIce":nullptr;
     if(!name)return false;
@@ -301,8 +334,10 @@ bool SkinChanger::PlayCosmeticDeathSound(int entity,int effects)
     auto client=I::ClientEntityList->GetClientEntity(entity);auto body=client?client->As<CBaseEntity>():nullptr;
     if(!body||body->GetClassID()!=ETFClassID::CTFRagdoll)return false;
     const Vector origin=SkinChanger::DeathSoundOrigin(entity).value_or(body->GetAbsOrigin());
-    CosmeticSoundFilter filter;EmitSound_t sound;sound.m_pSoundName=name;sound.m_bEmitCloseCaption=false;sound.m_pOrigin=&origin;
+    CosmeticSoundFilter filter;OwnedEmitSound sound("death");sound.m_pSoundName=name;sound.m_bEmitCloseCaption=false;sound.m_pOrigin=&origin;
     SkinRender::ViewmodelDrawScope replay(s_replayingCosmeticSound,true);s_cosmeticSoundGuid=0;
+    sound.Trace("emit_begin");
     Hooks::CSoundEmitterSystem_EmitSound::Hook.As<Hooks::CSoundEmitterSystem_EmitSound::FN>()(emitter,filter,entity,sound);
+    sound.Trace("emit_complete");
     const bool started=s_cosmeticSoundGuid>0;ObserveDeathSound(entity,started,s_cosmeticSoundGuid,"one_shot_positional");return started;
 }
