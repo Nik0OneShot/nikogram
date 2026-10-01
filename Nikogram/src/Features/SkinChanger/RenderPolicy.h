@@ -119,6 +119,12 @@ namespace SkinRender
         }
         return true;
     }
+    inline bool CanReplaceKillIcon(int attacker,int victim,bool preserveDeathCause,std::string_view weapon)
+    {
+        if(attacker<=0||victim<=0||attacker==victim||preserveDeathCause)return false;
+        const auto name=SkinModel::Lower(std::string(weapon));
+        return name!="world"&&name!="worldspawn"&&name!="suicide"&&name!="fall"&&name!="trigger_hurt";
+    }
     inline std::optional<int> KillWeaponDefinition(int reported,int held,int eventType,int heldType)
     {
         if(reported>=0&&reported<65535)return reported;

@@ -1,7 +1,8 @@
 #include "../SDK/SDK.h"
 
 MAKE_SIGNATURE(CTFPlayer_IsPlayerClass, "client.dll", "48 81 C1 ? ? ? ? 75 ? 32 C0", 0x0);
-MAKE_SIGNATURE(CDamageAccountPanel_DisplayDamageFeedback_IsPlayerClass_Call, "client.dll", "84 C0 0F 84 ? ? ? ? 48 8B 06 48 8B CE FF 90 ? ? ? ? 49 8B 16", 0x0);
+// Anchor the direct IsPlayerClass(Spy) call, not an unrelated virtual-call site.
+MAKE_SIGNATURE(CDamageAccountPanel_DisplayDamageFeedback_IsPlayerClass_Call, "client.dll", "BA 08 00 00 00 49 8B CE E8 ? ? ? ? 84 C0 0F 84 ? ? ? ? 48 8B 06 48 8B CE FF 90 ? ? ? ? 49 8B 16", 0xD);
 
 MAKE_HOOK(CTFPlayer_IsPlayerClass, S::CTFPlayer_IsPlayerClass(), bool,
 	void* rcx, int iClass)

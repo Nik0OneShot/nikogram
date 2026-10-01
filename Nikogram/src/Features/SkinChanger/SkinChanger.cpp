@@ -120,7 +120,7 @@ namespace SkinChanger
                 if(std::filesystem::exists(file)&&std::filesystem::file_size(file)>1024*1024)
                 {if(std::filesystem::exists(previous))std::filesystem::remove(previous);std::filesystem::rename(file,previous);}
                 SYSTEMTIME utc{};GetSystemTime(&utc);
-                std::ofstream(file,std::ios::app)<<"[skinchanger-v126] run="<<diagnosticRun<<" utc="
+                std::ofstream(file,std::ios::app)<<"[skinchanger-v128] run="<<diagnosticRun<<" utc="
                     <<std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",utc.wYear,utc.wMonth,utc.wDay,utc.wHour,utc.wMinute,utc.wSecond)
                     <<" ms="<<int64_t(Now()*1000)<<' '<<message<<'\n';}catch(...){}
         }
@@ -1588,6 +1588,13 @@ namespace SkinChanger
         // corpse effects exclude it; the private HUD appearance does not.
         if(!event||!V::Enabled.Value||G::Unload||SDK::CleanScreenshot()||event->GetInt("attacker")==event->GetInt("userid"))return {};
         std::lock_guard lock(guard);if(stopped||!loaded)return {};
+        const int custom=event->GetInt("customkill");
+        const bool preserveCause=custom==TF_DMG_CUSTOM_SUICIDE||custom==TF_DMG_CUSTOM_TRIGGER_HURT;
+        if(!SkinRender::CanReplaceKillIcon(event->GetInt("attacker"),event->GetInt("userid"),preserveCause,event->GetString("weapon")))
+        {
+            Diagnostic(std::format("event=cosmetic_kill_icon_skipped customkill={} weapon={} reason=native_death_cause_preserved server_credit_unchanged=true",custom,event->GetString("weapon")));
+            return {};
+        }
         auto client=I::ClientEntityList->GetClientEntity(I::EngineClient->GetPlayerForUserID(event->GetInt("attacker")));
         auto player=client?client->As<CTFPlayer>():nullptr;if(!player||!player->IsPlayer())return {};
         auto held=player->m_hActiveWeapon().Get();auto weapon=held?held->As<CTFWeaponBase>():nullptr;
