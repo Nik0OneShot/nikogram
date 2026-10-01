@@ -19,7 +19,7 @@ MAKE_HOOK(CTFRagdoll_CreateTFRagdoll, S::CTFRagdoll_CreateTFRagdoll(), void,
         if(!cosmetics)return;
         pRagdoll->m_bGib()=false;
         if(cosmeticGold){pRagdoll->m_bGoldRagdoll()=true;pRagdoll->m_bIceRagdoll()=false;}
-        else if(cosmetics & SkinModel::DeathIce)pRagdoll->m_bIceRagdoll()=true;
+        else if(cosmetics & SkinModel::DeathIce){pRagdoll->m_bGoldRagdoll()=false;pRagdoll->m_bIceRagdoll()=true;}
         if(cosmetics & SkinModel::DeathAsh)pRagdoll->m_bBecomeAsh()=true;
         if(cosmetics & SkinModel::DeathPlasma)pRagdoll->m_bDissolving()=true;
     };

@@ -81,6 +81,7 @@
     <ClInclude Include="src\Features\SkinChanger\RenderPolicy.h" />
     <ClInclude Include="src\Features\SkinChanger\SoundBufferPolicy.h" />
     <ClInclude Include="src\Features\SkinChanger\PresetStorage.h" />
+    <ClInclude Include="src\Features\SkinChanger\IceStatuePolicy.h" />
     <ClCompile Include="src\Features\Visuals\Visuals.cpp" />
     <ClCompile Include="src\SDK\Definitions\Main\CTFWeaponBase.cpp" />
     <ClCompile Include="src\SDK\Definitions\Main\MD5.cpp" />

@@ -5,6 +5,7 @@
 #include "JigglePhysics.h"
 #include "PresetUiPolicy.h"
 #include "PresetStorage.h"
+#include "IceStatuePolicy.h"
 #include <shellapi.h>
 #include "../../SDK/Definitions/Main/ITextureCompositor.h"
 #include "../Visuals/Chams/Chams.h"
@@ -78,6 +79,7 @@ namespace SkinChanger
         std::map<int,GoldDeath> goldDeaths;
         struct Corpse {GoldDeath death;double seen=0;bool native=false;SkinRender::DeathSoundOnce sound;Vec3 origin;};
         IMaterial* statueGoldMaterial=nullptr;
+        IMaterial* statueIceMaterial=nullptr;
         std::map<uint32_t,Corpse> corpses;
         std::map<uint32_t,double> ragdollBirths;
         struct CorpsePose {SkinRender::FrozenPose pose;double seen=0;};
@@ -118,7 +120,7 @@ namespace SkinChanger
                 if(std::filesystem::exists(file)&&std::filesystem::file_size(file)>1024*1024)
                 {if(std::filesystem::exists(previous))std::filesystem::remove(previous);std::filesystem::rename(file,previous);}
                 SYSTEMTIME utc{};GetSystemTime(&utc);
-                std::ofstream(file,std::ios::app)<<"[skinchanger-v124] run="<<diagnosticRun<<" utc="
+                std::ofstream(file,std::ios::app)<<"[skinchanger-v126] run="<<diagnosticRun<<" utc="
                     <<std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",utc.wYear,utc.wMonth,utc.wDay,utc.wHour,utc.wMinute,utc.wSecond)
                     <<" ms="<<int64_t(Now()*1000)<<' '<<message<<'\n';}catch(...){}
         }
@@ -338,6 +340,16 @@ namespace SkinChanger
             }
             catch(const std::exception& e){status="Preset not loaded: "+std::string(e.what());return false;}
         }
+        void LoadDefaultOnActivation()
+        {
+            if(!defaultActivation.Observe(V::Enabled.Value,loaded,G::Unload))return;
+            const auto file=Directory()/"default.json";std::error_code error;
+            const bool exists=std::filesystem::exists(file,error);
+            const bool ok=exists&&!error&&Load(file);
+            if(!exists&&!error)status="Default skin preset not found; current selections retained.";
+            else if(error)status="Could not access default skin preset; current selections retained.";
+            Diagnostic(std::format("event=preset_activation_autoload name=default exists={} ok={} entries={} once_per_activation=true network_preferences_unchanged=true status={}",exists,ok,preset.size(),status));
+        }
         void CatalogLoad()
         {
             auto file=I::FileSystem->Open("scripts/items/items_game.txt","rb","GAME");if(!file){status="Item catalog unavailable; no appearances will be changed.";return;}
@@ -405,7 +417,8 @@ namespace SkinChanger
                 Diagnostic(std::format("event=weapon_script_cosmetics type={} single={} critical={} installed_only=true gameplay_info_unchanged=true",type,effects.Sound(SINGLE),effects.Sound(BURST)));
                 weaponScriptEffects.emplace(type,std::move(effects));
             }
-            auto current=Directory()/"current.json";if(std::filesystem::exists(current)){bool ok=Load(current);Diagnostic(std::format("event=preset_autoload ok={} entries={} status={}",ok,preset.size(),status));}
+            if(V::Enabled.Value)LoadDefaultOnActivation();
+            else {auto current=Directory()/"current.json";if(std::filesystem::exists(current)){bool ok=Load(current);Diagnostic(std::format("event=preset_autoload ok={} entries={} status={}",ok,preset.size(),status));}}
         }
         uint64_t PlayerID(CTFPlayer* player)
         {
@@ -1080,6 +1093,31 @@ namespace SkinChanger
         // Material reloads clear the visual-system registry, not our owned ref.
         F::Materials.m_mMatList[statueGoldMaterial];return statueGoldMaterial;
     }
+    IMaterial* IceStatueMaterial()
+    {
+        if(!statueIceMaterial)
+        {
+            std::array<bool,SkinIce::Textures.size()> assets{};
+            auto kv=new KeyValues("VertexLitGeneric");
+            for(size_t i=0;i<SkinIce::Textures.size();++i)
+            {
+                const auto& [parameter,path]=SkinIce::Textures[i];
+                auto texture=I::MaterialSystem->FindTexture(path,i==4?TEXTURE_GROUP_CUBE_MAP:TEXTURE_GROUP_MODEL,false);
+                assets[i]=texture&&!texture->IsError();
+                if(assets[i])kv->SetString(parameter,path);
+            }
+            if(!assets[0]){kv->SetString("$basetexture","vgui/white_additive");kv->SetString("$color2","[0.6 0.8 1]");}
+            for(const auto& [parameter,value]:SkinIce::Parameters)kv->SetString(parameter,value);
+            statueIceMaterial=F::Materials.Create("nikogram_ice_statue_v126",kv);
+            bool found=false;auto base=statueIceMaterial?statueIceMaterial->FindVar("$basetexture",&found,false):nullptr;
+            auto actual=found&&base?base->GetTextureValue():nullptr;
+            const bool valid=statueIceMaterial&&!statueIceMaterial->IsErrorMaterial()&&actual&&!actual->IsError();
+            WriteDiagnostic(std::format("event=cosmetic_ice_statue_material authored_texture={} normal_map={} phong_warp={} light_warp={} reflection={} detail={} valid={} authored_shader_inputs=true retained=true live_player_proxies=false",
+                assets[0],assets[1],assets[2],assets[3],assets[4],assets[5],valid));
+            if(!valid){F::Materials.Remove(statueIceMaterial);statueIceMaterial=nullptr;return nullptr;}
+        }
+        F::Materials.m_mMatList[statueIceMaterial];return statueIceMaterial;
+    }
     bool PrepareDeathDraw(const DrawModelState_t& state,const ModelRenderInfo_t& info,matrix3x4* bones,
         std::array<matrix3x4,MAXSTUDIOBONES>& output,matrix3x4*& drawBones,IMaterial*& material,bool effectPass)
     {
@@ -1098,13 +1136,13 @@ namespace SkinChanger
         auto corpse=corpses.find(corpseRef);if(corpse==corpses.end())return false;
         if(!effectPass)
         {
-            material=effects&DeathGold?GoldStatueMaterial():I::MaterialSystem->FindMaterial("models/player/shared/ice_player.vmt",TEXTURE_GROUP_CLIENT_EFFECTS);
+            material=effects&DeathGold?GoldStatueMaterial():IceStatueMaterial();
             if(!material||material->IsErrorMaterial()){material=nullptr;Diagnostic("event=cosmetic_death_draw result=authored_material_unavailable");}
         }
         // Never recreate an already-initialized ragdoll. If its death event
         // arrived late, freeze owned render matrices instead of rebuilding or
         // borrowing engine physics objects. Hats use the same corpse identity.
-        if(!corpse->second.native&&(effects&DeathGold))
+        if(SkinRender::NeedsFrozenStatuePose(effects,corpse->second.native))
         {
             const int count=state.m_pStudioHdr->numbones;if(count<1||count>MAXSTUDIOBONES)return false;
             std::array<matrix3x4,MAXSTUDIOBONES> scratch{};matrix3x4* source=nullptr;
@@ -1116,7 +1154,7 @@ namespace SkinChanger
             auto& pose=corpsePoses[key];const bool first=pose.pose.bones.empty();pose.seen=Now();
             if(!pose.pose.Copy(std::span<const matrix3x4>(source,count),std::span<matrix3x4>(output.data(),count)))return false;
             drawBones=output.data();
-            if(first)WriteDiagnostic(std::format("event=cosmetic_death_late_pose effects={} victim={} bones={} wearable={} render_only=true physics_recreated=false",effects,ragdoll->m_hPlayer().Get()->entindex(),count,entity!=root));
+            if(first)WriteDiagnostic(std::format("event=cosmetic_death_late_pose effects={} corpse={} bones={} wearable={} render_only=true physics_recreated=false",effects,info.entity_index,count,entity!=root));
         }
         return true;
     }
@@ -1261,16 +1299,7 @@ namespace SkinChanger
             if(!diagnosticStarted){diagnosticStarted=true;WriteDiagnostic("event=run_start network_diagnostics=5 shared_actual_killstreaks=true preview_counts_local_only=true context=replicated_human_roster transport_context=initialized_tf2 local_host_supported=true defaults_unchanged=true local_logs_only=true");}
             if(!loaded){if(now-lastSave>=5){lastSave=now;CatalogLoad();}}
             if(!loaded){netLog.state="catalog_unavailable";NetworkReport(now);return;}
-            if(defaultActivation.Observe(V::Enabled.Value,loaded,G::Unload))
-            {
-                const auto file=Directory()/"default.json";
-                std::error_code error;
-                const bool exists=std::filesystem::exists(file,error);
-                const bool ok=exists&&!error&&Load(file);
-                if(!exists&&!error)status="Default skin preset not found; current selections retained.";
-                else if(error)status="Could not access default skin preset; current selections retained.";
-                Diagnostic(std::format("event=preset_activation_autoload name=default exists={} ok={} entries={} once_per_activation=true network_preferences_unchanged=true status={}",exists,ok,preset.size(),status));
-            }
+            LoadDefaultOnActivation();
             WarmEffectModels();
             // Placement speech is tied to the actual sapper's full handle,
             // never rendering frequency or a repeated kill/event delivery.
@@ -1622,7 +1651,7 @@ namespace SkinChanger
     }
     void Shutdown()
     {
-        std::lock_guard lock(guard);UpdateUnusualParticles(true);UpdateKillstreakParticles(true);ClearPaintTextures();lifeStreaks.Clear();corpses.clear();ragdollBirths.clear();corpsePoses.clear();goldDeaths.clear();F::Materials.Remove(statueGoldMaterial);statueGoldMaterial=nullptr;stopped=true;Disconnect();if(loaded&&dirty)Save(Directory()/"current.json");
+        std::lock_guard lock(guard);UpdateUnusualParticles(true);UpdateKillstreakParticles(true);ClearPaintTextures();lifeStreaks.Clear();corpses.clear();ragdollBirths.clear();corpsePoses.clear();goldDeaths.clear();F::Materials.Remove(statueGoldMaterial);statueGoldMaterial=nullptr;F::Materials.Remove(statueIceMaterial);statueIceMaterial=nullptr;stopped=true;Disconnect();if(loaded&&dirty)Save(Directory()/"current.json");
         // Dynamic references are engine resources, not changes to weapon entities.
         for(const auto& [path,model]:models)if(model.owned)I::ModelInfoClient->ReleaseDynamicModel(model.index);
         models.clear();
@@ -2301,7 +2330,7 @@ namespace SkinChanger
         const auto tip=[](const char* message){FTooltip(message,IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled));};
         FDropdown(V::ThirdPersonAnimations,FDropdownEnum::InlineTitle);
         tip("Authentic uses the selected weapon's animation family. Legacy keeps the original animations. Gameplay hitboxes do not change.");
-        FToggle(V::Enabled);FToggle(V::Follow,FToggleEnum::Left);FToggle(V::PerClass,FToggleEnum::Right);
+        FToggle(V::Enabled);LoadDefaultOnActivation();FToggle(V::Follow,FToggleEnum::Left);FToggle(V::PerClass,FToggleEnum::Right);
         if(!loaded){TextUnformatted("Waiting for the item catalog.");return;}
         static int weaponID=14,editClass=2;
         auto local=H::Entities.GetLocal();auto held=H::Entities.GetWeapon();

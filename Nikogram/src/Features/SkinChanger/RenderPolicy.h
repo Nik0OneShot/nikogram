@@ -13,9 +13,12 @@
 #include <set>
 #include <algorithm>
 #include <cstring>
+#include "Model.h"
 
 namespace SkinRender
 {
+    inline bool NeedsFrozenStatuePose(int effects,bool native)
+    {return !native&&(effects&(SkinModel::DeathGold|SkinModel::DeathIce));}
     // A temporary cosmetic sequence must not enter the native gameplay blend
     // history. Scope by entity so nested attachment/other-player draws retain
     // their normal transitions, and always restore the previous context.
