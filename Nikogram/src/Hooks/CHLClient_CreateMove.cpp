@@ -1,9 +1,11 @@
 #include "../SDK/SDK.h"
 #include "../Features/Aimbot/SelfDamageDiagnostics.h"
 #include "../Features/Aimbot/AmmoLifetimeDiagnostics.h"
+#include "../Features/Aimbot/AmmoConservationPolicy.h"
 
 #include "../Features/Aimbot/Aimbot.h"
 #include "../Features/Backtrack/Backtrack.h"
+#include "../Features/Triggerbot/Triggerbot.h"
 #include "../Features/CritHack/CritHack.h"
 #include "../Features/EnginePrediction/EnginePrediction.h"
 #include "../Features/Misc/Misc.h"
@@ -25,6 +27,13 @@ static no_inline void UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUse
 	G::LastUserCmd = G::CurrentUserCmd ? G::CurrentUserCmd : pCmd;
 	G::CurrentUserCmd = pCmd;
 	G::OriginalCmd = *pCmd;
+	// Observe raw input on every command, including weapon switches and aim-off
+	// commands. A manually started charge must not become an automated one on release.
+	if (pLocal && pWeapon && pLocal->IsAlive() && pWeapon->GetWeaponID()==TF_WEAPON_PIPEBOMBLAUNCHER)
+		AmmoConservationPolicy::chargeOwnership.Observe(pLocal->As<IHandleEntity>()->GetRefEHandle().ToInt(),
+			pWeapon->As<IHandleEntity>()->GetRefEHandle().ToInt(),pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),
+			bool(pCmd->buttons&(IN_ATTACK|IN_ATTACK2|IN_USE)));
+	else AmmoConservationPolicy::chargeOwnership={};
 
 	if (!pWeapon)
 		return;
@@ -164,13 +173,19 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 	F::Ticks.Start(pLocal, pCmd);
 		F::Aimbot.Run(pLocal, pWeapon, pCmd);
 	F::Ticks.End(pLocal, pCmd);
+		F::Triggerbot.Run(pLocal, pWeapon, pCmd);
 		F::CritHack.Run(pLocal, pWeapon, pCmd);
+	const Vec3 beforeSpreadCorrection=pCmd->viewangles;
 		F::NoSpread.Run(pLocal, pWeapon, pCmd);
+	const Vec3 spreadCorrection=pCmd->viewangles-beforeSpreadCorrection;
 		F::Misc.RunPost(pLocal, pCmd);
 		F::PacketManip.Run(pLocal, pWeapon, pCmd, pSendPacket);
 		F::Ticks.CreateMove(pLocal, pWeapon, pCmd, pSendPacket);
 		F::AntiAim.Run(pLocal, pWeapon, pCmd, *pSendPacket);
 		F::AntiCheatCompatibility.CreateMove(pCmd, pSendPacket);
+		// Spread correction counter-rotates the command, not the intended cursor
+		// direction. Keep later angle changes, but undo that rotation for matching.
+		F::Backtrack.ToCursor(pLocal, pWeapon, pCmd, pCmd->viewangles-spreadCorrection);
 		F::Visuals.CreateMove(pLocal, pWeapon);
 		F::Visuals.LocalAnimations(pLocal, pWeapon, pCmd, *pSendPacket);
 	F::EnginePrediction.End(pLocal, pCmd);

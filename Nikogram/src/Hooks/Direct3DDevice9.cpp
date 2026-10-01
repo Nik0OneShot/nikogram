@@ -3,24 +3,27 @@
 #include "../SDK/SDK.h"
 #include "../Features/ImGui/Render.h"
 #include "../Features/ImGui/Menu/Menu.h"
+#include <type_traits>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 MAKE_HOOK(Direct3DDevice9_Present, U::Memory.GetVirtual(I::DirectXDevice, 17), HRESULT,
-	IDirect3DDevice9* pDevice, const RECT* pSource, const RECT* pDestination, const RGNDATA* pDirtyRegion)
+	IDirect3DDevice9* pDevice, const RECT* pSource, const RECT* pDestination, HWND hDestinationWindow, const RGNDATA* pDirtyRegion)
 {
-	DEBUG_RETURN(Direct3DDevice9_Present, pDevice, pSource, pDestination, pDirtyRegion);
+	static_assert(std::is_same_v<FN,Direct3DContract::Present>,"Present hook must match the Windows SDK COM signature");
+	DEBUG_RETURN(Direct3DDevice9_Present, pDevice, pSource, pDestination, hDestinationWindow, pDirtyRegion);
 
 	if (!G::Unload)
 		F::Render.Render(pDevice);
 
-	return CALL_ORIGINAL(pDevice, pSource, pDestination, pDirtyRegion);
+	return Direct3DContract::ForwardPresent(Hook.As<FN>(),pDevice,pSource,pDestination,hDestinationWindow,pDirtyRegion);
 }
 
 MAKE_HOOK(Direct3DDevice9_Reset, U::Memory.GetVirtual(I::DirectXDevice, 16), HRESULT,
 	LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters)
 {
 	DEBUG_RETURN(Direct3DDevice9_Reset, pDevice, pPresentationParameters);
+	if(G::Unload)return CALL_ORIGINAL(pDevice,pPresentationParameters);
 
 	F::Render.ReleaseLauncherTextures();
 	ImGui_ImplDX9_InvalidateDeviceObjects();
@@ -31,6 +34,8 @@ MAKE_HOOK(Direct3DDevice9_Reset, U::Memory.GetVirtual(I::DirectXDevice, 16), HRE
 
 LONG __stdcall WndProc::Func(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+	HookLifetime::Scope hookLifetimeScope;
+	if(!StartupPolicy::gate.Ready()||G::Unload)return CallWindowProc(Original,hWnd,uMsg,wParam,lParam);
 	if (F::Menu.m_bIsOpen)
 	{
 		ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);

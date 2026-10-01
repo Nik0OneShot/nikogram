@@ -1,5 +1,6 @@
 #pragma once
 #include "../../../SDK/SDK.h"
+#include "../AimbotAuditPolicy.h"
 
 //#define DEBUG_VACCINATOR
 
@@ -15,6 +16,7 @@ private:
 
 	CTFPlayer* m_pLocal = nullptr;
 	CWeaponMedigun* m_pWeapon = nullptr;
+	int m_iWeaponHandle=0;
 
 	int m_iResistType = -1;
 	float m_flChargeLevel = 0.f;
@@ -22,9 +24,7 @@ private:
 	bool m_bPreventResistSwap = false;
 	bool m_bPreventResistCharge = false;
 
-	int m_iDamagedType = -1;
-	float m_flDamagedDPS = -1;
-	float m_flDamagedTime = 0.f;
+	std::array<AimbotAuditPolicy::DamageHistory,2> m_DamageHistory = {};
 
 #ifdef DEBUG_VACCINATOR
 	std::array<float, MEDIGUN_NUM_RESISTS> vResistDangers = {};

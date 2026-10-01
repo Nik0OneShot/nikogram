@@ -5,6 +5,10 @@
 
 namespace GrenadeCollisionPolicy
 {
+    // All simulated own-shot projectiles share the same predicted-player recovery.
+    // Geometry/air splash candidates and existing-projectile airblast stay unchanged.
+    inline bool TargetClip(bool direct,bool player,bool ownShot)
+    { return direct && player && ownShot; }
     // Keep grenade foot candidates inside the lower body, above floor contact.
     inline std::array<float,2> FeetHeights(float bottom,float top,float hull,float shift)
     {

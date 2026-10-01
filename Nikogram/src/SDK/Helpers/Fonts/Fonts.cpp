@@ -24,9 +24,22 @@ void CFonts::Reload(float flDPI, bool bOutline)
 		if (fFont.m_dwFont)
 			I::MatSystemSurface->SetFontGlyphSet(fFont.m_dwFont, fFont.m_szName, fFont.m_nTall, fFont.m_nWeight, 0, 0, fFont.m_nFlags);
 	}
+	// A bounded size pool keeps radar text scalable without leaking surface font handles.
+	for(size_t n=0;n<m_aRadarFonts.size();++n)
+	{
+		auto& font=m_aRadarFonts[n];
+		font={family,int(n)+6,FONTFLAG_ANTIALIAS,700,font.m_dwFont};
+		if(!font.m_dwFont)font.m_dwFont=I::MatSystemSurface->CreateFont();
+		if(font.m_dwFont)I::MatSystemSurface->SetFontGlyphSet(font.m_dwFont,font.m_szName,font.m_nTall,font.m_nWeight,0,0,font.m_nFlags);
+	}
 }
 
 const Font_t& CFonts::GetFont(EFonts eFont)
 {
 	return m_mFonts[eFont];
+}
+
+const Font_t& CFonts::GetRadarFont(int height)
+{
+	return m_aRadarFonts[std::clamp(height,6,48)-6];
 }

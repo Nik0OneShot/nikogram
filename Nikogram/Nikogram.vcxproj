@@ -911,6 +911,8 @@
     <ClCompile Include="src\Features\Aimbot\AimbotGlobal\AimbotGlobal.cpp" />
     <ClCompile Include="src\Features\Aimbot\AimbotHitscan\AimbotHitscan.cpp" />
     <ClCompile Include="src\Features\Aimbot\AimbotMelee\AimbotMelee.cpp" />
+    <ClCompile Include="src\Features\Aimbot\AutoFlarePunch.cpp" />
+    <ClCompile Include="src\Features\Triggerbot\Triggerbot.cpp" />
     <ClCompile Include="src\Features\Aimbot\AimbotProjectile\AimbotProjectile.cpp" />
     <ClCompile Include="src\Features\Aimbot\AutoAirblast\AutoAirblast.cpp" />
     <ClCompile Include="src\Features\Aimbot\AutoDetonate\AutoDetonate.cpp" />
@@ -958,6 +960,17 @@
     <ClCompile Include="src\Features\ImGui\Notifications\Notifications.cpp" />
     <ClCompile Include="src\Features\Visuals\OffscreenArrows\OffscreenArrows.cpp" />
     <ClCompile Include="src\Features\Visuals\SpectatorList\SpectatorList.cpp" />
+    <ClCompile Include="src\Features\Visuals\Radar\Radar.cpp" />
+    <ClInclude Include="src\Features\Visuals\Radar\Radar.h" />
+    <ClInclude Include="src\Features\Visuals\Radar\RadarPolicy.h" />
+    <ClCompile Include="src\Features\SkinChanger\SkinChanger.cpp" />
+    <ClCompile Include="src\Hooks\SkinChanger_KillstreakUI.cpp" />
+    <ClCompile Include="src\Hooks\SkinChanger_HudModel.cpp" />
+    <ClInclude Include="src\Features\SkinChanger\SkinChanger.h" />
+    <ClInclude Include="src\Features\SkinChanger\Model.h" />
+    <ClInclude Include="src\Features\SkinChanger\Protocol.h" />
+    <ClInclude Include="src\Features\SkinChanger\RenderPolicy.h" />
+    <ClInclude Include="src\Features\SkinChanger\JigglePhysics.h" />
     <ClCompile Include="src\Features\Visuals\Visuals.cpp" />
     <ClCompile Include="src\Features\World\World.cpp" />
     <ClCompile Include="src\Hooks\bf_read_ReadString.cpp" />
@@ -1037,6 +1050,7 @@
     <ClCompile Include="src\Hooks\CTFRagdoll_CreateTFRagdoll.cpp" />
     <ClCompile Include="src\Hooks\CTFWeaponBase_CalcIsAttackCritical.cpp" />
     <ClCompile Include="src\Hooks\CTFWeaponBase_GetShootSound.cpp" />
+    <ClCompile Include="src\Hooks\CTFWeaponBase_TranslateViewmodelHandActivity.cpp" />
     <ClCompile Include="src\Hooks\CThirdPersonManager_Update.cpp" />
     <ClCompile Include="src\Hooks\CViewRender_DrawUnderwaterOverlay.cpp" />
     <ClCompile Include="src\Hooks\CViewRender_LevelInit.cpp" />
@@ -1227,6 +1241,12 @@
     <ClInclude Include="src\Features\Aimbot\AimbotGlobal\AimbotGlobal.h" />
     <ClInclude Include="src\Features\Aimbot\AimbotHitscan\AimbotHitscan.h" />
     <ClInclude Include="src\Features\Aimbot\AimbotMelee\AimbotMelee.h" />
+    <ClInclude Include="src\Features\Aimbot\AutoFlarePunch.h" />
+    <ClInclude Include="src\Features\Aimbot\FlareComboPolicy.h" />
+    <ClInclude Include="src\Features\Aimbot\AimFOVVisualPolicy.h" />
+    <ClInclude Include="src\Features\Aimbot\CombatPriorityPolicy.h" />
+    <ClInclude Include="src\Features\Triggerbot\Triggerbot.h" />
+    <ClInclude Include="src\Features\Triggerbot\TriggerPolicy.h" />
     <ClInclude Include="src\Features\Aimbot\AimbotProjectile\AimbotProjectile.h" />
     <ClInclude Include="src\Features\Aimbot\AutoAirblast\AutoAirblast.h" />
     <ClInclude Include="src\Features\Aimbot\AutoDetonate\AutoDetonate.h" />
@@ -1516,6 +1536,7 @@
     <ClInclude Include="src\Utils\Macros\Macros.h" />
     <ClInclude Include="src\Utils\Hash\FNV1A.h" />
     <ClInclude Include="src\Utils\Hooks\Hooks.h" />
+    <ClInclude Include="src\Utils\Hooks\Lifetime.h" />
     <ClInclude Include="src\Utils\Interfaces\Interfaces.h" />
     <ClInclude Include="src\Utils\KeyHandler\KeyHandler.h" />
     <ClInclude Include="src\Utils\Math\BaseMath.h" />

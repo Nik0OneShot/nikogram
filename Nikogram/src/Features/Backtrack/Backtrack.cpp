@@ -1,4 +1,10 @@
 #include "Backtrack.h"
+#include "BacktrackPolicy.h"
+#include "CursorBacktrackPolicy.h"
+#include "../Aimbot/Aimbot.h"
+#include "../Aimbot/AimbotGlobal/AimbotGlobal.h"
+#include "../ImGui/Menu/Menu.h"
+#include "../Aimbot/SelfDamageDiagnostics.h"
 
 #include "../PacketManip/FakeLag/FakeLag.h"
 #include "../Ticks/Ticks.h"
@@ -8,7 +14,12 @@ void CBacktrack::Reset()
 {
 	m_mRecords.clear();
 	m_dSequences.clear();
-	m_iLastInSequence = 0;
+    m_iLastInSequence = 0;
+    m_mDidShoot.clear();
+    m_nOldInSequenceNr=m_nOldInReliableState=m_nLastInSequenceNr=m_nOldTickBase=0;
+    m_iTickCount=0;m_flMaxUnlag=1.f;m_flFakeLatency=m_flLatencyDrift=0.f;
+    m_flFakeInterp=std::isfinite(G::Lerp)?std::clamp(G::Lerp,0.f,1.f):.015f;
+    m_flSentInterp=-1.f;m_bLerpQueued=m_bSettingUpBones=false;
 }
 
 
@@ -19,9 +30,9 @@ float CBacktrack::GetReal(int iFlow, bool bNoFake)
 	if (!pNetChan)
 		return 0.f;
 
-	if (iFlow != MAX_FLOWS)
-		return pNetChan->GetLatency(iFlow) - (bNoFake && iFlow == FLOW_INCOMING ? GetFakeLatency() : 0.f);
-	return pNetChan->GetLatency(FLOW_INCOMING) + pNetChan->GetLatency(FLOW_OUTGOING) - (bNoFake ? GetFakeLatency() : 0.f);
+    const float latency=iFlow!=MAX_FLOWS?pNetChan->GetLatency(iFlow)-(bNoFake && iFlow==FLOW_INCOMING?GetFakeLatency():0.f)
+        :pNetChan->GetLatency(FLOW_INCOMING)+pNetChan->GetLatency(FLOW_OUTGOING)-(bNoFake?GetFakeLatency():0.f);
+    return std::isfinite(latency)?std::max(latency,0.f):0.f;
 }
 
 float CBacktrack::GetWishFake()
@@ -52,17 +63,17 @@ float CBacktrack::GetFakeInterp()
 
 float CBacktrack::GetWindow()
 {
-	return Vars::Backtrack::Window.Value / 1000.f;
+    return float(BacktrackPolicy::Window(Vars::Backtrack::Window.Value/1000.,TICK_INTERVAL));
 }
 
 int CBacktrack::GetAnticipatedChoke(int iMethod)
 {
 	int iAnticipatedChoke = 0;
-	if (F::Ticks.CanChoke() && G::PrimaryWeaponType != EWeaponType::HITSCAN && Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Silent)
+    if (F::Ticks.CanChoke() && G::PrimaryWeaponType != EWeaponType::HITSCAN && iMethod == Vars::Aimbot::General::AimTypeEnum::Silent)
 		iAnticipatedChoke = 1;
 	if (F::FakeLag.m_iGoal && !Vars::Fakelag::UnchokeOnAttack.Value && F::Ticks.m_iShiftedTicks == F::Ticks.m_iShiftedGoal && !F::Ticks.m_bDoubletap && !F::Ticks.m_bSpeedhack)
 		iAnticipatedChoke = F::FakeLag.m_iGoal - I::ClientState->chokedcommands; // iffy, unsure if there is a good way to get it to work well without unchoking
-	return iAnticipatedChoke;
+    return std::max(iAnticipatedChoke,0);
 }
 
 void CBacktrack::CreateMove(CUserCmd* pCmd)
@@ -76,6 +87,125 @@ void CBacktrack::CreateMove(CUserCmd* pCmd)
 		pCmd->tick_count -= TIME_TO_TICKS(G::Lerp);
 }
 
+CursorHit_t CBacktrack::FindCursorHit(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, const Vec3& shotAngles,
+    int hitboxes,int historyMode,bool currentPose,bool respectFilters)
+{
+    CursorHit_t result;
+    if (!pLocal || !pWeapon || !(hitboxes&31)) return result;
+    const Vec3 eye=pLocal->GetShootPos();
+    Vec3 direction; Math::AngleVectors(shotAngles+pLocal->m_vecPunchAngle(),&direction);
+    const auto finite=[](const Vec3& v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);};
+    if (!finite(eye) || !finite(direction)) return result;
+    const CursorBacktrackPolicy::Point origin={eye.x,eye.y,eye.z}, ray={direction.x,direction.y,direction.z};
+    const float range=pWeapon->GetRange();
+    if (!std::isfinite(range) || range<=0.f) return result;
+    if (currentPose)
+    {
+        CTraceFilterHitscan liveFilter;liveFilter.pSkip=pLocal;
+        CGameTrace live={};
+        SDK::Trace(eye,eye+direction*range,MASK_SHOT|CONTENTS_GRATE,&liveFilter,&live);
+        if (!live.startsolid && !live.allsolid && live.m_pEnt && live.m_pEnt->IsPlayer())
+        {
+            auto player=live.m_pEnt->As<CTFPlayer>();
+            if (player!=pLocal && player->m_iTeamNum()!=pLocal->m_iTeamNum() && player->IsAlive()
+                && !player->IsDormant() && !player->IsAGhost()
+                && (!respectFilters || !F::AimbotGlobal.ShouldIgnore(player,pLocal,pWeapon))
+                && live.hitbox>=0 && live.hitbox<player->GetNumOfHitboxes()
+                && F::AimbotGlobal.IsHitboxValid(player,live.hitbox,hitboxes))
+                return {player,nullptr,live.hitbox,0,double(range*live.fraction)};
+        }
+    }
+    if (historyMode!=Vars::Triggerbot::BacktrackEnum::Last && historyMode!=Vars::Triggerbot::BacktrackEnum::All) return result;
+
+    // Trace to historical geometry without mutating the entity's live pose.
+    // World, props and other live actors still block the shot.
+    class CursorFilter : public CTraceFilterHitscan
+    {
+    public:
+        CBaseEntity* candidate=nullptr;
+        bool ShouldHitEntity(IHandleEntity* entity,int mask) override
+        {
+            if (reinterpret_cast<CBaseEntity*>(entity)==candidate) return false;
+            return CTraceFilterHitscan::ShouldHitEntity(entity,mask);
+        }
+    } filter;
+    filter.pSkip=pLocal;
+    const TickRecord* selected=nullptr;
+    int hitbox=-1, tested=0;
+    double nearest=range;
+    for (auto entity : H::Entities.GetGroup(EntityEnum::PlayerEnemy))
+    {
+        auto player=entity->As<CTFPlayer>();
+        if (!player->IsAlive() || player->IsAGhost() || player->IsDormant()) continue;
+        if (respectFilters && F::AimbotGlobal.ShouldIgnore(player,pLocal,pWeapon)) continue;
+        auto set=player->GetHitboxSet();
+        if (!set) continue;
+        std::vector<TickRecord*> records;
+        if (!GetRecords(entity,records)) continue;
+        auto valid=GetValidRecords(records);
+        // Newest matching pose wins ties rather than rewinding unnecessarily.
+        std::sort(valid.begin(),valid.end(),[](auto a,auto b){return a->m_flSimTime>b->m_flSimTime;});
+        if (historyMode==Vars::Triggerbot::BacktrackEnum::Last && !valid.empty()) valid={valid.back()};
+        filter.candidate=entity;
+        for (auto record : valid)
+        {
+            ++tested;
+            for (int boxIndex=0; boxIndex<set->numhitboxes; ++boxIndex)
+            {
+                auto box=set->pHitbox(boxIndex);
+                if (!box || box->bone<0 || box->bone>=MAXSTUDIOBONES) continue;
+                if (!F::AimbotGlobal.IsHitboxValid(player,boxIndex,hitboxes)) continue;
+                CursorBacktrackPolicy::Matrix bone{};
+                for (int row=0; row<3; ++row) for (int col=0; col<4; ++col)
+                    bone[row][col]=record->m_aBones[box->bone][row][col];
+                double distance;
+                if (!CursorBacktrackPolicy::HitDistance(origin,ray,
+                    {box->bbmin.x,box->bbmin.y,box->bbmin.z}, {box->bbmax.x,box->bbmax.y,box->bbmax.z},
+                    bone,range,distance) || (selected && distance>=nearest-.001)) continue;
+                CGameTrace trace={};
+                SDK::Trace(eye,eye+direction*float(distance),MASK_SHOT|CONTENTS_GRATE,&filter,&trace);
+                if (trace.startsolid || trace.allsolid || trace.fraction<1.f) continue;
+                selected=record; nearest=distance; hitbox=boxIndex;
+                result.player=player;
+            }
+        }
+    }
+    result.record=selected;result.hitbox=hitbox;result.tested=tested;result.distance=selected?nearest:0.;
+    return result;
+}
+
+void CBacktrack::ToCursor(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd,const Vec3& shotAngles)
+{
+    if (!pLocal || !pWeapon || !pCmd || !pLocal->IsAlive() || !pLocal->CanAttack()
+        || I::EngineVGui->IsGameUIVisible() || F::Menu.m_bIsOpen) return;
+    if (!CursorBacktrackPolicy::ManualShot(Vars::Triggerbot::BacktrackToCursor.Value,
+        !!(G::OriginalCmd.buttons & IN_ATTACK), !!(pCmd->buttons & IN_ATTACK),
+        G::CanPrimaryAttack && G::Attacking == 1, G::PrimaryWeaponType == EWeaponType::HITSCAN,
+        F::Aimbot.m_bHitscanAssisted, !!(pCmd->buttons & IN_USE), !!pCmd->weaponselect)) return;
+    const int weaponID=pWeapon->GetWeaponID();
+    if (weaponID==TF_WEAPON_MEDIGUN || weaponID==TF_WEAPON_LASER_POINTER || weaponID==TF_WEAPON_SNIPERRIFLE_CLASSIC) return;
+    const auto hit=FindCursorHit(pLocal,pWeapon,shotAngles,31,Vars::Triggerbot::BacktrackEnum::All,false,false);
+    const auto selected=hit.record;
+    const int target=hit.player?hit.player->entindex():-1;
+    const int previousTick=pCmd->tick_count;
+    if (selected)
+    {
+        pCmd->tick_count=TIME_TO_TICKS(selected->m_flSimTime)+TIME_TO_TICKS(GetFakeInterp());
+        ReportSelection(selected,pCmd,target);
+    }
+    if (SelfDamageDiagnostics::Enabled())
+    {
+        static unsigned long long last=0; const auto now=GetTickCount64();
+        if (!last || now-last>=100)
+        {
+            last=now;
+            SelfDamageDiagnostics::Write("cursor_backtrack",std::format(
+                "cmd={} result={} target={} hitbox={} distance={} tested_records={} before_tick={} command_tick={} angles_unchanged=1 buttons_unchanged=1 shot_attempt_not_confirmation=1",
+                pCmd->command_number,selected?"selected":"no_clear_historical_hit",target,hit.hitbox,hit.distance,hit.tested,previousTick,pCmd->tick_count));
+        }
+    }
+}
+
 void CBacktrack::SendLerp()
 {
 	static Timer tTimer = {};
@@ -83,35 +213,40 @@ void CBacktrack::SendLerp()
 		return;
 
 	float flTarget = GetWishLerp();
-	if (m_flSentInterp != flTarget)
+    if (m_flSentInterp != flTarget || !m_bLerpQueued)
 	{
-		m_flSentInterp = flTarget;
-
-		auto pNetChan = reinterpret_cast<CNetChannel*>(I::EngineClient->GetNetChannelInfo());
-		if (pNetChan && I::EngineClient->IsConnected())
-		{
-			NET_SetConVar tConvar1 = { "cl_interp", std::to_string(m_flSentInterp).c_str() };
-			pNetChan->SendNetMsg(tConvar1);
+        auto pNetChan = reinterpret_cast<CNetChannel*>(I::EngineClient->GetNetChannelInfo());
+        if (pNetChan && I::EngineClient->IsConnected())
+        {
+            m_flSentInterp = flTarget; // The outgoing-message hook uses this desired value.
+            NET_SetConVar tConvar1 = { "cl_interp", std::to_string(m_flSentInterp).c_str() };
+            const bool interpQueued=pNetChan->SendNetMsg(tConvar1);
 
 			NET_SetConVar tConvar2 = { "cl_interp_ratio", "1" };
-			pNetChan->SendNetMsg(tConvar2);
+            const bool ratioQueued=pNetChan->SendNetMsg(tConvar2);
 
 			NET_SetConVar tConvar3 = { "cl_interpolate", "1" };
-			pNetChan->SendNetMsg(tConvar3);
+            const bool interpolateQueued=pNetChan->SendNetMsg(tConvar3);
+            m_bLerpQueued=interpQueued && ratioQueued && interpolateQueued;
+            if(SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("backtrack_interp",std::format("requested={} queued={} applied={}",flTarget,m_bLerpQueued,m_flFakeInterp));
 		}
 	}
 }
 
 void CBacktrack::SetLerp()
 {
-	m_flFakeInterp = m_flSentInterp;
+    if(std::isfinite(m_flSentInterp) && m_flSentInterp>=0.f && m_bLerpQueued)
+        m_flFakeInterp=std::clamp(m_flSentInterp,0.f,m_flMaxUnlag);
 }
 
 void CBacktrack::UpdateDatagram()
 {
 	auto pNetChan = reinterpret_cast<CNetChannel*>(I::EngineClient->GetNetChannelInfo());
-	if (!pNetChan)
-		return;
+    if (!pNetChan)
+        return;
+
+    if(pNetChan->m_nInSequenceNr<m_iLastInSequence)
+    {m_dSequences.clear();m_iLastInSequence=m_nLastInSequenceNr=0;m_flLatencyDrift=m_flFakeLatency=0.f;}
 
 	if (auto pLocal = H::Entities.GetLocal())
 		m_nOldTickBase = pLocal->m_nTickBase();
@@ -122,19 +257,19 @@ void CBacktrack::UpdateDatagram()
 		m_dSequences.emplace_front(pNetChan->m_nInReliableState, pNetChan->m_nInSequenceNr, I::GlobalVars->realtime);
 	}
 
-	if (m_dSequences.size() > 67)
-		m_dSequences.pop_back();
+    while(m_dSequences.size()>1 && (m_dSequences.size()>2048
+        || I::GlobalVars->realtime-m_dSequences.back().m_flTime>m_flMaxUnlag+2*TICK_INTERVAL)) m_dSequences.pop_back();
 }
 
 
 
 bool CBacktrack::GetRecords(CBaseEntity* pEntity, std::vector<TickRecord*>& vReturn)
 {
-	if (!m_mRecords.contains(pEntity))
-		return false;
-
-	auto& vRecords = m_mRecords[pEntity];
-	vReturn.reserve(vRecords.size());
+    auto it=m_mRecords.find(pEntity);
+    if(it==m_mRecords.end() || it->second.empty())
+        return false;
+    auto& vRecords = it->second;
+    vReturn.reserve(vReturn.size()+vRecords.size());
 	for (auto& tRecord : vRecords)
 		vReturn.push_back(&tRecord);
 	return true;
@@ -149,36 +284,44 @@ std::vector<TickRecord*> CBacktrack::GetValidRecords(std::vector<TickRecord*>& v
 	if (!pNetChan)
 		return {};
 
-	std::vector<TickRecord*> vReturn = {};
-	float flCorrect = std::clamp(GetReal(MAX_FLOWS, false) + ROUND_TO_TICKS(GetFakeInterp()), 0.f, m_flMaxUnlag) + flTimeMod;
-	int iServerTick = m_iTickCount + TIME_TO_TICKS(GetReal(FLOW_OUTGOING)) + GetAnticipatedChoke() + Vars::Backtrack::Offset.Value;
-
-	if (!F::AntiCheatCompatibility.Active() && GetWindow())
-	{
-		for (auto pRecord : vRecords)
-		{
-			float flDelta = flCorrect - TICKS_TO_TIME(iServerTick - TIME_TO_TICKS(pRecord->m_flSimTime));
-			if (fabsf(flDelta) > GetWindow())
-				continue;
-
-			vReturn.push_back(pRecord);
-		}
-	}
-
-	if (vReturn.empty())
-	{	// make sure there is at least 1 record
-		float flMinDelta = 0.2f;
-		for (auto pRecord : vRecords)
-		{
-			float flDelta = flCorrect - TICKS_TO_TIME(iServerTick - TIME_TO_TICKS(pRecord->m_flSimTime));
-			if (fabsf(flDelta) > flMinDelta)
-				continue;
-
-			flMinDelta = fabsf(flDelta);
-			vReturn = { pRecord };
-		}
-	}
-	else if (pLocal && vReturn.size() > 1)
+    std::vector<TickRecord*> vReturn = {};
+    vReturn.reserve(vRecords.size());
+    float flCorrect = std::clamp(GetReal(MAX_FLOWS, false) + ROUND_TO_TICKS(GetFakeInterp()), 0.f, m_flMaxUnlag) + flTimeMod;
+    int iServerTick = m_iTickCount + TIME_TO_TICKS(GetReal(FLOW_OUTGOING)) + GetAnticipatedChoke() + Vars::Backtrack::Offset.Value;
+    const float window=GetWindow();
+    // Window zero retains the original nearest-record mode, but never forces
+    // a record outside the server-safe timing allowance. No unsafe fallback.
+    const bool nearestOnly=F::AntiCheatCompatibility.Active() || window<=0.f;
+    const float allowance=window>0.f?window:float(BacktrackPolicy::SafeWindow(TICK_INTERVAL));
+    TickRecord* nearest=nullptr;float minDelta=allowance;
+    int invalid=0,outside=0;
+    for(auto* record : vRecords)
+    {
+        if(!record || !BacktrackPolicy::Usable(record->m_flSimTime,record->m_bInvalid,TICKS_TO_TIME(iServerTick),m_flMaxUnlag,TICK_INTERVAL,flTimeMod))
+        {++invalid;continue;}
+        const auto finite=[](const Vec3& value){return std::isfinite(value.x)&&std::isfinite(value.y)&&std::isfinite(value.z);};
+        if(!finite(record->m_vOrigin) || !finite(record->m_vMins) || !finite(record->m_vMaxs)) {++invalid;continue;}
+        const float delta=flCorrect-TICKS_TO_TIME(iServerTick-TIME_TO_TICKS(record->m_flSimTime));
+        if(!BacktrackPolicy::Within(delta,allowance)) {++outside;continue;}
+        if(nearestOnly)
+        {if(!nearest || fabsf(delta)<minDelta) {nearest=record;minDelta=fabsf(delta);}}
+        else vReturn.push_back(record);
+    }
+    if(nearest) vReturn.push_back(nearest);
+    if(SelfDamageDiagnostics::Enabled())
+    {
+        static unsigned long long last=0;const auto now=GetTickCount64();
+        if(!last || now-last>=250)
+        {
+            last=now;
+            SelfDamageDiagnostics::Write("backtrack_records",std::format(
+                "input={} accepted={} invalid={} outside={} requested_ms={} effective_ms={} safe_ms={} correction={} server_tick={} tick_interval={} interp={} max_unlag={} time_mod={} choke={} nearest_only={}",
+                vRecords.size(),vReturn.size(),invalid,outside,Vars::Backtrack::Window.Value,allowance*1000,
+                BacktrackPolicy::SafeWindow(TICK_INTERVAL)*1000,flCorrect,iServerTick,TICK_INTERVAL,GetFakeInterp(),m_flMaxUnlag,flTimeMod,
+                GetAnticipatedChoke(),nearestOnly));
+        }
+    }
+    if (pLocal && vReturn.size() > 1)
 	{
 		if (bDistance)
 			std::sort(vReturn.begin(), vReturn.end(), [&](const TickRecord* a, const TickRecord* b) -> bool
@@ -222,7 +365,15 @@ void CBacktrack::MakeRecords()
 			|| !H::Entities.GetDeltaTime(pPlayer->entindex()))
 			continue;
 
-		auto& vRecords = m_mRecords[pPlayer];
+        auto& vRecords = m_mRecords[pPlayer];
+
+        const float simulation=pPlayer->m_flSimulationTime();
+        if(!std::isfinite(simulation) || simulation<0.f) continue;
+        if(!vRecords.empty())
+        {
+            if(simulation<vRecords.front().m_flSimTime) {vRecords.clear();m_mDidShoot[pPlayer->entindex()]=false;}
+            else if(!BacktrackPolicy::NewSample(simulation,vRecords.front().m_flSimTime)) continue;
+        }
 
 		TickRecord* pLastRecord = !vRecords.empty() ? &vRecords.front() : nullptr;
 		vRecords.emplace_front(
@@ -258,17 +409,8 @@ void CBacktrack::MakeRecords()
 				std::for_each(vRecords.begin() + 1, vRecords.end(), [](auto& tRecord) { tRecord.m_bInvalid = true; });
 			}
 
-			for (auto& tRecord : vRecords)
-			{
-				if (!tRecord.m_bInvalid)
-					continue;
-
-				tRecord.m_vOrigin = tCurRecord.m_vOrigin;
-				tRecord.m_vMins = tCurRecord.m_vMins;
-				tRecord.m_vMaxs = tCurRecord.m_vMaxs;
-				tRecord.m_bOnShot = tCurRecord.m_bOnShot;
-				memcpy(tRecord.m_aBones, tCurRecord.m_aBones, sizeof(tRecord.m_aBones));
-			}
+            // Invalid historical records retain their real pose/timestamp pair.
+            // Replacing old geometry with a new pose invents a rewind state.
 		}
 
 		H::Entities.SetLagCompensation(pPlayer->entindex(), bLagComp);
@@ -329,7 +471,8 @@ void CBacktrack::Store()
 		return;
 
 	static auto sv_maxunlag = H::ConVars.FindVar("sv_maxunlag");
-	m_flMaxUnlag = sv_maxunlag->GetFloat();
+    const float maxUnlag=sv_maxunlag?sv_maxunlag->GetFloat():1.f;
+    m_flMaxUnlag=std::isfinite(maxUnlag)?std::clamp(maxUnlag,0.f,1.f):1.f;
 	
 	MakeRecords();
 	CleanRecords();
@@ -351,10 +494,28 @@ void CBacktrack::ReportShot(int iIndex)
 		return;
 
 	auto pEntity = I::ClientEntityList->GetClientEntity(iIndex);
-	if (!pEntity || SDK::GetWeaponType(pEntity->As<CTFPlayer>()->m_hActiveWeapon()->As<CTFWeaponBase>()) != EWeaponType::HITSCAN)
+    if(!pEntity || !pEntity->As<CBaseEntity>()->IsPlayer()) return;
+    auto* weapon=pEntity->As<CTFPlayer>()->m_hActiveWeapon().Get();
+    if(!weapon || SDK::GetWeaponType(weapon->As<CTFWeaponBase>())!=EWeaponType::HITSCAN)
 		return;
 
-	m_mDidShoot[pEntity->entindex()] = true;
+    m_mDidShoot[pEntity->entindex()] = true;
+}
+
+void CBacktrack::ReportSelection(const TickRecord* record,const CUserCmd* command,int target)
+{
+    if(!record || !command || !SelfDamageDiagnostics::Enabled()) return;
+    static unsigned long long last=0;const auto now=GetTickCount64();
+    if(last && now-last<100) return;
+    last=now;
+    const int serverTick=m_iTickCount+TIME_TO_TICKS(GetReal(FLOW_OUTGOING))+GetAnticipatedChoke()+Vars::Backtrack::Offset.Value;
+    const float correction=std::clamp(GetReal(MAX_FLOWS,false)+ROUND_TO_TICKS(GetFakeInterp()),0.f,m_flMaxUnlag);
+    const float age=TICKS_TO_TIME(serverTick-TIME_TO_TICKS(record->m_flSimTime));
+    SelfDamageDiagnostics::Write("backtrack_selection",std::format(
+        "cmd={} target={} record_time={} record_tick={} command_tick={} lerp_ticks={} age={} delta={} effective_ms={} invalid={} incoming={} outgoing={} fake_latency={} sent_interp={} applied_interp={} server_tick={} shot_attempt_not_confirmation=1",
+        command->command_number,target,record->m_flSimTime,TIME_TO_TICKS(record->m_flSimTime),command->tick_count,TIME_TO_TICKS(GetFakeInterp()),
+        age,correction-age,GetWindow()*1000,record->m_bInvalid,GetReal(FLOW_INCOMING,false),GetReal(FLOW_OUTGOING,false),
+        GetFakeLatency(),m_flSentInterp,GetFakeInterp(),serverTick));
 }
 
 void CBacktrack::AdjustPing(CNetChannel* pNetChan)
@@ -370,24 +531,24 @@ void CBacktrack::AdjustPing(CNetChannel* pNetChan)
 		if (!pLocal || !pLocal->m_iClass())
 			return 0.f;
 
-		static auto host_timescale = H::ConVars.FindVar("host_timescale");
-		float flTimescale = host_timescale->GetFloat();
+        static auto host_timescale = H::ConVars.FindVar("host_timescale");
+        float flTimescale = host_timescale?host_timescale->GetFloat():1.f;
+        if(!std::isfinite(flTimescale) || flTimescale<=0.f) return 0.f;
 
-		static float flStaticReal = 0.f;
-		float flFake = GetWishFake(), flReal = TICKS_TO_TIME(pLocal->m_nTickBase() - m_nOldTickBase);
-		flStaticReal += (flReal + 5 * TICK_INTERVAL - flStaticReal) * 0.1f;
+        float flFake = GetWishFake(), flReal = TICKS_TO_TIME(pLocal->m_nTickBase() - m_nOldTickBase);
+        m_flLatencyDrift += (flReal + 5 * TICK_INTERVAL - m_flLatencyDrift) * 0.1f;
 
 		int nInReliableState = pNetChan->m_nInReliableState, nInSequenceNr = pNetChan->m_nInSequenceNr; float flLatency = 0.f;
 		for (auto& cSequence : m_dSequences)
 		{
 			nInReliableState = cSequence.m_nInReliableState;
 			nInSequenceNr = cSequence.m_nSequenceNr;
-			flLatency = (I::GlobalVars->realtime - cSequence.m_flTime) * flTimescale - TICK_INTERVAL;
+            flLatency = std::max((I::GlobalVars->realtime - cSequence.m_flTime) * flTimescale - TICK_INTERVAL,0.f);
 
-			if (flLatency > flFake || m_nLastInSequenceNr >= cSequence.m_nSequenceNr || flLatency > m_flMaxUnlag - flStaticReal)
+            if (flLatency > flFake || m_nLastInSequenceNr >= cSequence.m_nSequenceNr || flLatency > m_flMaxUnlag - m_flLatencyDrift)
 				break;
 		}
-		if (flLatency > 1.f) // hacky failsafe
+        if (!std::isfinite(flLatency) || flLatency > m_flMaxUnlag)
 			return 0.f;
 
 		pNetChan->m_nInReliableState = nInReliableState;

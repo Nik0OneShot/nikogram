@@ -262,6 +262,7 @@ void CMovementSimulation::StorePlayer(CTFPlayer* pPlayer, CMoveData& tMoveData, 
 
 bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tMoveStorage, bool bHitchance, bool bStrafe, bool bPredict)
 {
+    ProjectileDiagnostics::Profile profile(ProjectileDiagnostics::MovementInit);
 	if (tMoveStorage.m_bInitialized) Restore(tMoveStorage);
 	tMoveStorage = {};
 	if (!pEntity || !pEntity->IsPlayer() || !pEntity->As<CTFPlayer>()->IsAlive())
@@ -864,6 +865,7 @@ void CMovementSimulation::PredictLedge(MoveStorage& storage)
 
 void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTickCallback* pCallback)
 {
+    ProjectileDiagnostics::Profile profile(ProjectileDiagnostics::MovementTick);
 	if (!tMoveStorage.m_bInitialized || tMoveStorage.m_bFailed || !tMoveStorage.m_pPlayer || !tMoveStorage.m_pPlayer->IsPlayer())
 		return;
 
@@ -1012,7 +1014,7 @@ void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTick
             && !tMoveStorage.m_pPlayer->IsSwimming() && !tMoveStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE);
         if(reconcile)
         {
-            if(grounded && beforeVelocity.z<-100.f
+            if((LandingReplay::active || ProjectileDiagnostics::current) && grounded && beforeVelocity.z<-100.f
                 && (move.m_vecVelocity-beforeVelocity).Length2D()>=80.f)
             {
                 auto* player=tMoveStorage.m_pPlayer;
@@ -1048,7 +1050,7 @@ void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTick
                     const bool applied=PredictionPolicy::ApplyLandingAlternative(correct,LandingReplay::active,LandingReplay::uncorrected);
                     if(applied)
                         {move.m_vecVelocity.x=beforeVelocity.x;move.m_vecVelocity.y=beforeVelocity.y;}
-                    ProjectileDiagnostics::Ledge("landing_deflection",std::format(
+                    if(ProjectileDiagnostics::current) ProjectileDiagnostics::Ledge("landing_deflection",std::format(
                         "entity={} simtime={} supported={} corrected={} normal={},{},{} before_velocity={},{},{} collision_velocity={},{},{} final_velocity={},{},{} original_hit={} sweep_retry={} retry_hit={} support_gap={} alternative_candidate={} policy=engine_slide_default",
                         player->entindex(),tMoveStorage.m_flSimTime,supported,applied,normal.x,normal.y,normal.z,
                         beforeVelocity.x,beforeVelocity.y,beforeVelocity.z,uncorrected.x,uncorrected.y,uncorrected.z,

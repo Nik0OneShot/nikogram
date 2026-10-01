@@ -5,6 +5,7 @@
 MAKE_HOOK(IMoveHelper_SetHost, U::Memory.GetVirtual(I::MoveHelper, 12), void,
     void* rcx, CBasePlayer* host)
 {
+    HookLifetime::Scope hookLifetimeScope;
     MoveSimulationHost::Current = host;
     CALL_ORIGINAL(rcx, host);
 }

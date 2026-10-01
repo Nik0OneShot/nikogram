@@ -239,7 +239,12 @@ void CDraw::FillPolygon(std::vector<Vertex_t> vVertices, Color_t tColor)
 {
 	static int iId = 0;
 	if (!I::MatSystemSurface->IsTextureIDValid(iId))
-		iId = I::MatSystemSurface->CreateNewTextureID();
+	{
+		// A texture ID alone has no image. Solid polygon tint needs a white texel.
+		static constexpr unsigned char white[] = {255,255,255,255};
+		iId = I::MatSystemSurface->CreateNewTextureID(true);
+		I::MatSystemSurface->DrawSetTextureRGBA(iId,white,1,1,0,true);
+	}
 
 	I::MatSystemSurface->DrawSetColor(tColor);
 	I::MatSystemSurface->DrawSetTexture(iId);
@@ -362,7 +367,7 @@ void CDraw::LineCircle(int x, int y, float iRadius, int iSegments, Color_t tColo
 	I::MatSystemSurface->DrawOutlinedCircle(x, y, iRadius, iSegments);
 }
 
-void CDraw::Texture(const char* sTexture, int x, int y, int w, int h, EAlign eAlign)
+void CDraw::Texture(const char* sTexture, int x, int y, int w, int h, EAlign eAlign, Color_t color)
 {
 	static std::unordered_map<uint32_t, int> mTextures = {};
 
@@ -383,7 +388,7 @@ void CDraw::Texture(const char* sTexture, int x, int y, int w, int h, EAlign eAl
 	if (!nTexture)
 		I::MatSystemSurface->DrawSetTextureFile(nTexture = I::MatSystemSurface->CreateNewTextureID(), sTexture, false, true);
 
-	I::MatSystemSurface->DrawSetColor(255, 255, 255, 255);
+	I::MatSystemSurface->DrawSetColor(color);
 	I::MatSystemSurface->DrawSetTexture(nTexture);
 	I::MatSystemSurface->DrawTexturedRect(x, y, x + w, y + h);
 }

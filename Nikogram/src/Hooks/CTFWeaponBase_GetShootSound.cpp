@@ -1,4 +1,5 @@
 #include "../SDK/SDK.h"
+#include "../Features/SkinChanger/SkinChanger.h"
 
 MAKE_SIGNATURE(CTFWeaponBase_GetShootSound, "client.dll", "40 55 56 41 56 48 83 EC ? 80 B9", 0x0);
 
@@ -28,5 +29,10 @@ MAKE_HOOK(CTFWeaponBase_GetShootSound, S::CTFWeaponBase_GetShootSound(), const c
 		}
 	}
 
-	return CALL_ORIGINAL(rcx, iIndex);
+    // Keep returned names stable across later calls, like native schema strings.
+    // Names come only from the bounded installed catalog or native weapon script.
+    static thread_local std::set<std::string> cosmeticSounds;
+    auto cosmeticSound=SkinChanger::SoundFor(reinterpret_cast<CBaseCombatWeapon*>(rcx),iIndex);
+    if(!cosmeticSound.empty())return cosmeticSounds.insert(std::move(cosmeticSound)).first->c_str();
+    return CALL_ORIGINAL(rcx, iIndex);
 }

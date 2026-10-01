@@ -9,6 +9,7 @@ DWORD WINAPI MainThread(LPVOID lpParam)
 	U::Core.Load();
 	U::Core.Loop();
 	U::Core.Unload();
+	if(!U::Core.m_bCanDetach)return EXIT_FAILURE;
 
 	U::ExceptionHandler.Unload();
 

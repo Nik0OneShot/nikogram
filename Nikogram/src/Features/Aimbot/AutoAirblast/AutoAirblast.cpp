@@ -1,4 +1,5 @@
 #include "AutoAirblast.h"
+#include "../SelfDamageDiagnostics.h"
 
 #include "../AimbotProjectile/AimbotProjectile.h"
 #include "../../Simulation/ProjectileSimulation/ProjectileSimulation.h"
@@ -46,7 +47,9 @@ bool CAutoAirblast::CanAirblastEntity(CTFPlayer* pLocal, CTFWeaponBase* pWeapon,
 
 void CAutoAirblast::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
-	if (!(Vars::Aimbot::Projectile::AutoAirblast.Value & Vars::Aimbot::Projectile::AutoAirblastEnum::Enabled) || !G::CanSecondaryAttack)
+	m_bPlayerBlast=false;
+	const bool reflectEnabled=Vars::Aimbot::Projectile::AutoAirblast.Value & Vars::Aimbot::Projectile::AutoAirblastEnum::Enabled;
+	if ((!reflectEnabled && !Vars::Aimbot::Projectile::PrioritizeUbered.Value) || !G::CanSecondaryAttack)
 		return;
 
 	const int iWeaponID = pWeapon->GetWeaponID();
@@ -67,6 +70,7 @@ void CAutoAirblast::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCm
 	float flLatency = std::max(F::Backtrack.GetReal() - 0.03f, 0.f);
 	for (auto pProjectile : H::Entities.GetGroup(EntityEnum::WorldProjectile))
 	{
+		if (!reflectEnabled) break;
 		if (!ShouldTarget(pProjectile, pLocal))
 			continue;
 
@@ -75,7 +79,7 @@ void CAutoAirblast::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCm
 			continue;
 
 		if (!(Vars::Aimbot::Projectile::AutoAirblast.Value & Vars::Aimbot::Projectile::AutoAirblastEnum::IgnoreFOV)
-			&& Math::CalcFov(I::EngineClient->GetViewAngles(), Math::CalcAngle(vEyePos, vOrigin)) > Vars::Aimbot::General::AimFOV.Value)
+			&& Math::CalcFov(I::EngineClient->GetViewAngles(), Math::CalcAngle(vEyePos, vOrigin)) > Vars::Aimbot::Projectile::AimFOV.Value)
 			continue;
 
 		Vec3 vRestoreOrigin = pProjectile->GetAbsOrigin();
@@ -102,6 +106,32 @@ void CAutoAirblast::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCm
 			break;
 	}
 
+	if (!bShouldBlast && Vars::Aimbot::Projectile::PrioritizeUbered.Value)
+	{
+		CTFPlayer* selected=nullptr;Vec3 angles;float nearest=std::numeric_limits<float>::max();
+		int priority=std::numeric_limits<int>::min();
+		for (auto entity : H::Entities.GetGroup(EntityEnum::PlayerEnemy))
+		{
+			auto player=entity->As<CTFPlayer>();
+			if (!F::AimbotGlobal.IsUberTarget(player)
+				|| F::AimbotGlobal.ShouldIgnore(player,pLocal,pWeapon,ShouldIgnoreEnum::Dormant|ShouldIgnoreEnum::Ignored,
+					Vars::Aimbot::General::Target.Value,Vars::Aimbot::General::Ignore.Value&~Vars::Aimbot::General::IgnoreEnum::Invulnerable)) continue;
+			const Vec3 aim=Math::CalcAngle(vEyePos,player->GetCenter());
+			if (!(Math::CalcFov(I::EngineClient->GetViewAngles(),aim)<Vars::Aimbot::Projectile::AimFOV.Value)
+				|| !CanAirblastEntity(pLocal,pWeapon,player,aim)) continue;
+			const int rank=F::AimbotGlobal.GetPlayerPriority(player,F::AimbotGlobal.GetPriority(player->entindex()),EWeaponType::PROJECTILE);
+			const float distance=vEyePos.DistToSqr(player->GetCenter());
+			if (rank<priority || (rank==priority && distance>=nearest)) continue;
+			selected=player;angles=aim;priority=rank;nearest=distance;
+		}
+		if (selected)
+		{
+			SDK::FixMovement(pCmd,angles);pCmd->viewangles=angles;
+			pCmd->buttons&=~IN_ATTACK;G::SilentAngles=true;G::PSilentAngles=false;
+			bShouldBlast=m_bPlayerBlast=true;
+			if (SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("uber_airblast",std::format("cmd={} target={} distance={} secondary_ready=1 ammo={} cost={} request_not_confirmation=1",pCmd->command_number,selected->entindex(),std::sqrt(nearest),iAmmo,iAmmoPerShot));
+		}
+	}
 	if (bShouldBlast)
 	{
 		G::Attacking = true;

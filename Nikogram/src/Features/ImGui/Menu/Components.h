@@ -1623,7 +1623,7 @@ namespace ImGui
 			: std::max(H::Draw.Scale(20), valueHeight + H::Draw.Scale(6));
 	}
 
-	inline bool FDropdown(const char* sLabel, int* pVar, std::vector<const char*> vEntries, std::vector<int> vValues = {}, int iFlags = FDropdownEnum::None, int iSizeOffset = 0, const char* sDefaultPreview = "None", bool* pHovered = nullptr, int* pModified = nullptr, std::function<void()> rowAccessory = {}, int accessoryValue = 0)
+	inline bool FDropdown(const char* sLabel, int* pVar, std::vector<const char*> vEntries, std::vector<int> vValues = {}, int iFlags = FDropdownEnum::None, int iSizeOffset = 0, const char* sDefaultPreview = "None", bool* pHovered = nullptr, int* pModified = nullptr, std::function<void()> rowAccessory = {}, int accessoryValue = 0, std::function<void()> extraRows = {}, std::vector<const char*> extraPreview = {})
 	{
 		// Consume once: bind-editor popups must not inherit the parent row's inset.
 		const float leadingWidth = AttachedDropdownWidth;
@@ -1690,6 +1690,12 @@ namespace ImGui
 				sPreview.pop_back(); sPreview.pop_back();
 			}
 		}
+		if (!strstr(sLabel, "## Bind"))
+			for (const auto* entry : extraPreview)
+			{
+				if (!sPreview.empty()) sPreview += ", ";
+				sPreview += entry;
+			}
 		if (sPreview.empty())
 			sPreview = sDefaultPreview;
 
@@ -1800,6 +1806,8 @@ namespace ImGui
 				}
 				i++;
 			}
+			if (extraRows && !strstr(sLabel, "## Bind"))
+				extraRows();
 			PopStyleVar();
 
 
@@ -2789,12 +2797,44 @@ namespace ImGui
 		switch (FNV1A::Hash32(sType))
 		{
 		case FNV1A::Hash32Const("FDropdown"):
+		case FNV1A::Hash32Const("FModifierDropdown"):
 		case FNV1A::Hash32Const("FSDropdown"):
 		case FNV1A::Hash32Const("FMDropdown"):
 			break;
 		default:
 			DebugDummy({ 0, GetStyle().WindowPadding.y });
 		}
+	}
+
+	// Keep independent settings (and their existing config/bind keys) inside a modifier popup.
+	inline bool FDropdownToggle(const char* label, bool* value, int flags = 0, bool* hovered = nullptr)
+	{
+		// Match the existing multi-select rows instead of placing a full-width menu toggle
+		// inside a combo: identical hit area, border, left checkbox and label offsets.
+		const ImVec2 rowPos = GetCursorPos();
+		const bool selected = *value;
+		// The selectable is only the click target. Hide its automatic label because
+		// the styled label is drawn explicitly below, as with the other dropdown rows.
+		const std::string selectableId = std::format("##DropdownToggle {}", label);
+		const bool pressed = FDropdownSelectable(selectableId.c_str(), nullptr, 0, selected, ImGuiSelectableFlags_DontClosePopups);
+		const auto rowItem = GImGui->LastItemData;
+		if (hovered) *hovered = IsItemHovered();
+		if (pressed && !Disabled) *value = !selected;
+		const ImVec2 nextPos = GetCursorPos();
+		SetCursorPos(rowPos + ImVec2(H::Draw.Scale(40), 0));
+		TextColored(selected ? F::Render.Active : F::Render.Inactive, "%s", StripDoubleHash(label).c_str());
+		SameLine(); DebugDummy({ H::Draw.Scale(!GetCurrentWindow()->ScrollbarY ? 16 : 9), 0 });
+		SetCursorPos(rowPos + ImVec2(H::Draw.Scale(15), H::Draw.Scale(-1)));
+		FDropdownIcon(selected ? ICON_MD_CHECK_BOX : ICON_MD_CHECK_BOX_OUTLINE_BLANK, selected ? F::Render.Accent : F::Render.Inactive);
+		SetCursorPos(nextPos);
+		// Retain the row as the hovered item for tooltips and the existing bind editor.
+		GImGui->LastItemData = rowItem;
+		return pressed && !Disabled;
+	}
+
+	inline bool FModifierDropdown(const char* label, int* value, std::vector<const char*> entries, std::function<void()> extraRows, std::vector<const char*> preview, int flags, int offset, const char* defaultPreview, bool* hovered)
+	{
+		return FDropdown(label, value, entries, {}, flags, offset, defaultPreview, hovered, nullptr, {}, 0, extraRows, preview);
 	}
 
 	#define WRAPPER(function, type, parameters, arguments) \
@@ -2842,12 +2882,14 @@ namespace ImGui
 	}
 
 	WRAPPER(FToggle, bool, VA_LIST(int iFlags = 0), VA_LIST(&tVal, iFlags))
+	WRAPPER(FDropdownToggle, bool, VA_LIST(int iFlags = 0), VA_LIST(&tVal, iFlags))
 	WRAPPER(FToggle, int, VA_LIST(int iBit, int iFlags = 0), VA_LIST(&tVal, iBit, iFlags))
 	WRAPPER(FSlider, FloatRange_t, VA_LIST(int iFlags = 0, const char* sFormatOverride = nullptr), VA_LIST(&tVal.Min, &tVal.Max, tVar.m_unMin.f, tVar.m_unMax.f, tVar.m_unStep.f, sFormatOverride ? sFormatOverride : tVar.m_sExtra, iFlags))
 	WRAPPER(FSlider, IntRange_t, VA_LIST(int iFlags = 0, const char* sFormatOverride = nullptr), VA_LIST(&tVal.Min, &tVal.Max, tVar.m_unMin.i, tVar.m_unMax.i, tVar.m_unStep.i, sFormatOverride ? sFormatOverride : tVar.m_sExtra, iFlags))
 	WRAPPER(FSlider, float, VA_LIST(int iFlags = 0, const char* sFormatOverride = nullptr), VA_LIST(&tVal, tVar.m_unMin.f, tVar.m_unMax.f, tVar.m_unStep.f, sFormatOverride ? sFormatOverride : tVar.m_sExtra, iFlags))
 	WRAPPER(FSlider, int, VA_LIST(int iFlags = 0, const char* sFormatOverride = nullptr), VA_LIST(&tVal, tVar.m_unMin.i, tVar.m_unMax.i, tVar.m_unStep.i, sFormatOverride ? sFormatOverride : tVar.m_sExtra, iFlags))
 	WRAPPER(FDropdown, int, VA_LIST(int iFlags = 0, int iSizeOffset = 0), VA_LIST(&tVal, tVar.m_vValues, {}, iFlags, iSizeOffset, tVar.m_sExtra ? tVar.m_sExtra : "None"))
+	WRAPPER(FModifierDropdown, int, VA_LIST(std::function<void()> extraRows, std::vector<const char*> extraPreview, int iFlags = 0, int iSizeOffset = 0), VA_LIST(&tVal, tVar.m_vValues, extraRows, extraPreview, iFlags, iSizeOffset, tVar.m_sExtra ? tVar.m_sExtra : "None"))
 	WRAPPER(FDropdown, int, VA_LIST(std::vector<const char*> vEntries, std::vector<int> vValues = {}, int iFlags = 0, int iSizeOffset = 0), VA_LIST(&tVal, vEntries, vValues, iFlags, iSizeOffset, tVar.m_sExtra ? tVar.m_sExtra : "None"))
 	WRAPPER(FSDropdown, std::string, VA_LIST(int iFlags = 0, int iSizeOffset = 0), VA_LIST(&tVal, tVar.m_vValues, iFlags, iSizeOffset))
 	WRAPPER(FMDropdown, VA_LIST(std::vector<std::pair<std::string, Color_t>>), VA_LIST(int iFlags = 0, int iSizeOffset = 0), VA_LIST(&tVal, iFlags, iSizeOffset))

@@ -250,7 +250,7 @@ static inline float GetMult(CBaseEntity* pProjectile, CTFWeaponBase* pWeapon, CT
 
 void CAutoHeal::GetDangers(CTFPlayer* pTarget, bool bVaccinator, float& flBulletOut, float& flBlastOut, float& flFireOut)
 {
-	if (pTarget->IsInvulnerable())
+	if (!pTarget || !pTarget->IsAlive() || pTarget->IsAGhost() || pTarget->m_iHealth()<=0 || pTarget->IsInvulnerable())
 		return;
 
 	float flBulletDanger = 0.f, flBlastDanger = 0.f, flFireDanger = 0.f;
@@ -521,29 +521,24 @@ void CAutoHeal::GetDangers(CTFPlayer* pTarget, bool bVaccinator, float& flBullet
 		}
 	}
 
-	if (m_flDamagedTime <= TICK_INTERVAL)
+	const int victim=pTarget->As<IHandleEntity>()->GetRefEHandle().ToInt();
+	const auto& damage=m_DamageHistory[pTarget==m_pLocal?0:1];
+	if (damage.Applies(victim,I::GlobalVars->curtime))
 	{
-		if (pTarget->InCond(TF_COND_BURNING) || pTarget->InCond(TF_COND_BURNING_PYRO))
-		{
-			m_flDamagedTime = TICK_INTERVAL * 2;
-			m_iDamagedType = MEDIGUN_FIRE_RESIST;
-			m_flDamagedDPS = 8.f;
-		}
-	}
-	if (m_flDamagedTime > 0.f) // decremented once per tick in AutoVaccinator
-	{
-		switch (m_iDamagedType)
+		switch (damage.type)
 		{
 		case MEDIGUN_BULLET_RESIST:
-			flBulletDanger += m_flDamagedDPS / iPlayerHealth;
+			flBulletDanger += damage.dps / iPlayerHealth;
 			break;
 		case MEDIGUN_BLAST_RESIST:
-			flBlastDanger += m_flDamagedDPS / iPlayerHealth;
+			flBlastDanger += damage.dps / iPlayerHealth;
 			break;
 		case MEDIGUN_FIRE_RESIST:
-			flFireDanger += m_flDamagedDPS / iPlayerHealth;
+			flFireDanger += damage.dps / iPlayerHealth;
 		}
 	}
+	else if(pTarget->InCond(TF_COND_BURNING) || pTarget->InCond(TF_COND_BURNING_PYRO))
+		flFireDanger+=8.f/iPlayerHealth; // Target-local fallback, never shared between patients.
 
 	// ignore resistances we are already charged with, else scale
 	if (flBulletResist >= (bVaccinator ? 0.75f : 1.f))
@@ -580,14 +575,15 @@ void CAutoHeal::AutoVaccinator(CUserCmd* pCmd)
 {
 	if (!Vars::Aimbot::Healing::AutoVaccinator.Value || m_pWeapon->GetMedigunType() != MEDIGUN_RESIST)
 		return;
+	m_flChargeLevel=m_pWeapon->m_flChargeLevel();
+	if(m_iResistType==-1 || m_flSwapTime<I::GlobalVars->curtime)
+		m_iResistType=m_pWeapon->GetResistType();
 
 #ifdef DEBUG_VACCINATOR
 	G::LineStorage.clear();
 	G::SweptStorage.clear();
 	G::SphereStorage.clear();
 #endif
-	if (m_iResistType == -1)
-		m_iResistType = m_pWeapon->GetResistType();
 #ifdef DEBUG_VACCINATOR
 	vResistDangers = {
 #else
@@ -602,7 +598,6 @@ void CAutoHeal::AutoVaccinator(CUserCmd* pCmd)
 		|| H::Entities.IsFriend(pTarget->entindex()) || H::Entities.InParty(pTarget->entindex())))
 		vTargets.push_back(pTarget);
 
-	m_flDamagedTime = std::max(m_flDamagedTime - TICK_INTERVAL, 0.f);
 	for (auto pTarget : vTargets)
 		GetDangers(pTarget, true, vResistDangers[MEDIGUN_BULLET_RESIST], vResistDangers[MEDIGUN_BLAST_RESIST], vResistDangers[MEDIGUN_FIRE_RESIST]);
 
@@ -626,9 +621,6 @@ void CAutoHeal::AutoVaccinator(CUserCmd* pCmd)
 		m_iResistType = (m_iResistType + 1) % 3;
 		m_flSwapTime = I::GlobalVars->curtime + F::Backtrack.GetReal(MAX_FLOWS, false) * 1.5f + 0.1f;
 	}
-	if (m_flSwapTime < I::GlobalVars->curtime)
-		m_iResistType = m_pWeapon->GetResistType();
-	m_flChargeLevel = m_pWeapon->m_flChargeLevel();
 }
 
 void CAutoHeal::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
@@ -637,10 +629,18 @@ void CAutoHeal::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 	{
 		m_mMedicCallers.clear();
 		m_iResistType = -1;
-		m_flDamagedTime = 0.f;
+		m_DamageHistory = {};
+		m_flChargeLevel=0.f; m_flSwapTime=0.f;
+		m_iWeaponHandle=0;
 		return;
 	}
 
+	const int weaponHandle=pWeapon->As<IHandleEntity>()->GetRefEHandle().ToInt();
+	if(m_iWeaponHandle!=weaponHandle)
+	{
+		m_iWeaponHandle=weaponHandle; m_iResistType=-1;
+		m_flChargeLevel=0.f; m_flSwapTime=0.f; m_DamageHistory={};
+	}
 	m_pLocal = pLocal, m_pWeapon = pWeapon->As<CWeaponMedigun>();
 	AutoHeal(pCmd);
 	ActivateOnVoice(pCmd); m_mMedicCallers.clear();
@@ -656,8 +656,8 @@ void CAutoHeal::Event(IGameEvent* pEvent, uint32_t uHash)
 		if (!Vars::Aimbot::Healing::AutoVaccinator.Value)
 			return;
 
-		//auto pLocal = H::Entities.GetLocal();
-		auto pWeapon = H::Entities.GetWeapon()->As<CWeaponMedigun>();
+		auto held=H::Entities.GetWeapon();
+		auto pWeapon = held?held->As<CWeaponMedigun>():nullptr;
 		if (/*!pLocal ||*/ !pWeapon || pWeapon->GetWeaponID() != TF_WEAPON_MEDIGUN || pWeapon->GetMedigunType() != MEDIGUN_RESIST)
 			return;
 
@@ -675,7 +675,10 @@ void CAutoHeal::Event(IGameEvent* pEvent, uint32_t uHash)
 				&& !H::Entities.IsFriend(iTarget) && !H::Entities.InParty(iTarget)))
 			return;
 
-		auto pEntity = I::ClientEntityList->GetClientEntity(iAttacker)->As<CTFPlayer>();
+		auto victimEntity=I::ClientEntityList->GetClientEntity(iVictim);
+		if(!victimEntity || !victimEntity->As<CBaseEntity>()->IsPlayer()) return;
+		auto attackerEntity=I::ClientEntityList->GetClientEntity(iAttacker);
+		auto pEntity = attackerEntity?attackerEntity->As<CTFPlayer>():nullptr;
 		if (!pEntity || !pEntity->IsPlayer() /*|| ShouldIgnore(pEntity, pLocal, pWeapon)*/)
 			return;
 
@@ -685,6 +688,8 @@ void CAutoHeal::Event(IGameEvent* pEvent, uint32_t uHash)
 
 		float flFireRate = pWeapon2->GetFireRate();
 		float flMult = SDK::AttribHookValue(1, "mult_dmg", pWeapon2);
+		if(!std::isfinite(flFireRate) || flFireRate<=0.f || !std::isfinite(flMult) || flMult<=0.f || iDamage<=0) return;
+		int m_iDamagedType=-1; float m_flDamagedDPS=0.f; // Event-local; persisted only for its victim.
 		switch (SDK::GetWeaponType(pWeapon2))
 		{
 		case EWeaponType::HITSCAN:
@@ -737,7 +742,8 @@ void CAutoHeal::Event(IGameEvent* pEvent, uint32_t uHash)
 		if (!m_flDamagedDPS)
 			return;
 
-		m_flDamagedTime = 1.f;
+		m_DamageHistory[iVictim==I::EngineClient->GetLocalPlayer()?0:1].Record(
+			victimEntity->GetRefEHandle().ToInt(),m_iDamagedType,m_flDamagedDPS,I::GlobalVars->curtime);
 #ifdef DEBUG_VACCINATOR
 		SDK::Output("Hurt", std::format("{}, {}", m_iDamagedType, m_flDamagedDPS).c_str(), { 255, 100, 100 });
 #endif
@@ -745,10 +751,17 @@ void CAutoHeal::Event(IGameEvent* pEvent, uint32_t uHash)
 	}
 	case FNV1A::Hash32Const("player_spawn"):
 	{
-		if (I::EngineClient->GetPlayerForUserID(pEvent->GetInt("userid")) != I::EngineClient->GetLocalPlayer())
+		const int spawned=I::EngineClient->GetPlayerForUserID(pEvent->GetInt("userid"));
+		if (spawned != I::EngineClient->GetLocalPlayer())
+		{
+			if(auto* entity=I::ClientEntityList->GetClientEntity(spawned))
+				for(auto& history:m_DamageHistory)
+					if(history.handle==entity->As<IHandleEntity>()->GetRefEHandle().ToInt()) history={};
 			return;
+		}
 
-		m_flDamagedTime = 0.f;
+		m_DamageHistory = {};
+		m_iResistType=-1; m_flChargeLevel=0.f; m_flSwapTime=0.f;
 	}
 	}
 }

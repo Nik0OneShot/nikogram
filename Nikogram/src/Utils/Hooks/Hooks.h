@@ -3,6 +3,8 @@
 #include <MinHook/MinHook.h>
 #include <unordered_map>
 #include <string>
+#include "Lifetime.h"
+#include "StartupPolicy.h"
 
 class CHook
 {
@@ -46,7 +48,8 @@ public:
 	void Hooks::name::Init() { Hook.Create(reinterpret_cast<void*>(address), Func); } \
 	type __fastcall Hooks::name::Func(__VA_ARGS__)
 
-	#define DEBUG_RETURN()
+	#define DEBUG_RETURN(hook, ...) HookLifetime::Scope hookLifetimeScope; \
+		if (!StartupPolicy::gate.Ready()) return CALL_ORIGINAL(__VA_ARGS__);
 #else
 	#define DEBUG_VAR(name) \
 	namespace Vars { \
@@ -71,6 +74,8 @@ public:
 	type __fastcall Hooks::name::Func(__VA_ARGS__)
 
 	#define DEBUG_RETURN(hook, ...) \
+		HookLifetime::Scope hookLifetimeScope; \
+		if (!StartupPolicy::gate.Ready()) return CALL_ORIGINAL(__VA_ARGS__); \
 		if (!Vars::Hooks::hook[DEFAULT_BIND]) \
 			return CALL_ORIGINAL(__VA_ARGS__);
 #endif

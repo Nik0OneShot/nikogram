@@ -43,6 +43,10 @@ R"NIKODEFAULT({
         }
     },
     "Vars": {
+        "Vars::Misc::SkinChanger::Enabled": { "-1": "false" },
+        "Vars::Misc::SkinChanger::Networking": { "-1": "false" },
+        "Vars::Misc::SkinChanger::Share": { "-1": "false" },
+        "Vars::Misc::SkinChanger::Receive": { "-1": "false" },
         "Vars::Menu::CheatTitle": {
             "-1": "Nikogram"
         },
@@ -493,6 +497,9 @@ R"NIKODEFAULT(Vars::Colors::TargetHitboxFaceIgnoreZ": {
         "Vars::Aimbot::Projectile::AutoRelease": {
             "-1": "0"
         },
+        "Vars::Aimbot::Melee::AimFOV": {
+            "-1": "20"
+        },
         "Vars::Aimbot::Melee::AutoBackstab": {
             "-1": "true"
         },
@@ -543,6 +550,22 @@ R"NIKODEFAULT(Vars::Colors::TargetHitboxFaceIgnoreZ": {
 R"NIKODEFAULT(Effects": {
             "-1": "true"
         },
+        "Vars::Triggerbot::BacktrackToCursor": {
+            "-1": "false"
+        },
+        "Vars::Triggerbot::Hitboxes": { "-1": "0" },
+        "Vars::Triggerbot::Delay": { "-1": "0" },
+        "Vars::Triggerbot::DynamicDelay": { "-1": "false" },
+        "Vars::Triggerbot::DelayMin": { "-1": "0.05" },
+        "Vars::Triggerbot::DelayMax": { "-1": "0.15" },
+        "Vars::Triggerbot::Backtrack": { "-1": "0" },
+        "Vars::Aimbot::Projectile::AimFOV": { "-1": "20" },
+        "Vars::Aimbot::Hitscan::PrioritizeMedics": { "-1": "false" },
+        "Vars::Aimbot::Melee::PrioritizeMedics": { "-1": "false" },
+        "Vars::Aimbot::Projectile::PrioritizeMedics": { "-1": "false" },
+        "Vars::Aimbot::Projectile::PrioritizeUbered": { "-1": "false" },
+        "Vars::Aimbot::Projectile::PrioritizeOnFire": { "-1": "false" },
+        "Vars::Aimbot::Projectile::AutoFlarePunch": { "-1": "false" },
         "Vars::Backtrack::Latency": {
             "-1": "0"
         },

@@ -2,6 +2,7 @@
 #include "../MeleeDiagnostics.h"
 #include "../MeleePredictionPolicy.h"
 #include "../MeleeTrace.h"
+#include "../MeleeContactPolicy.h"
 namespace MD = MeleeDiagnostics;
 
 #include "../Aimbot.h"
@@ -26,12 +27,24 @@ static inline bool AimFriendlyBuilding(CBaseObject* pBuilding)
 	return false;
 }
 
+static bool MeleeViewPoint(const Vec3& eye,const Vec3& angles,const Vec3& mins,const Vec3& maxs,Vec3& point)
+{
+    Vec3 forward;Math::AngleVectors(angles,&forward);
+    const float distance=std::max(1.f,eye.DistTo((mins+maxs)*.5f)+(maxs-mins).Length());
+    const Vec3 end=eye+forward*distance;
+    MeleeContactPolicy::Point result;
+    if(!MeleeContactPolicy::ViewPoint({eye.x,eye.y,eye.z},{end.x,end.y,end.z},
+        {mins.x,mins.y,mins.z},{maxs.x,maxs.y,maxs.z},result)) return false;
+    point={float(result[0]),float(result[1]),float(result[2])};return true;
+}
+
 static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 {
 	std::vector<Target_t> vTargets;
 
 	const Vec3 vLocalPos = F::Ticks.GetShootPos();
-	const Vec3 vLocalAngles = I::EngineClient->GetViewAngles();
+    const Vec3 vLocalAngles = I::EngineClient->GetViewAngles();
+    const float selectionFOV=Vars::Aimbot::Melee::AimFOV.Value;
 
 	if (Vars::Aimbot::General::Target.Value & Vars::Aimbot::General::TargetEnum::Players)
 	{
@@ -45,15 +58,31 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 			if (F::AimbotGlobal.ShouldIgnore(pEntity, pLocal, pWeapon))
 			{ MD::Event("target_filtered",pEntity->entindex()); continue; }
 
-			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.PlayerBoneInFOV(pEntity->As<CTFPlayer>(), vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
-			{ MD::Event("bone_fov_rejected",pEntity->entindex()); continue; }
+            float flFOVTo=180.f; Vec3 vPos, vAngleTo;
+            // The shared helper calculates centres even when its general-FOV
+            // result is false. Melee evaluates those outputs against its own cone.
+            F::AimbotGlobal.PlayerBoneInFOV(pEntity->As<CTFPlayer>(), vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo);
+            if (!MeleeContactPolicy::InFOV(flFOVTo,selectionFOV))
+            {
+                // A narrow cone can intersect the body without containing any
+                // hitbox centre. Admit its view-nearest contact point instead.
+                const auto origin=pEntity->GetAbsOrigin();
+                if(!MeleeViewPoint(vLocalPos,vLocalAngles,origin+pEntity->m_vecMins(),origin+pEntity->m_vecMaxs(),vPos)
+                    || vPos.DistToSqr(vLocalPos)<.0001f)
+                {MD::Event("selection_geometry_invalid",pEntity->entindex());continue;}
+                vAngleTo=Math::CalcAngle(vLocalPos,vPos);flFOVTo=Math::CalcFov(vLocalAngles,vAngleTo);
+                MD::Geometry("selection_bounds",pEntity->entindex(),flFOVTo,vLocalPos.DistTo(vPos),0);
+                if(!MeleeContactPolicy::InFOV(flFOVTo,selectionFOV))
+                { MD::Event("bone_and_bounds_fov_rejected",pEntity->entindex(),flFOVTo); continue; }
+                MD::Event("bounds_fov_recovered",pEntity->entindex(),flFOVTo);
+            }
 
 			float flDistTo = vLocalPos.DistToSqr(vPos);
 			bool bTeam = pEntity->m_iTeamNum() == pLocal->m_iTeamNum();
 			int iPriority = F::AimbotGlobal.GetPriority(pEntity->entindex());
 			if (bTeam && !SDK::FriendlyFire())
 				iPriority = 0;
+			iPriority=F::AimbotGlobal.GetPlayerPriority(pEntity->As<CTFPlayer>(),iPriority,EWeaponType::MELEE);
 			vTargets.emplace_back(pEntity, TargetEnum::Player, vPos, vAngleTo, flFOVTo, flDistTo, iPriority);
 		}
 	}
@@ -75,7 +104,8 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
+            F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo);
+            if (!MeleeContactPolicy::InFOV(flFOVTo,selectionFOV))
 				continue;
 
 			int iPriority = 0;
@@ -106,7 +136,8 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
+            F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo);
+            if (!MeleeContactPolicy::InFOV(flFOVTo,selectionFOV))
 				continue;
 
 			float flDistTo = vLocalPos.DistToSqr(vPos);
@@ -246,8 +277,8 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 
 bool CAimbotMelee::CanBackstab(CBaseEntity* pTarget, CTFPlayer* pLocal, Vec3 vEyeAngles)
 {
-	if (!pTarget->IsPlayer() || pTarget->m_iTeamNum() == pLocal->m_iTeamNum())
-		return false;
+    if (!pTarget->IsPlayer() || pTarget->m_iTeamNum() == pLocal->m_iTeamNum())
+    {MD::Event("backstab_invalid_target",pTarget->entindex());return false;}
 
 	if (Vars::Aimbot::Melee::IgnoreRazorback.Value)
 	{
@@ -256,8 +287,8 @@ bool CAimbotMelee::CanBackstab(CBaseEntity* pTarget, CTFPlayer* pLocal, Vec3 vEy
 		if (iBackstabShield && itemList.Count())
 		{
 			CBaseEntity* pEntity = itemList.Element(0);
-			if (pEntity && pEntity->ShouldDraw())
-				return false;
+            if (pEntity && pEntity->ShouldDraw())
+            {MD::Event("backstab_razorback",pTarget->entindex());return false;}
 		}
 	}
 
@@ -289,8 +320,8 @@ bool CAimbotMelee::CanBackstab(CBaseEntity* pTarget, CTFPlayer* pLocal, Vec3 vEy
 
 	Vec3 vToTarget = (pTarget->GetAbsOrigin() - vEyePos).To2D();
 	const float flDist = vToTarget.Normalize();
-	if (flDist < flSqCompDist)
-		return false;
+    if (flDist < flSqCompDist)
+    {MD::Event("backstab_overlap",pTarget->entindex(),flDist);return false;}
 
 	const float flExtra = 2.f * flCompDist / flDist; // account for origin compression
 	float flPosVsTargetViewMinDot = 0.f + 0.0031f + flExtra;
@@ -307,9 +338,13 @@ bool CAimbotMelee::CanBackstab(CBaseEntity* pTarget, CTFPlayer* pLocal, Vec3 vEy
 
 		const float flPosVsTargetViewDot = vToTarget.Dot(vTargetForward); // Behind?
 		const float flPosVsOwnerViewDot = vToTarget.Dot(vOwnerForward); // Facing?
-		const float flViewAnglesDot = vTargetForward.Dot(vOwnerForward); // Facestab?
-
-		return flPosVsTargetViewDot > flPosVsTargetViewMinDot && flPosVsOwnerViewDot > flPosVsOwnerViewMinDot && flViewAnglesDot > flViewAnglesMinDot;
+        const float flViewAnglesDot = vTargetForward.Dot(vOwnerForward); // Facestab?
+        MD::Backstab(pTarget->entindex(),flPosVsTargetViewDot,flPosVsOwnerViewDot,flViewAnglesDot,
+            flPosVsTargetViewMinDot,flPosVsOwnerViewMinDot,flViewAnglesMinDot);
+        if(!(flPosVsTargetViewDot>flPosVsTargetViewMinDot)) {MD::Event("backstab_not_behind",pTarget->entindex());return false;}
+        if(!(flPosVsOwnerViewDot>flPosVsOwnerViewMinDot)) {MD::Event("backstab_not_facing",pTarget->entindex());return false;}
+        if(!(flViewAnglesDot>flViewAnglesMinDot)) {MD::Event("backstab_alignment_rejected",pTarget->entindex());return false;}
+        return true;
 	};
 
 	Vec3 vTargetAngles = { 0.f, H::Entities.GetEyeAngles(pTarget->entindex()).y, 0.f };
@@ -348,8 +383,10 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		flRange = 70;
 		flHull = 18;
 	}
-	Vec3 vSwingMins = { -flHull, -flHull, -flHull };
-	Vec3 vSwingMaxs = { flHull, flHull, flHull };
+    Vec3 vSwingMins = { -flHull, -flHull, -flHull };
+    Vec3 vSwingMaxs = { flHull, flHull, flHull };
+    if(!std::isfinite(flRange) || !std::isfinite(flHull) || flRange<=0.f || flHull<0.f)
+    {MD::Event("invalid_swing_geometry",tTarget.m_pEntity->entindex());return false;}
 	auto& vSimRecords = m_mRecordMap[tTarget.m_pEntity->entindex()];
 
 	std::vector<TickRecord*> vRecords = {};
@@ -387,70 +424,80 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 	}
 
 	CGameTrace trace = {};
-	CTraceFilterHitscan filter = {};
-	filter.pSkip = pLocal;
-
-	for (auto pRecord : vRecords)
-	{
-		// possibly account melee bounds as well?
-		tTarget.m_vPos = m_vEyePos.Clamp(pRecord->m_vOrigin + pRecord->m_vMins, pRecord->m_vOrigin + pRecord->m_vMaxs);
-		if (Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE)
-			tTarget.m_vPos.x = pRecord->m_vOrigin.x, tTarget.m_vPos.y = pRecord->m_vOrigin.y;
-		Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(m_vEyePos, tTarget.m_vPos), tTarget.m_vAngleTo);
-		if (!F::AimbotGlobal.ShouldAimAtAngle(tTarget.m_vAngleTo))
-		{ MD::Event("angle_rejected",tTarget.m_pEntity->entindex()); continue; }
-
-		Vec3 vRestoreOrigin = tTarget.m_pEntity->GetAbsOrigin();
-		Vec3 vRestoreMins = tTarget.m_pEntity->m_vecMins();
-		Vec3 vRestoreMaxs = tTarget.m_pEntity->m_vecMaxs();
-
-		tTarget.m_pEntity->SetAbsOrigin(pRecord->m_vOrigin);
-		tTarget.m_pEntity->m_vecMins() = pRecord->m_vMins + PLAYER_ORIGIN_COMPRESSION;
-		tTarget.m_pEntity->m_vecMaxs() = pRecord->m_vMaxs - PLAYER_ORIGIN_COMPRESSION;
-
-		Vec3 vForward; Math::AngleVectors(tTarget.m_vAngleTo, &vForward);
-		Vec3 vTraceEnd = m_vEyePos + vForward * flRange;
-
-		SDK::TraceHull(m_vEyePos, vTraceEnd, {}, {}, MASK_SOLID, &filter, &trace);
-		bool bReturn = MeleeTrace::Confirm(tTarget.m_pEntity,m_vEyePos,vTraceEnd,{},{},trace,filter);
-		if (!bReturn)
-		{
-			SDK::TraceHull(m_vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
-			bReturn = MeleeTrace::Confirm(tTarget.m_pEntity,m_vEyePos,vTraceEnd,vSwingMins,vSwingMaxs,trace,filter);
-		}
-
-		if (bReturn && Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE)
-			bReturn = CanBackstab(tTarget.m_pEntity, pLocal, tTarget.m_vAngleTo);
-		
-		tTarget.m_pEntity->SetAbsOrigin(vRestoreOrigin);
-		tTarget.m_pEntity->m_vecMins() = vRestoreMins;
-		tTarget.m_pEntity->m_vecMaxs() = vRestoreMaxs;
-
-		if (bReturn)
-		{
-			tTarget.m_pRecord = pRecord;
-			tTarget.m_bBacktrack = tTarget.m_iTargetType == TargetEnum::Player;
-			
-			return true;
-		}
-		else switch (Vars::Aimbot::General::AimType.Value)
-		{
-		case Vars::Aimbot::General::AimTypeEnum::Smooth:
-		case Vars::Aimbot::General::AimTypeEnum::Assistive:
-		{
-			auto vAngle = Math::CalcAngle(m_vEyePos, tTarget.m_vPos);
-
-			Math::AngleVectors(vAngle, &vForward);
-			vTraceEnd = m_vEyePos + vForward * flRange;
-
-			SDK::TraceHull(m_vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
-			if (trace.m_pEnt == tTarget.m_pEntity)
-				return 2;
-		}
-		}
-	}
-
-	return false;
+    CTraceFilterHitscan filter = {};
+    filter.pSkip = pLocal;
+    bool aimOnly=false;
+    Vec3 aimOnlyPoint,aimOnlyAngle;
+    for (auto pRecord : vRecords)
+    {
+        // Restore recorded entity geometry on every exit, including aim-only
+        // fallback; all candidate traces must use the same validated record.
+        struct RestoreRecord
+        {
+            CBaseEntity* entity;Vec3 origin,mins,maxs;
+            ~RestoreRecord(){entity->SetAbsOrigin(origin);entity->m_vecMins()=mins;entity->m_vecMaxs()=maxs;}
+        } restore{tTarget.m_pEntity,tTarget.m_pEntity->GetAbsOrigin(),tTarget.m_pEntity->m_vecMins(),tTarget.m_pEntity->m_vecMaxs()};
+        tTarget.m_pEntity->SetAbsOrigin(pRecord->m_vOrigin);
+        tTarget.m_pEntity->m_vecMins() = pRecord->m_vMins + PLAYER_ORIGIN_COMPRESSION;
+        tTarget.m_pEntity->m_vecMaxs() = pRecord->m_vMaxs - PLAYER_ORIGIN_COMPRESSION;
+        const Vec3 mins=pRecord->m_vOrigin+tTarget.m_pEntity->m_vecMins();
+        const Vec3 maxs=pRecord->m_vOrigin+tTarget.m_pEntity->m_vecMaxs();
+        Vec3 viewPoint;
+        if(!MeleeViewPoint(m_vEyePos,I::EngineClient->GetViewAngles(),mins,maxs,viewPoint))
+        {MD::Event("record_geometry_invalid",tTarget.m_pEntity->entindex());continue;}
+        const bool backstab=Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID()==TF_WEAPON_KNIFE;
+        Vec3 nearest=m_vEyePos.Clamp(mins,maxs);
+        Vec3 original=nearest;
+        if(backstab) original.x=pRecord->m_vOrigin.x,original.y=pRecord->m_vOrigin.y;
+        const std::array<Vec3,3> points={viewPoint,original,nearest};
+        for(size_t index=0;index<points.size();++index)
+        {
+            bool duplicate=false;
+            for(size_t prior=0;prior<index;++prior) if(points[index].DistToSqr(points[prior])<.0001f) duplicate=true;
+            if(duplicate || points[index].DistToSqr(m_vEyePos)<.0001f) continue;
+            tTarget.m_vPos=points[index];
+            const Vec3 goal=Math::CalcAngle(m_vEyePos,tTarget.m_vPos);
+            Aim(G::CurrentUserCmd->viewangles,goal,tTarget.m_vAngleTo);
+            const float angle=Math::CalcFov(I::EngineClient->GetViewAngles(),tTarget.m_vAngleTo);
+            MD::Geometry("contact",tTarget.m_pEntity->entindex(),angle,m_vEyePos.DistTo(tTarget.m_vPos),flRange,
+                I::GlobalVars->curtime-pRecord->m_flSimTime,int(index));
+            // The executed swing must also stay inside the separate melee cone
+            // after prediction and any smoothing have changed its contact angle.
+            if(!MeleeContactPolicy::InFOV(angle,Vars::Aimbot::Melee::AimFOV.Value))
+            {MD::Event("angle_rejected",tTarget.m_pEntity->entindex(),angle);continue;}
+            Vec3 forward;Math::AngleVectors(tTarget.m_vAngleTo,&forward);
+            Vec3 end=m_vEyePos+forward*flRange;
+            SDK::TraceHull(m_vEyePos,end,{},{},MASK_SOLID,&filter,&trace);
+            bool hit=MeleeTrace::Confirm(tTarget.m_pEntity,m_vEyePos,end,{},{},trace,filter);
+            if(!hit)
+            {
+                SDK::TraceHull(m_vEyePos,end,vSwingMins,vSwingMaxs,MASK_SOLID,&filter,&trace);
+                hit=MeleeTrace::Confirm(tTarget.m_pEntity,m_vEyePos,end,vSwingMins,vSwingMaxs,trace,filter);
+            }
+            const bool contact=hit;
+            if(hit && backstab) hit=CanBackstab(tTarget.m_pEntity,pLocal,tTarget.m_vAngleTo);
+            if(hit)
+            {
+                MD::Event("contact_validated",tTarget.m_pEntity->entindex(),float(index));
+                tTarget.m_pRecord=pRecord;tTarget.m_bBacktrack=tTarget.m_iTargetType==TargetEnum::Player;
+                return true;
+            }
+            MD::Event(contact?"contact_backstab_rejected":trace.DidHit()?"contact_obstructed":"contact_not_reached",tTarget.m_pEntity->entindex(),trace.fraction);
+            const int method=Vars::Aimbot::General::AimType.Value;
+            if(!aimOnly && (method==Vars::Aimbot::General::AimTypeEnum::Smooth || method==Vars::Aimbot::General::AimTypeEnum::Assistive)
+                && MeleeContactPolicy::InFOV(Math::CalcFov(I::EngineClient->GetViewAngles(),goal),Vars::Aimbot::Melee::AimFOV.Value))
+            {
+                Math::AngleVectors(goal,&forward);end=m_vEyePos+forward*flRange;
+                SDK::TraceHull(m_vEyePos,end,vSwingMins,vSwingMaxs,MASK_SOLID,&filter,&trace);
+                if(MeleeTrace::Confirm(tTarget.m_pEntity,m_vEyePos,end,vSwingMins,vSwingMaxs,trace,filter)
+                    && (!backstab || CanBackstab(tTarget.m_pEntity,pLocal,goal)))
+                {aimOnly=true;aimOnlyPoint=tTarget.m_vPos;aimOnlyAngle=tTarget.m_vAngleTo;}
+            }
+        }
+    }
+    if(aimOnly)
+    {tTarget.m_vPos=aimOnlyPoint;tTarget.m_vAngleTo=aimOnlyAngle;MD::Event("aim_only_not_aligned",tTarget.m_pEntity->entindex());return 2;}
+    return false;
 }
 
 
@@ -601,7 +648,10 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		pCmd->buttons |= IN_ATTACK;
 	if (!Vars::Aimbot::General::AimType.Value
 		|| !F::AimbotGlobal.ShouldAim() && pWeapon->m_flSmackTime() < 0.f)
-	{ MD::Event("aim_inactive"); return; }
+    { MD::Event("aim_inactive"); return; }
+
+    if(!std::isfinite(Vars::Aimbot::Melee::AimFOV.Value) || Vars::Aimbot::Melee::AimFOV.Value<=0.f)
+    {MD::Event("melee_fov_disabled");return;}
 
 	if (RunSapper(pLocal, pWeapon, pCmd))
 		return;
@@ -614,7 +664,10 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 	//if (!G::AimTarget.m_iEntIndex)
 	//	G::AimTarget = { vTargets.front().m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 
-	UpdateInfo(pLocal, pWeapon, pCmd, vTargets);
+    UpdateInfo(pLocal, pWeapon, pCmd, vTargets);
+    MD::Event("prediction_ticks",-1,float(m_iSimulatedTicks));
+    MD::Event("swing_delay_ticks",-1,float(m_iSwingTicks));
+    MD::Event("doubletap_ticks",-1,float(m_iDoubletapTicks));
 	for (auto& tTarget : vTargets)
 	{
 		const auto iResult = CanHit(tTarget, pLocal, pWeapon);
@@ -627,20 +680,25 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 			break;
 		}
 
-		if (Vars::Aimbot::General::AutoShoot.Value && pWeapon->m_flSmackTime() < 0.f)
+        if (Vars::Aimbot::General::AutoShoot.Value && pWeapon->m_flSmackTime() < 0.f)
 		{
 			MD::Event(m_bShouldSwing?"swing_allowed":"swing_timing_blocked",tTarget.m_pEntity->entindex(),float(m_iDoubletapTicks));
 			if (m_bShouldSwing)
 				pCmd->buttons |= IN_ATTACK;
-			if (m_iDoubletapTicks)
-				F::Ticks.m_bDoubletap = true;
-		}
+            if (m_iDoubletapTicks)
+                F::Ticks.m_bDoubletap = true;
+        }
+        else MD::Event(Vars::Aimbot::General::AutoShoot.Value?"swing_already_in_progress":"autoshoot_disabled",tTarget.m_pEntity->entindex());
+        if(!G::CanPrimaryAttack) MD::Event("weapon_cooldown",tTarget.m_pEntity->entindex());
 
 		G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
 		if (G::Attacking == 1)
 		{
-			if (tTarget.m_bBacktrack)
-				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
+            if (tTarget.m_bBacktrack)
+            {
+                pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
+                F::Backtrack.ReportSelection(tTarget.m_pRecord,pCmd,tTarget.m_pEntity->entindex());
+            }
 			// bug: fast old records seem to be progressively more unreliable ?
 		}
 		else
@@ -716,7 +774,7 @@ bool CAimbotMelee::RunSapper(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 		Vec3 vAngleTo = Math::CalcAngle(vLocalPos, vPoint);
 		const float flFOVTo = Math::CalcFov(vLocalAngles, vAngleTo);
 		const float flDistTo = vLocalPos.DistToSqr(vPoint);
-		if (flFOVTo > Vars::Aimbot::General::AimFOV.Value)
+        if (!MeleeContactPolicy::InFOV(flFOVTo,Vars::Aimbot::Melee::AimFOV.Value))
 			continue;
 
 		vTargets.emplace_back(pBuilding, TargetEnum::Unknown, vPoint, vAngleTo, flFOVTo, flDistTo);

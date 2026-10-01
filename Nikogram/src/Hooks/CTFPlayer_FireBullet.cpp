@@ -1,6 +1,30 @@
 #include "../SDK/SDK.h"
 
 #include "../Features/Visuals/Visuals.h"
+#include "../Features/SkinChanger/SkinChanger.h"
+#include "../Features/SkinChanger/RenderPolicy.h"
+
+namespace
+{
+    struct CosmeticTracer {std::string name;int shooter=-1;};
+    thread_local const CosmeticTracer* s_CosmeticTracer=nullptr;
+}
+
+MAKE_HOOK(UTIL_ParticleTracer, S::UTIL_ParticleTracer(), void,
+    const char* name,const Vector& start,const Vector& end,int entity,int attachment,bool whiz)
+{
+    DEBUG_RETURN(UTIL_ParticleTracer,name,start,end,entity,attachment,whiz);
+    if(s_CosmeticTracer&&s_CosmeticTracer->shooter==entity&&!s_CosmeticTracer->name.empty())
+    {
+        // UTIL_ParticleTracer converts the name to a server string-table index.
+        // A locally selected reskin may not be registered there. Create by name
+        // instead, and suppress the stock tracer only after creation succeeds.
+        const bool created=SkinChanger::CreateCosmeticTracer(s_CosmeticTracer->name,start,end,entity,attachment);
+        SkinChanger::ObserveParticleCreation("tracer",name,s_CosmeticTracer->name,created);
+        if(created)return;
+    }
+    CALL_ORIGINAL(name,start,end,entity,attachment,whiz);
+}
 
 MAKE_SIGNATURE(CTFPlayer_FireBullet, "client.dll", "48 89 74 24 ? 55 57 41 55 41 56 41 57 48 8D AC 24 ? ? ? ? 48 81 EC ? ? ? ? F3 41 0F 10 58", 0x0);
 
@@ -10,6 +34,21 @@ MAKE_HOOK(CTFPlayer_FireBullet, S::CTFPlayer_FireBullet(), void,
 	DEBUG_RETURN(CTFPlayer_FireBullet, rcx, pWeapon, info, bDoEffects, nDamageType, nCustomDamageType);
 
 	auto pLocal = reinterpret_cast<CTFPlayer*>(rcx);
+    auto cosmeticWeapon=pWeapon;
+    // Remote temp-entity shots may omit the weapon pointer. Resolve only the
+    // cosmetic profile; pass the untouched native arguments to the original.
+    if(!cosmeticWeapon&&pLocal&&pLocal!=H::Entities.GetLocal())
+    {auto held=pLocal->m_hActiveWeapon().Get();cosmeticWeapon=held?held->As<CBaseCombatWeapon>():nullptr;}
+    CosmeticTracer cosmetic;
+    const auto& tracerSetting=nDamageType&DMG_CRITICAL?Vars::Visuals::Effects::CritTracer.Value:Vars::Visuals::Effects::BulletTracer.Value;
+    if(pLocal&&cosmeticWeapon&&SkinRender::AllowCosmeticTracer(bDoEffects,SDK::CleanScreenshot(),pLocal==H::Entities.GetLocal(),tracerSetting))
+    {
+        auto effects=SkinChanger::EffectsFor(cosmeticWeapon);
+        if(effects.active){cosmetic.name=effects.Tracer(pLocal->m_iTeamNum(),(nDamageType&DMG_CRITICAL)!=0);cosmetic.shooter=pLocal->entindex();}
+    }
+    // Change only the particle name inside the native bullet-effects call. Its
+    // trace, impact, tracer frequency, prediction and start/end positions stay native.
+    SkinRender::ScopedPointer<CosmeticTracer> scope(s_CosmeticTracer,cosmetic.name.empty()?nullptr:&cosmetic);
 	if (pLocal != H::Entities.GetLocal() || !pWeapon)
 		return CALL_ORIGINAL(rcx, pWeapon, info, bDoEffects, nDamageType, nCustomDamageType);
 

@@ -34,6 +34,10 @@ public:
 	void SortTargetsPost(std::vector<Target_t>& vTargets, int iMethod);
 
 	float GetAimFOV();
+	float GetConfiguredAimFOV();
+	int GetPlayerPriority(CTFPlayer* player, int base, EWeaponType type, bool allowBurning = true);
+	bool CanDisplaceUber(CTFWeaponBase* weapon);
+	bool IsUberTarget(CTFPlayer* player);
 	bool EntityCenterInFOV(CBaseEntity* pTarget, const Vec3& vLocalPos, const Vec3& vLocalAngles, float& flFOVTo, Vec3& vPos, Vec3& vAngleTo);
 	bool PlayerBoneInFOV(CTFPlayer* pTarget, const Vec3& vLocalPos, const Vec3& vLocalAngles, float& flFOVTo, Vec3& vPos, Vec3& vAngleTo, int iHitboxes = Vars::Aimbot::Hitscan::HitboxesEnum::Head | Vars::Aimbot::Hitscan::HitboxesEnum::Body | Vars::Aimbot::Hitscan::HitboxesEnum::Pelvis | Vars::Aimbot::Hitscan::HitboxesEnum::Arms | Vars::Aimbot::Hitscan::HitboxesEnum::Legs);
 	bool IsHitboxValid(CBaseEntity* pEntity, int nHitbox, int iHitboxes = Vars::Aimbot::Hitscan::HitboxesEnum::Head | Vars::Aimbot::Hitscan::HitboxesEnum::Body | Vars::Aimbot::Hitscan::HitboxesEnum::Pelvis | Vars::Aimbot::Hitscan::HitboxesEnum::Arms | Vars::Aimbot::Hitscan::HitboxesEnum::Legs);

@@ -19,6 +19,15 @@ struct TickRecord
 	matrix3x4 m_aBones[MAXSTUDIOBONES];
 };
 
+struct CursorHit_t
+{
+	CTFPlayer* player=nullptr;
+	const TickRecord* record=nullptr;
+	int hitbox=-1;
+	int tested=0;
+	double distance=0;
+};
+
 class CBacktrack
 {
 private:
@@ -38,13 +47,18 @@ private:
 	float m_flMaxUnlag = 1.f;
 
 	float m_flFakeLatency = 0.f;
-	float m_flFakeInterp = 0.015f;
+    float m_flFakeInterp = 0.015f;
+    float m_flLatencyDrift = 0.f;
+    bool m_bLerpQueued = false;
 
 	bool m_bSettingUpBones = false;
 
 public:
 	void Store();
 	void CreateMove(CUserCmd* pCmd);
+	void ToCursor(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, const Vec3& shotAngles);
+	CursorHit_t FindCursorHit(CTFPlayer* local, CTFWeaponBase* weapon, const Vec3& angles,
+		int hitboxes, int historyMode, bool currentPose, bool respectFilters);
 	void SendLerp();
 	void Draw(CTFPlayer* pLocal);
 	void Reset();
@@ -63,7 +77,8 @@ public:
 	int GetAnticipatedChoke(int iMethod = Vars::Aimbot::General::AimType.Value);
 
 	void ResolverUpdate(CBaseEntity* pEntity);
-	void ReportShot(int iIndex);
+    void ReportShot(int iIndex);
+    void ReportSelection(const TickRecord* record,const CUserCmd* command,int target);
 	void AdjustPing(CNetChannel* netChannel);
 	void RestorePing(CNetChannel* netChannel);
 

@@ -1,5 +1,6 @@
 #include "AimbotHitscan.h"
 #include "ServerEstimate.h"
+#include "../AimbotAuditPolicy.h"
 
 #include "../Aimbot.h"
 #include "../../Ticks/Ticks.h"
@@ -70,6 +71,7 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 					iPriority = std::numeric_limits<int>::max();
 				}
 			}
+			iPriority=F::AimbotGlobal.GetPlayerPriority(pEntity->As<CTFPlayer>(),iPriority,EWeaponType::HITSCAN);
 			vTargets.emplace_back(pEntity, TargetEnum::Player, vPos, vAngleTo, flFOVTo, flDistTo, iPriority);
 		}
 
@@ -398,8 +400,10 @@ bool CAimbotHitscan::BuildServerEstimate(CBaseEntity* pTarget, const std::vector
 		|| sample.LengthSqr() > 64.f * 64.f || offset.LengthSqr() > 64.f * 64.f
 		|| offset.LengthSqr() < 0.0001f)
 		return false;
-	Vec3 mins, maxs;
-	GetHullInfo(pTarget, nullptr, nullptr, &mins, &maxs);
+	// Network record bounds already include crouch and model scale. A standing
+	// hull here rejects valid crouched motion underneath low geometry.
+	const Vec3 mins=latest.m_vMins,maxs=latest.m_vMaxs;
+	if(!AimbotAuditPolicy::Bounds({mins.x,mins.y,mins.z},{maxs.x,maxs.y,maxs.z})) return false;
 	CTraceFilterWorldAndPropsOnly filter = {};
 	filter.pSkip = pTarget;
 	CGameTrace trace = {};
@@ -780,15 +784,24 @@ bool CAimbotHitscan::BuildOccludedGuide(CTFPlayer* pLocal, CTFWeaponBase* pWeapo
 void CAimbotHitscan::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	const bool enabled = Vars::Aimbot::General::AimType.Value != 0;
+	m_vMainPreview.reset();
 	RunMain(pLocal, pWeapon, pCmd);
 	const bool aimPreview = (Vars::Visuals::Viewmodel::CrosshairAim.Value && Vars::Visuals::Viewmodel::CrosshairCooldown.Value)
 		|| (Vars::Visuals::Viewmodel::ViewmodelAim.Value && Vars::Visuals::Viewmodel::ViewmodelCooldown.Value);
 	const bool guide = Vars::Aimbot::Hitscan::Extrapolation.Value && Vars::Aimbot::Hitscan::ExtrapolationGuide.Value;
 	if (!enabled || F::Aimbot.m_bRunningSecondary || (!aimPreview && !guide))
 		return;
+	// Only reuse an actual CanHit==1 solution from this invocation. No stale
+	// record pointers, cross-command cache, or fire/input changes are involved.
+	if(m_vMainPreview)
+	{
+		if(aimPreview && G::Attacking!=1)
+			G::CooldownAimPoint={*m_vMainPreview,I::GlobalVars->tickcount,2};
+		if(G::Attacking==1 || !guide || G::ExtrapolationGuide.tick) return;
+	}
 	// Visual-only target evaluation: never execute the aim/fire/input path here.
 	auto targets = F::AimbotGlobal.ManageTargets(GetTargets, pLocal, pWeapon);
-	for (auto& target : targets)
+	if(!m_vMainPreview) for (auto& target : targets)
 	{
 		if (G::Attacking == 1) break;
 		if (CanHit(target, pLocal, pWeapon) != 1) continue;
@@ -872,6 +885,7 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 
 		const auto iResult = CanHit(tTarget, pLocal, pWeapon);
 		if (!iResult) continue;
+		F::Aimbot.m_bHitscanAssisted = true;
 		if (iResult == 2)
 		{
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
@@ -879,6 +893,7 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 			break;
 		}
 
+		m_vMainPreview=tTarget.m_vPos;
 		if (ShouldFire(pLocal, pWeapon, pCmd, tTarget))
 		{
 			switch (nWeaponID)
@@ -913,8 +928,11 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 			if (tTarget.m_pEntity->IsPlayer())
 				F::Resolver.HitscanRan(pLocal, tTarget.m_pEntity->As<CTFPlayer>(), pWeapon, tTarget.m_nAimedHitbox);
 
-			if (tTarget.m_bBacktrack)
-				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
+            if (tTarget.m_bBacktrack)
+            {
+                pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
+                F::Backtrack.ReportSelection(tTarget.m_pRecord,pCmd,tTarget.m_pEntity->entindex());
+            }
 		}
 		DrawVisuals(pLocal, tTarget, nWeaponID);
 

@@ -21,6 +21,8 @@ public:
 	void Store(bool bFrameStageNotify = true);
 
 	bool m_bRan = false;
+	// Reset each command; hitscan assistance owns its aim and selected rewind.
+	bool m_bHitscanAssisted = false;
 	bool m_bRunningSecondary = false;
 
 	std::unordered_map<int, RealPath_t> m_mRealPaths = {};

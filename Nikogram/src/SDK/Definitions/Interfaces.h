@@ -58,6 +58,8 @@ private:
 public:
 	bool Initialize();
 	void Unload();
+	HSteamPipe SteamPipe() const { return m_hSteamPipe; }
+	HSteamUser SteamUser() const { return m_hSteamUser; }
 };
 
 ADD_FEATURE_CUSTOM(CNullInterfaces, Interfaces, H);

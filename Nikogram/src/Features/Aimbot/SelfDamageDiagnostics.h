@@ -43,7 +43,7 @@ namespace SelfDamageDiagnostics
                 ec.clear();std::filesystem::rename(path,one,ec);if(ec)return;
                 file.open(path,std::ios::app); started=false;
             }
-            if(!started) {file<<"SESSION projectile-diag-v39-live-sticky-conservation build="<<__DATE__<<" "<<__TIME__<<" pid="<<GetCurrentProcessId()<<"\n";started=true;}
+            if(!started) {file<<"SESSION projectile-diag-v62-flare-cycle-lifecycle build="<<__DATE__<<" "<<__TIME__<<" pid="<<GetCurrentProcessId()<<"\n";started=true;}
             file<<"ms="<<GetTickCount64()<<" tick="<<tick<<" event="<<event<<" "<<message<<"\n";
             file.flush();
         }

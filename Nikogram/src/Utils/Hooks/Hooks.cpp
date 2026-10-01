@@ -33,8 +33,14 @@ bool CHooks::Unload()
 {
 	// disable first so no new calls enter our hooks, then give calls already inside them time
 	// to return before the hooks (and later the DLL) are torn down
-	MH_DisableHook(MH_ALL_HOOKS);
+	if(MH_DisableHook(MH_ALL_HOOKS)!=MH_OK)return false;
 	Sleep(100);
+	const auto started=GetTickCount64();
+	while(HookLifetime::active.load(std::memory_order_acquire)!=0)
+	{
+		if(GetTickCount64()-started>=5000)return false;
+		Sleep(10);
+	}
 
 	m_bFailed = MH_Uninitialize() != MH_OK;
 	if (m_bFailed)

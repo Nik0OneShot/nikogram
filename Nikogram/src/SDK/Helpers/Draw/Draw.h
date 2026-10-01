@@ -97,7 +97,7 @@ public:
 	void FillCircle(int x, int y, float iRadius, int iSegments, Color_t tColor);
 	void LineCircle(int x, int y, float iRadius, int iSegments, Color_t tColor);
 
-	void Texture(const char* sTexture, int x, int y, int w, int h, EAlign eAlign = ALIGN_CENTER);
+	void Texture(const char* sTexture, int x, int y, int w, int h, EAlign eAlign = ALIGN_CENTER, Color_t color = {255,255,255,255});
 	CHudTexture* GetIcon(const char* szIcon, int eIconFormat = 0);
 	int CreateTextureFromArray(const unsigned char* rgba, int w, int h);
 	void DrawHudTexture(float x, float y, float s, const CHudTexture* pTexture, Color_t tColor = { 255, 255, 255, 255 });

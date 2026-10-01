@@ -1,5 +1,7 @@
 #include "Events.h"
 #include "../../Features/Aimbot/SelfDamageDiagnostics.h"
+#include "../../Features/Aimbot/AutoFlarePunch.h"
+#include "../../Features/SkinChanger/SkinChanger.h"
 
 #include "../../Core/Core.h"
 #include "../../Features/Statistics/Statistics.h"
@@ -48,6 +50,8 @@ void CEventListener::FireGameEvent(IGameEvent* pEvent)
 	if (!pEvent)
 		return;
 	Statistics::Event(pEvent);
+	SkinChanger::KillstreakEvent(pEvent);
+	SkinChanger::SessionEvent(pEvent);
 	PrivateLearning::Event(pEvent);
 
 	auto pLocal = H::Entities.GetLocal();
@@ -59,6 +63,7 @@ void CEventListener::FireGameEvent(IGameEvent* pEvent)
 
 	F::CritHack.Event(pEvent, uHash, pLocal);
 	F::AutoHeal.Event(pEvent, uHash);
+	F::AutoFlarePunch.Event(pEvent,pLocal);
 	F::Misc.Event(pEvent, uHash);
 	F::Visuals.Event(pEvent, uHash);
 	switch (uHash)

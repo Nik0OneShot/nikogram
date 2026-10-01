@@ -4,6 +4,7 @@
 #include "../Materials/Materials.h"
 #include "../FakeAngle/FakeAngle.h"
 #include "../../Backtrack/Backtrack.h"
+#include "../../SkinChanger/SkinChanger.h"
 
 void CChams::Begin()
 {
@@ -280,12 +281,11 @@ void CChams::RenderFakeAngle(const DrawModelState_t& pState, const ModelRenderIn
 	static auto IVModelRender_DrawModelExecute = U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
 	IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, F::FakeAngle.aBones);
 }
-void CChams::RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld)
+void CChams::RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel)
 {
 	if (!m_iFlags)
 	{
-		static auto IVModelRender_DrawModelExecute = U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
-		IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, pBoneToWorld);
+		SkinChanger::DrawEffectGeometry(pState,pInfo,pBoneToWorld,localViewmodel,"chams_cosmetic_geometry");
 	}
 	else
 	{
@@ -309,6 +309,7 @@ bool CChams::RenderViewmodel(void* rcx, int flags, int* iReturn)
 	if (!F::Groups.GetGroup(reinterpret_cast<CBaseAnimating*>(rcx)->IsValid() ? TargetsEnum::ViewmodelHands : TargetsEnum::ViewmodelWeapon, pGroup) || !pGroup->m_tChams(true))
 		return false;
 
+	SkinRender::ViewmodelDrawScope effectScope(m_bRendering,true);
 	Begin();
 	for (auto& [sName, tColor] : pGroup->m_tChams.Visible)
 	{
@@ -328,7 +329,7 @@ bool CChams::RenderViewmodel(void* rcx, int flags, int* iReturn)
 
 	return true;
 }
-bool CChams::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld)
+bool CChams::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel)
 {
 	if (!F::Groups.GroupsActive())
 		return false;
@@ -352,8 +353,7 @@ bool CChams::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderIn
 		bool bFlip = pMaterial && pMaterial->m_bInvertCull ? !G::FlipViewmodels : G::FlipViewmodels;
 		pRenderContext->CullMode(bFlip ? MATERIAL_CULLMODE_CW : MATERIAL_CULLMODE_CCW);
 
-		static auto IVModelRender_DrawModelExecute = U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
-		IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, pBoneToWorld);
+		SkinChanger::DrawEffectGeometry(pState,pInfo,pBoneToWorld,localViewmodel,"viewmodel_chams_cosmetic_geometry");
 	}
 	pRenderContext->CullMode(MATERIAL_CULLMODE_CCW);
 	End();

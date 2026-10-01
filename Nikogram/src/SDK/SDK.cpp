@@ -944,10 +944,11 @@ void SDK::WalkTo(CUserCmd* pCmd, CTFPlayer* pLocal, const Vec3& vTo, float flSca
 
 
 
+#include "../Features/Aimbot/ProjectileMuzzlePolicy.h"
 void SDK::GetProjectileFireSetup(CTFPlayer* pPlayer, const Vec3& vAngIn, Vec3 vOffset, Vec3& vPosOut, Vec3& vAngOut, float flForward, float flCutoff, bool bInterp, bool bAllowFlip)
 {
 	static auto cl_flipviewmodels = H::ConVars.FindVar("cl_flipviewmodels");
-	if (bAllowFlip && cl_flipviewmodels->GetBool())
+	if (bAllowFlip && ProjectileMuzzlePolicy::flipOverride.value_or(cl_flipviewmodels->GetBool()))
 		vOffset.y *= -1.f;
 
 	const Vec3 vShootPos = bInterp ? pPlayer->GetEyePosition() : pPlayer->GetShootPos();

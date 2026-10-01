@@ -92,8 +92,7 @@ void CCameraWindow::Unload()
 {
 	if (m_pCameraMaterial)
 	{
-		m_pCameraMaterial->DecrementReferenceCount();
-		m_pCameraMaterial->DeleteIfUnreferenced();
+		F::Materials.Remove(m_pCameraMaterial);
 		m_pCameraMaterial = nullptr;
 	}
 

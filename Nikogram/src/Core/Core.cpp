@@ -7,6 +7,8 @@
 #include "../Features/ImGui/PetClock.h"
 #include "../Features/PacketManip/RealLag/RealLag.h"
 #include "../Features/Statistics/Statistics.h"
+#include "../Features/SkinChanger/SkinChanger.h"
+#include "../Features/Aimbot/AutoViewmodelSwitch.h"
 #include "../Features/EnginePrediction/EnginePrediction.h"
 #include "../Features/Visuals/Materials/Materials.h"
 #include "../Features/Visuals/Visuals.h"
@@ -16,6 +18,7 @@
 #include <Psapi.h>
 #include <algorithm>
 #include <cctype>
+#include "../Utils/ExceptionHandler/CrashLog.h"
 
 static inline std::string GetProcessName(DWORD dwProcessID)
 {
@@ -86,6 +89,7 @@ void CCore::LogFailText()
 
 void CCore::Load()
 {
+	CrashLog::Stage("startup_waiting_for_client");
 	if (m_bUnload = m_bFailed = FNV1A::Hash32(GetProcessName(GetCurrentProcessId()).c_str()) != FNV1A::Hash32Const("tf_win64.exe"))
 	{
 		AppendFailText("Invalid process");
@@ -118,17 +122,46 @@ void CCore::Load()
 
 	if (m_bUnload = m_bFailed = !U::Signatures.Initialize() || !U::Interfaces.Initialize() || !CheckDXLevel())
 		return;
-	// load materials, fonts and the config before any hooks go live, so the game thread
-	// never reads settings while they are being rebuilt on this thread
-	F::Materials.LoadMaterials();
-	H::Fonts.Reload();
-	F::Configs.LoadConfig(F::Configs.m_sCurrentConfig, false);
-
-	if (m_bUnload = m_bFailed2 = !U::Hooks.Initialize() || !U::BytePatches.Initialize() || !H::Events.Initialize())
+	// Hooks forward to the game until the frame callback completes startup.
+	// Do not create engine materials/fonts on the injection worker thread.
+	CrashLog::Stage("startup_installing_gated_hooks");
+	if (m_bUnload = m_bFailed2 = !U::Hooks.Initialize())
 		return;
+	const auto started=GetTickCount64();
+	while(!StartupPolicy::gate.Ready())
+	{
+		if(StartupPolicy::gate.State()==StartupPolicy::Phase::Failed)
+		{m_bUnload=m_bFailed2=true;return;}
+		if(GetTickCount64()-started>=30000&&StartupPolicy::gate.CancelQueued())
+		{
+			CrashLog::Stage("startup_frame_callback_timeout");
+			AppendFailText("Startup did not receive a safe game frame within 30 seconds. Restart TF2.");
+			m_bUnload=m_bFailed2=true;return;
+		}
+		Sleep(10);
+	}
+}
 
-	SDK::Output("Nikogram", "Loaded", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG, ICON_MD_INFO);
-	PetClock::Start();
+void CCore::ServiceStartup()
+{
+	if(!StartupPolicy::gate.Begin(HookLifetime::active.load(std::memory_order_acquire)))return;
+	try
+	{
+		CrashLog::Stage("startup_materials_game_frame");F::Materials.LoadMaterials();
+		CrashLog::Stage("startup_fonts_game_frame");H::Fonts.Reload();
+		CrashLog::Stage("startup_config_game_frame");F::Configs.LoadConfig(F::Configs.m_sCurrentConfig,false);
+		CrashLog::Stage("startup_patches_events_game_frame");
+		if(!U::BytePatches.Initialize()||!H::Events.Initialize())
+		{StartupPolicy::gate.Complete(false);CrashLog::Stage("startup_failed");return;}
+		PetClock::Start();
+		StartupPolicy::gate.Complete(true);CrashLog::Stage("startup_ready");
+		SDK::Output("Nikogram", "Loaded", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG, ICON_MD_INFO);
+	}
+	catch(...)
+	{
+		CrashLog::Stage("startup_cpp_exception");StartupPolicy::gate.Complete(false);
+		AppendFailText("Game-frame initialization failed. Restart TF2 before trying again.");
+	}
 }
 
 void CCore::Loop()
@@ -146,6 +179,12 @@ void CCore::Loop()
 #include "../Features/LearningAccess.h"
 void CCore::Unload()
 {
+	if(m_bFailed2&&!StartupPolicy::gate.Ready())
+	{
+		m_bCanDetach=false;
+		CrashLog::Stage("startup_failed_dll_retained_restart_required");
+		LogFailText();return;
+	}
 	if (m_bFailed)
 	{
 		H::Interfaces.Unload();
@@ -153,14 +192,42 @@ void CCore::Unload()
 		return;
 	}
 
+	if(!SkinChanger::PrepareUnload())
+	{
+		m_bCanDetach=false;
+		SDK::Output("Nikogram", "Unload deferred: game-frame cleanup did not finish. Restart TF2 to remove safely.", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_DEBUG);
+		return;
+	}
 	G::Unload = true;
 	RealLag::Shutdown();
 	Statistics::Shutdown();
 	PrivateLearning::Shutdown();
-	m_bFailed2 = !U::Hooks.Unload() || m_bFailed2;
+	if(!U::Hooks.Unload())
+	{
+		m_bFailed2=true;m_bCanDetach=false;
+		SkinChanger::UnloadDiagnostic("hook_cleanup_failed_dll_retained");
+		SDK::Output("Nikogram", "Unload deferred: hook cleanup did not finish. Restart TF2 to remove safely.", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_DEBUG);
+		return;
+	}
 	U::BytePatches.Unload();
+	SkinChanger::UnloadDiagnostic("hooks_drained_and_removed");
 	H::Events.Unload();
+	H::Interfaces.Unload(); // release Steam only after frame cleanup and hook drain
 
+	if (m_bFailed2)
+	{
+		LogFailText();
+		return;
+	}
+
+	SDK::Output("Nikogram", "Unloaded", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_DEBUG);
+	SkinChanger::UnloadDiagnostic("detach_ready");
+	CrashLog::Stage("unload_detach_ready");
+}
+
+void CCore::CleanupGameResources()
+{
+	CrashLog::Stage("unload_game_resources_frame");
 	if (F::Menu.m_bIsOpen)
 		I::MatSystemSurface->SetCursorAlwaysVisible(false);
 	if (auto cl_wpn_sway_interp = H::ConVars.FindVar("cl_wpn_sway_interp"))
@@ -183,19 +250,11 @@ void CCore::Unload()
 		}
 	}
 
-	Sleep(250);
 	F::EnginePrediction.Unload();
 	H::ConVars.Restore();
+    AutoViewmodelSwitch::Restore(true);
 	F::Materials.UnloadMaterials();
 	H::Draw.ClearAvatarCache();
 	F::Render.Unload();
-	H::Interfaces.Unload(); // release our steam pipe last, nothing may use the steam interfaces after this
-
-	if (m_bFailed2)
-	{
-		LogFailText();
-		return;
-	}
-
-	SDK::Output("Nikogram", "Unloaded", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_DEBUG);
+	CrashLog::Stage("unload_game_resources_complete");
 }

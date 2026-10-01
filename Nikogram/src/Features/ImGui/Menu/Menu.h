@@ -19,6 +19,7 @@ private:
 	void DrawMenu();
 
 	void MenuAimbot(int iTab = 0);
+	void MenuTriggerbot();
 	void MenuHVH(int iTab = 0);
 	void MenuVisuals(int iTab = 0);
 	void MenuMisc(int iTab = 0);

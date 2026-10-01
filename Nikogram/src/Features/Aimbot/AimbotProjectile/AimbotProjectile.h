@@ -16,6 +16,7 @@ struct Info_t
 	CTFWeaponBase* m_pWeapon = nullptr;
 	Target_t* m_pTarget = nullptr;
 	CBaseEntity* m_pProjectile = nullptr;
+	CTFWeaponBase* m_pReflector = nullptr; // Source launcher is m_pWeapon; airblast attributes belong here.
 
 	Vec3 m_vLocalEye = {};
 	Vec3 m_vTargetEye = {};
@@ -155,6 +156,7 @@ private:
 	int m_iResult = false;
 	bool m_bUpdate = true;
 	bool m_bPreviewOnly = false;
+    bool m_bWorldBlocked=false;
     float m_flObservationFlight=0.f;
     float m_flObservationTime=0.f;
     bool m_bObservationGround=false;
@@ -164,6 +166,7 @@ private:
 
 public:
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
+    bool ManageViewmodel(CTFPlayer* pLocal,CTFWeaponBase* pWeapon,CUserCmd* pCmd,bool noTargets=false);
 	float GetSplashRadius(CTFWeaponBase* pWeapon, CTFPlayer* pPlayer, float flScale = 1.f);
 
 	bool AutoAirblast(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, CBaseEntity* pProjectile);

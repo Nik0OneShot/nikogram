@@ -67,6 +67,8 @@ public:
 	bool ShouldForceEffects(CTFPlayer* pLocal);
 
 	float GetCritDamage() { return m_iCritDamage; }
+	int RadarAvailable(CTFWeaponBase* weapon) {return weapon && weapon->entindex()==m_iEntIndex && weapon->AreRandomCritsEnabled() && WeaponCanCrit(weapon,true) && !m_bCritBanned ? std::max(m_iAvailableCrits,0) : 0;}
+	int RadarPotential(CTFWeaponBase* weapon) {return weapon && weapon->entindex()==m_iEntIndex && weapon->AreRandomCritsEnabled() && WeaponCanCrit(weapon,true) ? std::max(m_iPotentialCrits,0) : 0;}
 	float GetRangedDamage() { return m_iRangedDamage; }
 };
 

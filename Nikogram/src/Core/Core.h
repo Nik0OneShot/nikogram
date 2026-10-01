@@ -15,11 +15,14 @@ public:
 	void Load();
 	void Loop();
 	void Unload();
+	void ServiceStartup();
+	void CleanupGameResources();
 
 	void AppendFailText(const char* sMessage);
 	void LogFailText();
 
 	bool m_bUnload = false;
+	bool m_bCanDetach = true;
 };
 
 ADD_FEATURE_CUSTOM(CCore, Core, U);

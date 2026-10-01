@@ -19,6 +19,8 @@ private:
 	void RestorePlayers();
 
 	std::unordered_map<CBaseEntity*, Vec3> m_mRestore = {};
+	struct PositionCache { bool ready=false; float latency=0.f; std::vector<std::pair<CBaseEntity*,Vec3>> positions; };
+	std::array<PositionCache,3> m_PositionCache = {}; // Predicted enemies, current enemies, predicted local; one Run only.
 	std::optional<Vec3> m_vAimPos = {};
 
 public:

@@ -1,14 +1,31 @@
 #pragma once
 #include "SelfDamageDiagnostics.h"
 #include <array>
+#include <chrono>
 
 // Sample whole commands, including commands where no attack was generated.
 // Counters do not perform extra traces or alter the simulation.
 namespace ProjectileDiagnostics
 {
     enum Counter { Tests, SetupFailed, Obstructed, NoTicks, VisibilityFailed, SafetyRejected, Hit, Miss, AngleRejected, Count };
-    struct Capture { int command=0, candidates=0, traces=0, angles=0,movement=0,steps=0,weaponReviews=0,headReviews=0; int grenades[2]={},points[2]={},transitions[2]={}; int ledge[3]={}; bool preview=false,adaptive=false; std::array<int,Count> counts{}; };
+    struct Capture { int command=0, candidates=0, traces=0, angles=0,movement=0,steps=0,weaponReviews=0,headReviews=0,arcCandidates=0,targetReviews=0; int grenades[2]={},points[2]={},transitions[2]={}; int ledge[3]={}; bool preview=false,adaptive=false; std::array<int,Count> counts{}; };
+    enum ProfileStage { MovementInit, MovementTick, SplashSetup, DirectSearch, SplashSearch, ProfileCount };
+    struct ProfileData { std::array<long long,ProfileCount> microseconds{}; std::array<int,ProfileCount> calls{}; };
+    inline thread_local ProfileData profile{};
     inline thread_local Capture* current=nullptr;
+    struct Profile
+    {
+        Capture* owner=current; ProfileStage stage;
+        std::chrono::steady_clock::time_point start{};
+        explicit Profile(ProfileStage value):stage(value)
+        {if(owner) start=std::chrono::steady_clock::now();}
+        ~Profile()
+        {
+            if(!owner || current!=owner) return;
+            profile.microseconds[stage]+=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count();
+            ++profile.calls[stage];
+        }
+    };
     inline bool TransitionSample()
     {
         // Independent of early movement/probe budgets, split actual and preview.
@@ -45,12 +62,13 @@ namespace ProjectileDiagnostics
             const bool ready=Vars::Aimbot::General::AimType.Value && G::CanPrimaryAttack && F::AimbotGlobal.ShouldAim();
             const bool readyEdge=ready&&!wasReady; wasReady=ready;
             if(last && now>=last && now-last<(readyEdge?100ULL:500ULL)) return;
-            last=now; data.command=value->command_number; current=&data;
+            last=now; data.command=value->command_number; current=&data; profile={};
             SelfDamageDiagnostics::LastProjectileSampleCommand=data.command;
             SelfDamageDiagnostics::Write("projectile_begin",std::format("cmd={} aim={} should_aim={} can_fire={} autoshoot={} buttons={} original={} self_damage={} protection={}",data.command,Vars::Aimbot::General::AimType.Value,F::AimbotGlobal.ShouldAim(),G::CanPrimaryAttack,Vars::Aimbot::General::AutoShoot.Value,cmd->buttons,G::OriginalCmd.buttons,bool(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::PreventSelfDamage),Vars::Aimbot::Projectile::SelfDamageProtection.Value));
         }
         ~Command()
         {
+            if(current==&data) SelfDamageDiagnostics::Write("projectile_profile",std::format("cmd={} inclusive=1 movement_init_us={} movement_init_calls={} movement_tick_us={} movement_tick_calls={} splash_setup_us={} splash_setup_calls={} direct_search_us={} direct_search_calls={} splash_search_us={} splash_search_calls={}",data.command,profile.microseconds[MovementInit],profile.calls[MovementInit],profile.microseconds[MovementTick],profile.calls[MovementTick],profile.microseconds[SplashSetup],profile.calls[SplashSetup],profile.microseconds[DirectSearch],profile.calls[DirectSearch],profile.microseconds[SplashSearch],profile.calls[SplashSearch]));
             if(current==&data) SelfDamageDiagnostics::Write("projectile_end",std::format("cmd={} candidates={} buttons={} attacking={} can_fire={}",data.command,data.candidates,cmd->buttons,G::Attacking,G::CanPrimaryAttack));
             current=previous;
         }
@@ -73,7 +91,7 @@ namespace ProjectileDiagnostics
         {
             if(!current || current->candidates>8) return;
             const auto& c=current->counts;
-            SelfDamageDiagnostics::Write("projectile_candidate",std::format("cmd={} entity={} weapon={} distance={} reason={} result={} tests={} setup_failed={} obstructed={} no_ticks={} visibility_failed={} safety_rejected={} hits={} misses={} angle_rejected={} preview={} adaptive={} lead_mode={} aim_fov={}",current->command,entity,weapon,distance,reason,result,c[Tests],c[SetupFailed],c[Obstructed],c[NoTicks],c[VisibilityFailed],c[SafetyRejected],c[Hit],c[Miss],c[AngleRejected],preview,adaptive,Vars::Aimbot::General::LeadAndRestrict.Value,Vars::Aimbot::General::AimFOV.Value));
+            SelfDamageDiagnostics::Write("projectile_candidate",std::format("cmd={} entity={} weapon={} distance={} reason={} result={} tests={} setup_failed={} obstructed={} no_ticks={} visibility_failed={} safety_rejected={} hits={} misses={} angle_rejected={} preview={} adaptive={} lead_mode={} aim_fov={} general_fov={}",current->command,entity,weapon,distance,reason,result,c[Tests],c[SetupFailed],c[Obstructed],c[NoTicks],c[VisibilityFailed],c[SafetyRejected],c[Hit],c[Miss],c[AngleRejected],preview,adaptive,Vars::Aimbot::General::LeadAndRestrict.Value,Vars::Aimbot::Projectile::AimFOV.Value,Vars::Aimbot::General::AimFOV.Value));
         }
     };
 }

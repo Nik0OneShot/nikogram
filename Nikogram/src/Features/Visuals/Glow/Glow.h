@@ -61,10 +61,10 @@ public:
 	void Store(CTFPlayer* pLocal);
 	void RenderFirst();
 	void RenderSecond();
-	void RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld);
+	void RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel=false);
 
 	void RenderViewmodel(void* rcx, int flags);
-	void RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld);
+	void RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel=false);
 
 	void Initialize();
 	void Unload();

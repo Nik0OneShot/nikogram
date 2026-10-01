@@ -1,5 +1,6 @@
 #include "AimbotGlobal.h"
 #include "../TargetPolicy.h"
+#include "../CombatPriorityPolicy.h"
 
 #include "../Aimbot.h"
 #include "../../Players/PlayerUtils.h"
@@ -62,9 +63,49 @@ void CAimbotGlobal::SortTargetsPost(std::vector<Target_t>& vTargets, int iMethod
 	});
 }
 
+float CAimbotGlobal::GetConfiguredAimFOV()
+{
+    const auto type=F::Aimbot.m_bRunningSecondary?G::SecondaryWeaponType:G::PrimaryWeaponType;
+    return CombatPriorityPolicy::FOV(type==EWeaponType::PROJECTILE,Vars::Aimbot::General::AimFOV.Value,Vars::Aimbot::Projectile::AimFOV.Value);
+}
+
+bool CAimbotGlobal::IsUberTarget(CTFPlayer* player)
+{
+    return player && player->InCond(TF_COND_INVULNERABLE);
+}
+
+bool CAimbotGlobal::CanDisplaceUber(CTFWeaponBase* weapon)
+{
+    if (!weapon) return false;
+    if (SDK::AttribHookValue(1,"mult_dmg",weapon)<=0.f) return false;
+    switch (weapon->GetWeaponID())
+    {
+    case TF_WEAPON_ROCKETLAUNCHER:
+    case TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT:
+    case TF_WEAPON_PARTICLE_CANNON:
+    case TF_WEAPON_GRENADELAUNCHER:
+    case TF_WEAPON_CANNON:
+    case TF_WEAPON_PIPEBOMBLAUNCHER: return true;
+    case TF_WEAPON_FLAREGUN: return weapon->As<CTFFlareGun>()->GetFlareGunType()==FLAREGUN_SCORCHSHOT;
+    }
+    return false;
+}
+
+int CAimbotGlobal::GetPlayerPriority(CTFPlayer* player,int base,EWeaponType type,bool allowBurning)
+{
+    const bool projectile=type==EWeaponType::PROJECTILE;
+    const bool medics=projectile?Vars::Aimbot::Projectile::PrioritizeMedics.Value
+        :type==EWeaponType::MELEE?Vars::Aimbot::Melee::PrioritizeMedics.Value:Vars::Aimbot::Hitscan::PrioritizeMedics.Value;
+    const bool burning=projectile && Vars::Aimbot::Projectile::PrioritizeOnFire.Value;
+    const bool uber=projectile && Vars::Aimbot::Projectile::PrioritizeUbered.Value;
+    return CombatPriorityPolicy::Priority(base,medics||burning||uber,
+        medics && player->m_iClass()==TF_CLASS_MEDIC,
+        burning && allowBurning && (player->InCond(TF_COND_BURNING)||player->InCond(TF_COND_BURNING_PYRO)),uber && IsUberTarget(player));
+}
+
 float CAimbotGlobal::GetAimFOV()
 {	// restrict now vs later
-	return Vars::Aimbot::General::LeadAndRestrict.Value ? 180.f : Vars::Aimbot::General::AimFOV.Value;
+	return GetConfiguredAimFOV()<=0.f?0.f:Vars::Aimbot::General::LeadAndRestrict.Value ? 180.f : GetConfiguredAimFOV();
 }
 
 bool CAimbotGlobal::EntityCenterInFOV(CBaseEntity* pTarget, const Vec3& vLocalPos, const Vec3& vLocalAngles, float& flFOVTo, Vec3& vPos, Vec3& vAngleTo)
@@ -200,7 +241,7 @@ bool CAimbotGlobal::ShouldAimAtAngle(Vec3 vAngles)
 	if (!Vars::Aimbot::General::LeadAndRestrict.Value)
 		return true;
 
-	return Math::CalcFov(I::EngineClient->GetViewAngles(), vAngles) < Vars::Aimbot::General::AimFOV.Value;
+	return Math::CalcFov(I::EngineClient->GetViewAngles(), vAngles) < GetConfiguredAimFOV();
 }
 
 bool CAimbotGlobal::ShouldIgnore(CBaseEntity* pEntity, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, int iFunctionFlags, int iTargetFlags, int iIgnoreFlags)
@@ -219,6 +260,8 @@ bool CAimbotGlobal::ShouldIgnore(CBaseEntity* pEntity, CTFPlayer* pLocal, CTFWea
 	case ETFClassID::CTFPlayer:
 	{
 		auto pPlayer = pEntity->As<CTFPlayer>();
+		if (Vars::Aimbot::Projectile::PrioritizeUbered.Value && IsUberTarget(pPlayer)
+			&& CanDisplaceUber(pWeapon)) iIgnoreFlags &= ~Vars::Aimbot::General::IgnoreEnum::Invulnerable;
 		if (pPlayer == pLocal || !pPlayer->IsAlive() || pPlayer->IsAGhost())
 			return true;
 

@@ -11,20 +11,22 @@
 IMaterial* CMaterials::Create(char const* szName, KeyValues* pKV)
 {
 	IMaterial* pMaterial = I::MaterialSystem->CreateMaterial(szName, pKV);
-	m_mMatList[pMaterial];
+	if(pMaterial){m_OwnedReferences.Acquire(pMaterial);m_mMatList[pMaterial];}
 	return pMaterial;
 }
 
 void CMaterials::Remove(IMaterial* pMaterial)
 {
-	if (!pMaterial)
+	if (!pMaterial || !m_OwnedReferences.Take(pMaterial))
 		return;
 
-	if (m_mMatList.contains(pMaterial))
+	if (!m_OwnedReferences.Count(pMaterial)&&m_mMatList.contains(pMaterial))
 		m_mMatList.erase(pMaterial);
 
 	pMaterial->DecrementReferenceCount();
-	pMaterial->DeleteIfUnreferenced();
+	// Match Valve's CMaterialReference shutdown: release our reference and
+	// let the material system own deletion, rather than deleting a shader
+	// material that a queued render operation may still reference.
 	pMaterial = nullptr;
 }
 
@@ -203,7 +205,7 @@ void CMaterials::LoadMaterials()
 
 	S::InitializeStandardMaterials.Call<void>();
 	auto pMaterial = *reinterpret_cast<IMaterial**>(U::Memory.RelToAbs(S::Wireframe()));
-	pMaterial->SetMaterialVarFlag(MATERIAL_VAR_VERTEXALPHA, true);
+	if(pMaterial)pMaterial->SetMaterialVarFlag(MATERIAL_VAR_VERTEXALPHA, true);
 
 	static std::unordered_map<std::string, int> mSkyboxes = {};
 	static std::vector<const char*> vFaces = { "rt.vmt", "lf.vmt", "bk.vmt", "ft.vmt", "up.vmt", "dn.vmt" };

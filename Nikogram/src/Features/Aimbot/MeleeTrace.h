@@ -6,7 +6,8 @@ namespace MeleeTrace
     inline bool Confirm(CBaseEntity* target, const Vec3& from, const Vec3& to,
         const Vec3& mins, const Vec3& maxs, const CGameTrace& actual, CTraceFilterHitscan filter)
     {
-        if (actual.m_pEnt == target) return true;
+        if (actual.m_pEnt == target)
+        {MeleeDiagnostics::Event("trace_direct_hit",target->entindex(),actual.fraction);return true;}
         const bool allowed = filter.ShouldHitEntity(target, MASK_SOLID);
         Ray_t ray; ray.Init(from, to, mins, maxs);
         CGameTrace clipped{};

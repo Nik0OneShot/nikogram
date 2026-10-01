@@ -10,17 +10,22 @@ void CAutoDetonate::PredictPlayers(CTFPlayer* pLocal, float flLatency, bool bLoc
 	if (!m_mRestore.empty())
 		RestorePlayers();
 
-	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerAll))
+	auto& cache=m_PositionCache[bLocal?2:flLatency==0.f?1:0];
+	if(!cache.ready || cache.latency!=flLatency)
 	{
-		auto pPlayer = pEntity->As<CTFPlayer>();
-		if (!bLocal
-			? (pPlayer == pLocal || !pPlayer->IsAlive() || pPlayer->IsAGhost())
-			: (pLocal != pPlayer || !pLocal->IsAlive() || pLocal->IsAGhost()))
-			continue;
-
-		m_mRestore[pPlayer] = pPlayer->GetAbsOrigin();
-
-		pPlayer->SetAbsOrigin(SDK::PredictOrigin(pPlayer->m_vecOrigin(), pPlayer->m_vecVelocity(), flLatency, true, pPlayer->m_vecMins() + PLAYER_ORIGIN_COMPRESSION, pPlayer->m_vecMaxs() - PLAYER_ORIGIN_COMPRESSION, pPlayer->SolidMask()));
+		cache.positions.clear(); cache.latency=flLatency; cache.ready=true;
+		for(auto entity:H::Entities.GetGroup(EntityEnum::PlayerAll))
+		{
+			auto player=entity->As<CTFPlayer>();
+			if(!player->IsAlive() || player->IsAGhost() || (bLocal?player!=pLocal:player==pLocal)) continue;
+			cache.positions.emplace_back(player,SDK::PredictOrigin(player->m_vecOrigin(),player->m_vecVelocity(),flLatency,true,
+				player->m_vecMins()+PLAYER_ORIGIN_COMPRESSION,player->m_vecMaxs()-PLAYER_ORIGIN_COMPRESSION,player->SolidMask()));
+		}
+	}
+	for(const auto& [player,position]:cache.positions)
+	{
+		m_mRestore[player]=player->GetAbsOrigin();
+		player->SetAbsOrigin(position);
 	}
 }
 
@@ -227,12 +232,13 @@ bool CAutoDetonate::Check(CTFPlayer* pLocal, CUserCmd* pCmd, EntityEnum::EntityE
 
 	if(!CheckTargets(pLocal, eGroup, Vars::Aimbot::Projectile::AutodetRadius.Value / 100, pCmd)) return false;
 	if(AD::current) AD::current->phase="self";
-	if(CheckSelf(pLocal,eGroup)) { AD::Event(AD::SelfBlocked); return false; }
+	if(CheckSelf(pLocal,eGroup)) { m_vAimPos.reset(); AD::Event(AD::SelfBlocked); return false; }
 	return true;
 }
 
 void CAutoDetonate::Run(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
+	m_PositionCache={};
 	if (!Vars::Aimbot::Projectile::AutoDetonate.Value)
 		return;
 
@@ -253,4 +259,5 @@ void CAutoDetonate::Run(CTFPlayer* pLocal, CUserCmd* pCmd)
 			G::PSilentAngles = true;
 		}
 	}
+	m_PositionCache={}; // Never retain cached entity pointers beyond this command.
 }

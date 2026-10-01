@@ -1,5 +1,6 @@
 #pragma once
 #include "../../../SDK/SDK.h"
+#include "../../../Utils/Hooks/ResourceReferencePolicy.h"
 
 struct Material_t
 {
@@ -37,6 +38,7 @@ public:
 
 	std::unordered_map<uint32_t, Material_t> m_mMaterials = {};
 	std::unordered_mapset<IMaterial*> m_mMatList = {};
+	ResourceReferencePolicy::References<IMaterial*> m_OwnedReferences;
 
 	bool m_bLoaded = false;
 };

@@ -4,6 +4,8 @@
 #include "../Materials/Materials.h"
 #include "../FakeAngle/FakeAngle.h"
 #include "../../Backtrack/Backtrack.h"
+#include "../../SkinChanger/SkinChanger.h"
+#include "../../SkinChanger/RenderPolicy.h"
 
 void CGlow::Begin()
 {
@@ -280,12 +282,11 @@ void CGlow::RenderFakeAngle(const DrawModelState_t& pState, const ModelRenderInf
 	static auto IVModelRender_DrawModelExecute = U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
 	IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, F::FakeAngle.aBones);
 }
-void CGlow::RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld)
+void CGlow::RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel)
 {
 	if (!m_iFlags)
 	{
-		static auto IVModelRender_DrawModelExecute = U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
-		IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, pBoneToWorld);
+		SkinChanger::DrawEffectGeometry(pState,pInfo,pBoneToWorld,localViewmodel,"glow_cosmetic_geometry");
 	}
 	else
 	{
@@ -324,7 +325,7 @@ void CGlow::RenderViewmodel(void* rcx, int flags)
 	SecondEnd(pGroup->m_tGlow, pRenderContext, w, h);
 	pRenderContext->CullMode(G::FlipViewmodels ? MATERIAL_CULLMODE_CW : MATERIAL_CULLMODE_CCW);
 }
-void CGlow::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld)
+void CGlow::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel)
 {
 	if (!F::Groups.GroupsActive())
 		return;
@@ -341,13 +342,32 @@ void CGlow::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInf
 
 	const int w = H::Draw.m_nScreenW, h = H::Draw.m_nScreenH;
 
+	// Hold ready models resident across both effect passes. Prepare remaps current
+	// bones, but ready-only mode never registers/loads models or sets up bones.
+	SkinRender::ModelCacheScope<IMDLCache> cacheScope(static_cast<IMDLCache*>(I::MDLCache));
+	DrawModelState_t cosmeticState{};
+	ModelRenderInfo_t cosmeticInfo{};
+	std::array<matrix3x4,MAXSTUDIOBONES> cosmeticBones;
+	matrix3x4* cosmeticDrawBones=pBoneToWorld;
+	struct AttachmentDraw {DrawModelState_t state{};ModelRenderInfo_t info{};std::array<matrix3x4,MAXSTUDIOBONES> bones{};matrix3x4* drawBones=nullptr;bool ready=false;};
+	std::array<AttachmentDraw,SkinModel::MaxCosmeticAttachments> accessories;
+	bool cosmetic=SkinChanger::Prepare(pState,pInfo,pBoneToWorld,cosmeticState,cosmeticInfo,cosmeticBones,cosmeticDrawBones,localViewmodel,false,true);
+	int accessoryCount=1;
+	for(int index=0;index<accessoryCount&&index<SkinModel::MaxCosmeticAttachments;++index)
+	{auto& a=accessories[index];a.ready=SkinChanger::Prepare(pState,pInfo,pBoneToWorld,a.state,a.info,a.bones,a.drawBones,localViewmodel,true,true,index,&accessoryCount);}
+	auto draw=[&]
+	{
+		if(cosmetic)IVModelRender_DrawModelExecute->Call<void>(I::ModelRender,cosmeticState,cosmeticInfo,cosmeticDrawBones);
+		else IVModelRender_DrawModelExecute->Call<void>(I::ModelRender,pState,pInfo,pBoneToWorld);
+		for(const auto& a:accessories)if(a.ready)IVModelRender_DrawModelExecute->Call<void>(I::ModelRender,a.state,a.info,a.drawBones);
+	};
 	FirstBegin(pRenderContext);
-	IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, pBoneToWorld);
+	draw();
 	FirstEnd(pRenderContext);
 	SecondBegin(pRenderContext, w, h);
 	I::RenderView->SetColorModulation(pGroup->m_tColor);
 	I::RenderView->SetBlend(pGroup->m_tColor.a / 255.f);
-	IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, pBoneToWorld);
+	draw();
 	SecondEnd(pGroup->m_tGlow, pRenderContext, w, h);
 }
 
@@ -427,29 +447,26 @@ void CGlow::Unload()
 	if (m_pMatGlowColor)
 	{
 		m_pMatGlowColor->DecrementReferenceCount();
-		m_pMatGlowColor->DeleteIfUnreferenced();
+		F::Materials.m_mMatList.erase(m_pMatGlowColor);
 		m_pMatGlowColor = nullptr;
 	}
 
 	if (m_pMatBlurX)
 	{
-		m_pMatBlurX->DecrementReferenceCount();
-		m_pMatBlurX->DeleteIfUnreferenced();
+		F::Materials.Remove(m_pMatBlurX);
 		m_pMatBlurX = nullptr;
 	}
 
 	if (m_pMatBlurY)
 	{
-		m_pMatBlurY->DecrementReferenceCount();
-		m_pMatBlurY->DeleteIfUnreferenced();
+		F::Materials.Remove(m_pMatBlurY);
 		m_pMatBlurY = nullptr;
 	}
 	m_pBloomAmount = nullptr;
 
 	if (m_pMatHaloAddToScreen)
 	{
-		m_pMatHaloAddToScreen->DecrementReferenceCount();
-		m_pMatHaloAddToScreen->DeleteIfUnreferenced();
+		F::Materials.Remove(m_pMatHaloAddToScreen);
 		m_pMatHaloAddToScreen = nullptr;
 	}
 

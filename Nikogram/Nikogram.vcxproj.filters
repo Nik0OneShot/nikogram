@@ -38,6 +38,8 @@
     <ClCompile Include="src\Features\Aimbot\AimbotGlobal\AimbotGlobal.cpp" />
     <ClCompile Include="src\Features\Aimbot\AimbotHitscan\AimbotHitscan.cpp" />
     <ClCompile Include="src\Features\Aimbot\AimbotMelee\AimbotMelee.cpp" />
+    <ClCompile Include="src\Features\Aimbot\AutoFlarePunch.cpp" />
+    <ClCompile Include="src\Features\Triggerbot\Triggerbot.cpp" />
     <ClCompile Include="src\Features\Aimbot\AimbotProjectile\AimbotProjectile.cpp" />
     <ClCompile Include="src\Features\Aimbot\AutoAirblast\AutoAirblast.cpp" />
     <ClCompile Include="src\Features\Aimbot\AutoDetonate\AutoDetonate.cpp" />
@@ -69,6 +71,14 @@
     <ClCompile Include="src\Features\Visuals\PlayerConditions\PlayerConditions.cpp" />
     <ClCompile Include="src\Features\Visuals\OffscreenArrows\OffscreenArrows.cpp" />
     <ClCompile Include="src\Features\Visuals\SpectatorList\SpectatorList.cpp" />
+    <ClCompile Include="src\Features\Visuals\Radar\Radar.cpp" />
+    <ClInclude Include="src\Features\Visuals\Radar\Radar.h" />
+    <ClInclude Include="src\Features\Visuals\Radar\RadarPolicy.h" />
+    <ClCompile Include="src\Features\SkinChanger\SkinChanger.cpp" />
+    <ClInclude Include="src\Features\SkinChanger\SkinChanger.h" />
+    <ClInclude Include="src\Features\SkinChanger\Model.h" />
+    <ClInclude Include="src\Features\SkinChanger\Protocol.h" />
+    <ClInclude Include="src\Features\SkinChanger\RenderPolicy.h" />
     <ClCompile Include="src\Features\Visuals\Visuals.cpp" />
     <ClCompile Include="src\SDK\Definitions\Main\CTFWeaponBase.cpp" />
     <ClCompile Include="src\SDK\Definitions\Main\MD5.cpp" />
@@ -84,6 +94,8 @@
     <ClCompile Include="src\Hooks\bf_read_ReadString.cpp" />
     <ClCompile Include="src\Hooks\CAchievementMgr_CheckAchievementsEnabled.cpp" />
     <ClCompile Include="src\Hooks\CAttributeManager_AttribHookValue.cpp" />
+    <ClCompile Include="src\Hooks\SkinChanger_KillstreakUI.cpp" />
+    <ClCompile Include="src\Hooks\SkinChanger_HudModel.cpp" />
     <ClCompile Include="src\Hooks\CBaseAnimating_Interpolate.cpp" />
     <ClCompile Include="src\Hooks\CBaseAnimating_MaintainSequenceTransitions.cpp" />
     <ClCompile Include="src\Hooks\CBaseAnimating_SetSequence.cpp" />
@@ -332,6 +344,7 @@
     <ClInclude Include="src\Utils\Macros\Macros.h" />
     <ClInclude Include="src\Utils\Hash\FNV1A.h" />
     <ClInclude Include="src\Utils\Hooks\Hooks.h" />
+    <ClInclude Include="src\Utils\Hooks\Lifetime.h" />
     <ClInclude Include="src\Utils\Interfaces\Interfaces.h" />
     <ClInclude Include="src\Utils\KeyHandler\KeyHandler.h" />
     <ClInclude Include="src\Utils\Math\Math.h" />
@@ -392,6 +405,12 @@
     <ClInclude Include="src\Features\Aimbot\AimbotGlobal\AimbotGlobal.h" />
     <ClInclude Include="src\Features\Aimbot\AimbotHitscan\AimbotHitscan.h" />
     <ClInclude Include="src\Features\Aimbot\AimbotMelee\AimbotMelee.h" />
+    <ClInclude Include="src\Features\Aimbot\AutoFlarePunch.h" />
+    <ClInclude Include="src\Features\Aimbot\FlareComboPolicy.h" />
+    <ClInclude Include="src\Features\Aimbot\AimFOVVisualPolicy.h" />
+    <ClInclude Include="src\Features\Aimbot\CombatPriorityPolicy.h" />
+    <ClInclude Include="src\Features\Triggerbot\Triggerbot.h" />
+    <ClInclude Include="src\Features\Triggerbot\TriggerPolicy.h" />
     <ClInclude Include="src\Features\Aimbot\AimbotProjectile\AimbotProjectile.h" />
     <ClInclude Include="src\Features\Aimbot\AutoAirblast\AutoAirblast.h" />
     <ClInclude Include="src\Features\Aimbot\AutoDetonate\AutoDetonate.h" />

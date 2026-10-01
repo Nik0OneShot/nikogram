@@ -1,6 +1,8 @@
 #include "Aimbot.h"
 #include "AutoDetonateDiagnostics.h"
 #include "MeleeDiagnostics.h"
+#include "AutoFlarePunch.h"
+#include "AimFOVVisualPolicy.h"
 
 #include "AimbotHitscan/AimbotHitscan.h"
 #include "AimbotProjectile/AimbotProjectile.h"
@@ -43,6 +45,7 @@ void CAimbot::RunAimbot(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCm
 
 	if (m_bRunningSecondary)
 		G::CanPrimaryAttack = bOriginal;
+	m_bRunningSecondary = false;
 }
 
 void CAimbot::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
@@ -66,23 +69,39 @@ void CAimbot::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 	AutoDetonateDiagnostics::Command autodetDiagnostic(pCmd);
 	MeleeDiagnostics::Command meleeDiagnostic(pWeapon,pCmd);
 	if (!ShouldRun(pLocal, pWeapon, pCmd))
-	{ MeleeDiagnostics::Event("entry_rejected"); return; }
+	{ MeleeDiagnostics::Event("entry_rejected"); F::AutoFlarePunch.Diagnostic("aim_entry_blocked",pLocal,pWeapon,pCmd); return; }
 
 	F::AutoDetonate.Run(pLocal, pCmd);
 	F::AutoAirblast.Run(pLocal, pWeapon, pCmd);
+	if (F::AutoAirblast.m_bPlayerBlast) {F::AutoFlarePunch.Diagnostic("player_airblast_reserved",pLocal,pWeapon,pCmd);return;}
+	if (F::AutoFlarePunch.Run(pLocal,pWeapon,pCmd)) return;
 	F::AutoHeal.Run(pLocal, pWeapon, pCmd);
 
 	RunAimbot(pLocal, pWeapon, pCmd);
 	RunAimbot(pLocal, pWeapon, pCmd, true);
 }
 
+#include "AutoViewmodelSwitch.h"
 void CAimbot::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
+	m_bHitscanAssisted = false;
+	F::AutoAirblast.m_bPlayerBlast=false;
+	m_bRunningSecondary=false;
+	AutoViewmodelSwitch::Frame();
+	// Manual selection can short-circuit RunMain before the combo gets a turn.
+	if (G::OriginalCmd.weaponselect) F::AutoFlarePunch.Reset("manual_weapon_selection");
+    // Lifecycle/timeout handling must run even when aim/viewmodel gates skip RunMain.
+    // This never selects a weapon or bypasses attack safety checks.
+    F::AutoFlarePunch.Maintain(pLocal,pWeapon,pCmd);
+    const bool viewmodelWait=F::AimbotProjectile.ManageViewmodel(pLocal,pWeapon,pCmd);
 	Store(false);
 
-	RunMain(pLocal, pWeapon, pCmd);
+	if(!viewmodelWait) RunMain(pLocal, pWeapon, pCmd);
+    else {m_bRan=false;F::AutoFlarePunch.Diagnostic("viewmodel_frame_blocked",pLocal,pWeapon,pCmd);}
 
 	G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
+	if (F::AutoAirblast.m_bPlayerBlast) G::Attacking=1;
+	F::AutoFlarePunch.Shot(pWeapon,pCmd);
 }
 
 void CAimbot::Draw(CTFPlayer* pLocal)
@@ -94,12 +113,13 @@ void CAimbot::Draw(CTFPlayer* pLocal)
 	if (H::Draw.m_nScreenW <= 0 || H::Draw.m_nScreenH <= 0 || G::FOV <= 0.f)
 		return;
 
-	// Very wide FOVs cannot have a finite on-screen perspective boundary.
-	// Keep a capped indicator visible instead of hiding it when an aim bind releases.
-	const float flDrawFOV = std::clamp(Vars::Aimbot::General::AimFOV.Value, 0.1f, 89.f);
-	float flRadius = tanf(Math::Deg2Rad(flDrawFOV)) / tanf(Math::Deg2Rad(G::FOV) / 2) * float(H::Draw.m_nScreenH) * (2.f / 3.f);
-	flRadius = std::min(flRadius, float(std::min(H::Draw.m_nScreenW, H::Draw.m_nScreenH)) * 0.48f);
-	H::Draw.LineCircle(H::Draw.m_nScreenW / 2, H::Draw.m_nScreenH / 2, flRadius, 68, Vars::Colors::FOVCircle.Value);
+    const float configuredFOV=G::PrimaryWeaponType==EWeaponType::MELEE?Vars::Aimbot::Melee::AimFOV.Value:F::AimbotGlobal.GetConfiguredAimFOV();
+    const auto boundary=AimFOVVisualPolicy::Project(configuredFOV,G::FOV,H::Draw.m_nScreenW,H::Draw.m_nScreenH);
+    if (!boundary.visible) return;
+    if (boundary.fullViewport)
+        H::Draw.LineRect(1,1,H::Draw.m_nScreenW-2,H::Draw.m_nScreenH-2,Vars::Colors::FOVCircle.Value);
+    else
+        H::Draw.LineCircle(H::Draw.m_nScreenW / 2,H::Draw.m_nScreenH / 2,float(boundary.radius),128,Vars::Colors::FOVCircle.Value);
 }
 
 void CAimbot::Store(CBaseEntity* pEntity, size_t iSize)

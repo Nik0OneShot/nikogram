@@ -115,6 +115,7 @@ void CAutoRocketJump::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* p
 	if (!ShouldRun(pLocal, pWeapon, pCmd))
 	{
 		m_iFrame = -1;
+		m_bRunning = false;
 		return;
 	}
 

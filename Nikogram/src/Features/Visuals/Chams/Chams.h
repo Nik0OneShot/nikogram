@@ -32,10 +32,10 @@ private:
 public:
 	void Store(CTFPlayer* pLocal);
 	void RenderMain();
-	void RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld);
+	void RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel=false);
 
 	bool RenderViewmodel(void* rcx, int flags, int* iReturn);
-	bool RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld);
+	bool RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel=false);
 
 	bool m_bRendering = false;
 

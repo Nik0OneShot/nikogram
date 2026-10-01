@@ -232,7 +232,6 @@ class CTFRagdoll : public CBaseFlex
 public:
 	NETVAR(m_hPlayer, EHANDLE, "CTFRagdoll", "m_hPlayer")
 	NETVAR(m_vecRagdollOrigin, Vec3, "CTFRagdoll", "m_vecRagdollOrigin");
-	NETVAR(m_iPlayerIndex, int, "CTFRagdoll", "m_iPlayerIndex");
 	NETVAR(m_vecForce, Vec3, "CTFRagdoll", "m_vecForce");
 	NETVAR(m_vecRagdollVelocity, Vec3, "CTFRagdoll", "m_vecRagdollVelocity");
 	NETVAR(m_nForceBone, int, "CTFRagdoll", "m_nForceBone");

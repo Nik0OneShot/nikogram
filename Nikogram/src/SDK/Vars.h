@@ -301,6 +301,7 @@ NAMESPACE_BEGIN(Vars)
 		NAMESPACE_END(Global)
 
 		NAMESPACE_BEGIN(Hitscan)
+			CVar(PrioritizeMedics, "Prioritize medics", false);
 			CVarEnum(Hitboxes, VA_LIST("Hitboxes", "Hitscan hitboxes"), 0b000111, DROPDOWN_MULTI, nullptr,
 				VA_LIST("Head", "Body", "Pelvis", "Arms", "Legs", "##Divider", "Bodyaim if lethal", "Headshot only"),
 				Head = 1 << 0, Body = 1 << 1, Pelvis = 1 << 2, Arms = 1 << 3, Legs = 1 << 4, BodyaimIfLethal = 1 << 5, HeadshotOnly = 1 << 6);
@@ -324,6 +325,11 @@ NAMESPACE_BEGIN(Vars)
 		NAMESPACE_END(HITSCAN)
 
 		NAMESPACE_BEGIN(Projectile)
+			CVar(AimFOV, "Projectile aim FOV", 20.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 180.f);
+			CVar(PrioritizeMedics, "Prioritize medics", false);
+			CVar(PrioritizeUbered, "Prioritize ubered players", false);
+			CVar(PrioritizeOnFire, "Prioritize on fire", false);
+			CVar(AutoFlarePunch, "Auto flare punch", false);
 			CVarEnum(StrafePrediction, VA_LIST("Predict", "Strafe prediction"), 0b11, DROPDOWN_MULTI, "Off",
 				VA_LIST("Air strafing", "Ground strafing", "Counter strafe predict", "Ledge aware prediction"),
 				Air = 1 << 0, Ground = 1 << 1, CounterStrafe = 1 << 2, LedgeAware = 1 << 3);
@@ -337,11 +343,11 @@ NAMESPACE_BEGIN(Vars)
 				VA_LIST("Enabled", "##Divider", "Redirect", "Ignore FOV"),
 				Enabled = 1 << 0, Redirect = 1 << 1, IgnoreFOV = 1 << 2);
 			CVarEnum(Hitboxes, VA_LIST("Hitboxes", "Projectile hitboxes"), 0b001111, DROPDOWN_MULTI, nullptr,
-				VA_LIST("Auto", "##Divider", "Head", "Body", "Feet", "##Divider", "Bodyaim if lethal", "Prioritize feet"),
-				Auto = 1 << 0, Head = 1 << 1, Body = 1 << 2, Feet = 1 << 3, BodyaimIfLethal = 1 << 4, PrioritizeFeet = 1 << 5);
+				VA_LIST("Auto", "##Divider", "Head", "Body", "Feet", "##Divider", "Bodyaim if lethal", "Prioritize feet", "True prioritize feet"),
+				Auto = 1 << 0, Head = 1 << 1, Body = 1 << 2, Feet = 1 << 3, BodyaimIfLethal = 1 << 4, PrioritizeFeet = 1 << 5, TruePrioritizeFeet = 1 << 6);
 			CVarEnum(Modifiers, VA_LIST("Modifiers", "Projectile modifiers"), 0b0010, DROPDOWN_MULTI, nullptr,
-				VA_LIST("Charge weapon", "Cancel charge", "Use arm time", "Air splash", "Lob angles", "Target dormant", "Prevent self damage"),
-				ChargeWeapon = 1 << 0, CancelCharge = 1 << 1, UseArmTime = 1 << 2, AirSplash = 1 << 3, LobAngles = 1 << 4, TargetDormant = 1 << 5, PreventSelfDamage = 1 << 6);
+				VA_LIST("Charge weapon", "Cancel charge", "Use arm time", "Air splash", "Lob angles", "Target dormant", "Prevent self damage", "Allow splashbot on Direct Hit", "Automatic viewmodel switching"),
+				ChargeWeapon = 1 << 0, CancelCharge = 1 << 1, UseArmTime = 1 << 2, AirSplash = 1 << 3, LobAngles = 1 << 4, TargetDormant = 1 << 5, PreventSelfDamage = 1 << 6, AllowDirectHitSplash = 1 << 7, AutomaticViewmodelSwitch = 1 << 8);
 			CVar(MaxSimulationTime, "Max simulation time", 1.f, SLIDER_MIN | SLIDER_PRECISION, 0.1f, 2.5f, 0.25f, "%gs");
 			CVar(HitChance, "Hit chance", 0.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
 			CVar(AutodetRadius, "Autodet radius", 90.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
@@ -378,7 +384,6 @@ NAMESPACE_BEGIN(Vars)
 			CVar(VerticalShift, "Vertical shift", 5.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 10.f, 0.5f);
 			CVar(DragOverride, "Drag override", 0.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 1.f, 0.01f);
 			CVar(TimeOverride, "Time override", 0.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 2.f, 0.01f);
-			CVar(LobAnglesUnderpredict, "Lob angles underpredict", true, NOSAVE | DEBUGVAR);
 			CVar(HuntsmanLerp, "Huntsman lerp", 50.f, NOSAVE | DEBUGVAR | SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 1.f, "%g%%");
 			CVar(HuntsmanLerpLow, "Huntsman lerp low", 100.f, NOSAVE | DEBUGVAR | SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 1.f, "%g%%");
 			CVar(HuntsmanAdd, "Huntsman add", 0.f, NOSAVE | DEBUGVAR | SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 20.f);
@@ -415,8 +420,10 @@ NAMESPACE_BEGIN(Vars)
 				RunReduce = 1 << 0, CalculateIncrease = 1 << 1);
 		NAMESPACE_END(Projectile)
 
-		NAMESPACE_BEGIN(Melee)
-			CVar(AutoBackstab, "Auto backstab", true);
+        NAMESPACE_BEGIN(Melee)
+			CVar(PrioritizeMedics, "Prioritize medics", false);
+            CVar(AimFOV, "Melee aim FOV", 20.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 180.f);
+            CVar(AutoBackstab, "Auto backstab", true);
 			CVar(IgnoreRazorback, "Ignore razorback", false);
 			CVar(SwingPrediction, "Swing prediction", true);
 			CVar(WhipTeam, "Whip team", false);
@@ -452,6 +459,19 @@ NAMESPACE_BEGIN(Vars)
 			CVar(AutoVaccinatorFlamethrowerDamageOnly, "Auto vaccinator flamethrower damage only", false, NOSAVE | DEBUGVAR);
 		NAMESPACE_END(Healing)
 	NAMESPACE_END(Aimbot)
+
+	NAMESPACE_BEGIN(Triggerbot)
+		CVar(BacktrackToCursor, "Backtrack to Cursor", false);
+		CVarEnum(Hitboxes, "Trigger hitboxes", 0, DROPDOWN_MULTI, "Off",
+			VA_LIST("Head", "Body", "Pelvis", "Arms", "Legs"),
+			Head=1<<0, Body=1<<1, Pelvis=1<<2, Arms=1<<3, Legs=1<<4);
+		CVar(Delay, "Trigger delay", 0.f, SLIDER_PRECISION, 0.f, .5f, .05f, "%gs");
+		CVar(DynamicDelay, "Dynamic trigger delay", false);
+		CVar(DelayMin, "Minimum trigger delay", .05f, SLIDER_CLAMP | SLIDER_PRECISION, .05f, .5f, .05f, "%gs");
+		CVar(DelayMax, "Maximum trigger delay", .15f, SLIDER_CLAMP | SLIDER_PRECISION, .05f, .5f, .05f, "%gs");
+		CVarEnum(Backtrack, "Trigger backtrack", 0, NONE, nullptr,
+			VA_LIST("Off", "Shoot last backtrack", "Shoot all backtrack"), Off, Last, All);
+	NAMESPACE_END(Triggerbot)
 	
 	NAMESPACE_BEGIN(CritHack, Crit Hack)
 		CVar(ForceCrits, "Force crits", false);
@@ -599,6 +619,57 @@ NAMESPACE_BEGIN(Vars)
 			CVar(Interpolation, "Animation interpolation", true, VISUAL | TOGGLE_INVERT);
 		NAMESPACE_END(Animations)
 
+		NAMESPACE_BEGIN(Radar)
+			CVar(Enabled, "Enable radar", false, VISUAL);
+			CVarEnum(Mode, "Radar mode", 1, VISUAL, nullptr, VA_LIST("Radar only", "Radar + indicators", "Indicators only"), RadarOnly = 0, Combined = 1, IndicatorsOnly = 2);
+			CVarEnum(Shape, "Radar shape", 0, VISUAL, nullptr, VA_LIST("Circle", "Square"), Circle = 0, Square = 1);
+			CVarEnum(Position, "Radar position", 1, VISUAL, nullptr, VA_LIST("Top left", "Screen center", "Top right", "Bottom left", "Bottom right"), TopLeft = 0, Center = 1, TopRight = 2, BottomLeft = 3, BottomRight = 4);
+			CVarEnum(Orientation, "Radar orientation", 0, VISUAL, nullptr, VA_LIST("View relative", "North up"), View = 0, North = 1);
+			CVar(Size, "Radar size", 240, VISUAL, 128, 600, 8, "%i px");
+			CVar(Range, "Radar range", 1200, VISUAL, 128, 4096, 64, "%i HU");
+			CVar(OffsetX, "Radar offset X", 0, VISUAL, -2000, 2000, 1, "%i px");
+			CVar(OffsetY, "Radar offset Y", 0, VISUAL, -2000, 2000, 1, "%i px");
+			CVarEnum(Players, "Show players", 3, VISUAL | DROPDOWN_MULTI, nullptr, VA_LIST("Enemies", "Teammates"), Enemies = 1, Team = 2);
+			CVar(Markers, "Player markers", true, VISUAL);
+			CVar(ClassIcons, "Class icons", true, VISUAL);
+			CVar(Names, "Radar names", false, VISUAL);
+			CVar(Health, "Radar health bars", true, VISUAL);
+			CVar(Height, "Height indicators", true, VISUAL);
+			CVar(Distance, "Distance labels", false, VISUAL);
+			CVar(Local, "Local player", false, VISUAL);
+			CVar(Rings, "Range rings", false, VISUAL);
+			CVar(Outline, "Radar outline", true, VISUAL);
+			CVar(Crit, "Crit bar", true, VISUAL);
+			CVar(Ticks, "Tick bar", true, VISUAL);
+			CVar(Binds, "Radar binds", true, VISUAL);
+			CVar(BindBackground, "Bind background", false, VISUAL);
+			CVar(ShowBindKey, "Show bind key", false, VISUAL);
+			CVar(IconScale, "Class icon scale", 100, VISUAL, 25, 200, 5, "%i%%");
+			CVar(NameScale, "Name text scale", 100, VISUAL, 25, 200, 5, "%i%%");
+			CVar(DistanceScale, "Distance text scale", 100, VISUAL, 25, 200, 5, "%i%%");
+			CVar(HealthWidthScale, "Health bar width scale", 100, VISUAL, 25, 200, 5, "%i%%");
+			CVar(HealthHeightScale, "Health bar thickness scale", 100, VISUAL, 25, 200, 5, "%i%%");
+			CVar(HeightScale, "Height arrow scale", 100, VISUAL, 25, 200, 5, "%i%%");
+			CVar(HideStandalone, "Hide standalone indicators", true, VISUAL);
+			CVar(InterfaceColors, "Use interface colors", true, VISUAL);
+			CVar(InterfaceBorder, "Use interface radar outline", true, VISUAL);
+			CVar(GroupColors, "Use group colors", true, VISUAL);
+			CVar(HeightTolerance, "Level height tolerance", 64, VISUAL, 0, 256, 8, "%i HU");
+			CVar(Opacity, "Background opacity", 0, VISUAL, 0, 100, 5, "%i%%");
+			CVarEnum(BarStyle, "Bar style", 0, VISUAL, nullptr, VA_LIST("Curved", "Straight"), Curved = 0, Straight = 1);
+			CVar(Background, "Radar background color", Color_t(0,0,0,255), VISUAL);
+			CVar(Border, "Radar border / outline color", Color_t(220,195,55,255), VISUAL);
+			CVar(Text, "Radar text color", Color_t(220,195,55,255), VISUAL);
+			CVar(Enemy, "Radar enemy color", Color_t(240,80,80,255), VISUAL);
+			CVar(Team, "Radar teammate color", Color_t(90,170,245,255), VISUAL);
+			CVar(LocalColor, "Radar local player color", Color_t(220,195,55,255), VISUAL);
+			CVar(HealthColor, "Radar health bar color", Color_t(90,220,110,255), VISUAL);
+			CVar(CritColor, "Radar crit bar color", Color_t(70,235,80,255), VISUAL);
+			CVar(TickColor, "Radar tick bar color", Color_t(80,145,255,255), VISUAL);
+			CVar(BindActive, "Radar active bind color", Color_t(255,235,140,255), VISUAL);
+			CVar(BindInactive, "Radar inactive bind color", Color_t(145,125,40,255), VISUAL);
+		NAMESPACE_END(Radar)
+
 		NAMESPACE_BEGIN(Effects)
 			CVarValues(BulletTracer, "Bullet tracer", std::string("Default"), VISUAL | DROPDOWN_CUSTOM, nullptr,
 				"Default", "None", "Big nasty", "Distortion trail", "Machina", "Sniper rail", "Short circuit", "C.A.P.P.E.R", "Merasmus ZAP", "Merasmus ZAP 2", "Black ink", "Line", "Line ignore Z", "Beam");
@@ -741,6 +812,18 @@ NAMESPACE_BEGIN(Vars)
 	NAMESPACE_END(Visuals)
 
 	NAMESPACE_BEGIN(Misc)
+		NAMESPACE_BEGIN(SkinChanger)
+			CVar(Enabled, "Enable skin changer", false, VISUAL);
+			CVar(Follow, "Follow equipped weapon", true, VISUAL);
+			CVar(PerClass, "Per-class selections", true, VISUAL);
+			CVarEnum(ThirdPersonAnimations, "Third-person animations", 0, VISUAL, nullptr, VA_LIST("Authentic", "Legacy"), Authentic, Legacy);
+			CVar(PipBoy, "Engineer Pip-Boy kit", false, VISUAL);
+			// Consent belongs to the main config, not cosmetic/interface presets
+			// or conditional keybinds. Old configs default to networking disabled.
+			CVar(Networking, "Enable cosmetic networking", false, NOBIND);
+			CVar(Share, "Share my cosmetics", false, NOBIND);
+			CVar(Receive, "Show shared cosmetics", false, NOBIND);
+		NAMESPACE_END(SkinChanger)
 		NAMESPACE_BEGIN(Blockbot)
 			CVar(Enabled, "Blockbot", false);
 			CVarEnum(Target, "Target selection", 0, NONE, nullptr,

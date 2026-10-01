@@ -2,6 +2,7 @@
 #include "BindLayout.h"
 
 #include "Components.h"
+#include "../../Triggerbot/TriggerPolicy.h"
 #include "../Workspace.h"
 #include "../MenuPresets.h"
 #include "../Pet.h"
@@ -12,6 +13,7 @@
 #include "../../Ticks/Ticks.h"
 #include "../../Visuals/SpectatorList/SpectatorList.h"
 #include "../../Visuals/Groups/Groups.h"
+#include "../../Visuals/Radar/Radar.h"
 #include "../../Players/PlayerUtils.h"
 #include "../../Spectate/Spectate.h"
 #include "../../Blockbot/Blockbot.h"
@@ -20,6 +22,7 @@
 #include "../../Misc/Misc.h"
 #include "../../PacketManip/RealLag/RealLag.h"
 #include "../../Statistics/Statistics.h"
+#include "../../SkinChanger/SkinChanger.h"
 #include "../../LearningAccess.h"
 #include "../../Output/Output.h"
 #include "../../World/World.h"
@@ -282,9 +285,9 @@ void CMenu::DrawMenu()
             }
             if (i == Main)
             {
-                tabs("categories", { "Aim", "HvH", "Visuals", "Misc", "Tools" }, mainTab);
+                tabs("categories", { "Aim", "Triggerbot", "HvH", "Visuals", "Misc", "Tools" }, mainTab);
                 if (mainTab == 0) tabs("aim", { "General", "Draw" }, aimTab);
-                if (mainTab == 2) tabs("visuals", { "ESP", "World / camera", "Menu / HUD" }, visualTab);
+                if (mainTab == 3) tabs("visuals", { "ESP", "World / camera", "Menu / HUD" }, visualTab);
                 SetNextItemWidth(-1);
                 InputTextWithHint("##Search", "Search all settings...", &search);
                 if (BeginChild("SettingsPage", {}, ImGuiChildFlags_AlwaysUseWindowPadding))
@@ -293,10 +296,11 @@ void CMenu::DrawMenu()
                     else switch (mainTab)
                     {
                     case 0: MenuAimbot(aimTab); break;
-                    case 1: MenuHVH(); break;
-                    case 2: MenuVisuals(visualTab); break;
-                    case 3: MenuMisc(); break;
-                    case 4: MenuSettings(3); break;
+                    case 1: MenuTriggerbot(); break;
+                    case 2: MenuHVH(); break;
+                    case 3: MenuVisuals(visualTab); break;
+                    case 4: MenuMisc(); break;
+                    case 5: MenuSettings(3); break;
                     }
                 }
                 EndChild();
@@ -484,7 +488,7 @@ void CMenu::DrawMenu()
                 TextWrapped("Drag title bars to move windows. Drag window edges to resize. Layout is remembered automatically.");
                 if (!saveStatus.empty()) TextWrapped("%s", saveStatus.c_str());
                 Separator();
-                if (Button("Open menu / HUD settings")) { launch(Main); mainTab = 2; visualTab = 2; search.clear(); }
+                if (Button("Open menu / HUD settings")) { launch(Main); mainTab = 3; visualTab = 2; search.clear(); }
             }
             else
             {
@@ -659,6 +663,31 @@ void CMenu::DrawMenu()
 }
 
 #pragma region Tabs
+void CMenu::MenuTriggerbot()
+{
+	using namespace ImGui;
+	if (Section("General"))
+	{
+		FDropdown(Vars::Triggerbot::Hitboxes);
+		if (IsItemHovered()) SetTooltip("Selecting any hitbox enables hitscan triggerbot. None selected disables it. Fires without aiming; respects ignored players, walls and weapon readiness. Does not override manual shots or aimbot assistance. Miniguns must already be spun up; scope-only weapons must already be scoped. Projectiles, melee and release-fired Classic shots are excluded.");
+		FSlider(Vars::Triggerbot::Delay);
+		if (IsItemHovered()) SetTooltip("Drag: 0 to 0.5 seconds in 0.05-second increments. Click the value to enter any finite delay, including 999 seconds. Negative values mean zero delay. Losing the target resets the timer; the selected hitbox must still be under your cursor when it fires.");
+		FToggle(Vars::Triggerbot::DynamicDelay);
+		PushTransparent(!Vars::Triggerbot::DynamicDelay.Value);
+		FSlider(Vars::Triggerbot::DelayMin, FSliderEnum::Left);
+		FSlider(Vars::Triggerbot::DelayMax, FSliderEnum::Right);
+		if (IsItemHovered()) SetTooltip("Chooses one random delay per attempt, not every frame. Effective bounds stay between 0.05 and 0.5 seconds; reversed bounds are reordered, equal bounds are separated by 0.05 seconds.");
+		const auto delayBounds=TriggerPolicy::Bounds(FGet(Vars::Triggerbot::DelayMin),FGet(Vars::Triggerbot::DelayMax));
+		FSet(Vars::Triggerbot::DelayMin,float(delayBounds.first));
+		FSet(Vars::Triggerbot::DelayMax,float(delayBounds.second));
+		PopTransparent();
+		FDropdown(Vars::Triggerbot::Backtrack);
+		if (IsItemHovered()) SetTooltip("Current hitboxes are always checked. Last checks only the oldest valid historical record for each enemy. All searches every valid record. Uses the existing backtrack timing window and never forces expired records.");
+		FToggle(Vars::Triggerbot::BacktrackToCursor);
+		if (IsItemHovered()) SetTooltip("Backtrack manually fired hitscan shots when your shot ray intersects a valid historical enemy hitbox. Uses the existing backtrack window. Does not aim or fire for you, and never overrides aimbot-assisted shots.");
+	} EndSection();
+}
+
 void CMenu::MenuAimbot(int iTab)
 {
 	using namespace ImGui;
@@ -718,7 +747,8 @@ void CMenu::MenuAimbot(int iTab)
 				}
 				if (Section("Backtrack"))
 				{
-					FSlider(Vars::Backtrack::Window);
+                    FSlider(Vars::Backtrack::Window);
+                    if(IsItemHovered()) SetTooltip("Requested timing-error window in milliseconds, not a tick count. Effective window is capped at 200 ms minus one simulation tick to leave room below the server's rewind-time substitution threshold. At about 66 ticks/s this is about 185 ms. Zero uses the nearest safe record only. Invalid/teleported records and records outside the effective window are never forced as a fallback. Diagnostics log requested and effective values.");
 					//FToggle(Vars::Backtrack::PreferOnShot);
 				} EndSection();
 				if (Section("Crit Hack"))
@@ -776,16 +806,22 @@ void CMenu::MenuAimbot(int iTab)
 				{
 					FDropdown(Vars::Aimbot::Hitscan::Hitboxes, FDropdownEnum::Left);
 					FDropdown(Vars::Aimbot::Hitscan::MultipointHitboxes, FDropdownEnum::Right);
-					FDropdown(Vars::Aimbot::Hitscan::Modifiers);
+					std::vector<const char*> hitscanModifierPreview;
+					for (auto* option : { &Vars::Aimbot::Hitscan::PrioritizeMedics, &Vars::Aimbot::Hitscan::Extrapolation, &Vars::Aimbot::Hitscan::ExtrapolationGuide })
+						if (FGet(*option)) hitscanModifierPreview.push_back(option->m_vNames.front());
+					FModifierDropdown(Vars::Aimbot::Hitscan::Modifiers, [] {
+						FDropdownToggle(Vars::Aimbot::Hitscan::PrioritizeMedics);
+						bool extrapolationHovered=false;
+						FDropdownToggle(Vars::Aimbot::Hitscan::Extrapolation, 0, &extrapolationHovered);
+						FTooltip("Estimate a player's current server position from recent movement. Experimental: server lag compensation can make normal targeting more accurate.", extrapolationHovered);
+						FDropdownToggle(Vars::Aimbot::Hitscan::ExtrapolationGuide);
+					}, hitscanModifierPreview);
 					FSlider(Vars::Aimbot::Hitscan::MultipointScale);
 					PushTransparent(!(Vars::Aimbot::Hitscan::Modifiers.Value & Vars::Aimbot::Hitscan::ModifiersEnum::Tapfire));
 					{
 						FSlider(Vars::Aimbot::Hitscan::TapfireDistance);
 					}
 					PopTransparent();
-					FToggle(Vars::Aimbot::Hitscan::Extrapolation, FToggleEnum::None, &Hovered);
-					FTooltip("Estimate a player's current server position from recent movement. Experimental: server lag compensation can make normal targeting more accurate.", Hovered);
-					FToggle(Vars::Aimbot::Hitscan::ExtrapolationGuide);
 					PushTransparent(!Vars::Aimbot::Hitscan::Extrapolation.Value);
 					FSlider(Vars::Aimbot::Hitscan::ExtrapolationRange, FSliderEnum::None, nullptr, &Hovered);
 					FTooltip("Maximum estimate horizon in milliseconds. Drag: 0-100 ms; click the value to enter more. Default: 50 ms; 0 uses normal targeting. Sample-age and movement safety limits still apply. No projectile travel or future shot timestamps.", Hovered);
@@ -812,6 +848,19 @@ void CMenu::MenuAimbot(int iTab)
 #endif
 				if (Section("Projectile"))
 				{
+					FSlider(Vars::Aimbot::Projectile::AimFOV);
+					const auto projectileModifierRows = [] {
+					FDropdownToggle(Vars::Aimbot::Projectile::PrioritizeMedics);
+					FDropdownToggle(Vars::Aimbot::Projectile::PrioritizeOnFire);
+					if (IsItemHovered()) SetTooltip("Prioritize burning enemies, and burning teammates only with a helpful weapon and the existing healing/teammate-target setting enabled. Does not bypass team, ignore or visibility checks.");
+					FDropdownToggle(Vars::Aimbot::Projectile::PrioritizeUbered);
+					if (IsItemHovered()) SetTooltip("Allows and prioritizes invulnerable enemies with explosive knockback weapons. Overrides only Ignore invulnerable for those weapons. Flamethrowers automatically airblast eligible nearby ubered enemies; respects range, line of sight, projectile FOV, ammo and secondary cooldown. Does not make invulnerable players take damage.");
+					FDropdownToggle(Vars::Aimbot::Projectile::AutoFlarePunch);
+					if (IsItemHovered()) SetTooltip("With projectile aimbot and Auto shoot active: after your flamethrower damages a burning enemy, switch to an owned Flare Gun, Detonator or Scorch Shot for a normally validated shot. Return to the original flamethrower when switching is ready, then retry that burning enemy once the flare weapon's attack cooldown resets. Respects aim activation, FOV, visibility, ammo and self-damage safeguards. Manual weapon selection cancels the cycle. Target death or extinguishing cancels further flare shots, but does not prevent a pending return to the flamethrower.");
+					};
+					std::vector<const char*> projectileModifierPreview;
+					for (auto* option : { &Vars::Aimbot::Projectile::PrioritizeMedics, &Vars::Aimbot::Projectile::PrioritizeOnFire, &Vars::Aimbot::Projectile::PrioritizeUbered, &Vars::Aimbot::Projectile::AutoFlarePunch })
+						if (FGet(*option)) projectileModifierPreview.push_back(option->m_vNames.front());
 					bool predictHovered = false;
 					FDropdown(Vars::Aimbot::Projectile::StrafePrediction, FDropdownEnum::Left, 0, &predictHovered);
 					FTooltip("Counter strafe predict: detects repeated tight left/right movement and biases prediction toward its moving centre. Hit chance uses reversal balance, not measured hit probability.\nLedge aware prediction: when recent braking or reversal suggests an uncertain walk-off, checks hull support ahead and predicts slowing near the edge. Does not hold airborne targets on ledges. Uses your existing splash setting. Both options are experimental.", predictHovered);
@@ -819,7 +868,9 @@ void CMenu::MenuAimbot(int iTab)
 					FDropdown(Vars::Aimbot::Projectile::AutoDetonate, FDropdownEnum::Left);
 					FDropdown(Vars::Aimbot::Projectile::AutoAirblast, FDropdownEnum::Right);
 					FDropdown(Vars::Aimbot::Projectile::Hitboxes, FDropdownEnum::Left);
-					FDropdown(Vars::Aimbot::Projectile::Modifiers, FDropdownEnum::Right);
+                    if(IsItemHovered()) SetTooltip("Flare Gun, Detonator, Scorch Shot, Manmelter and Crusader's Crossbow use body aim instead of feet. True prioritize feet overrides this: feet first, with other selected hitboxes as fallback; works with Auto on or off. Normal grenade-launcher feet tuning is preserved unless the true-feet override is selected.");
+					FModifierDropdown(Vars::Aimbot::Projectile::Modifiers, projectileModifierRows, projectileModifierPreview, FDropdownEnum::Right);
+                    if(IsItemHovered()) SetTooltip("Allow splashbot on Direct Hit: OFF means direct shots only; ON adds splash fallback after direct candidates, independent of the global splash mode. Automatic viewmodel switching: independent of aim type, aim key and Auto shoot. Checks every command; current-direction probes cover 128 units of launch clearance. With aim off/inactive, never selects targets or changes aim. With automated aiming, validates an alternate complete trajectory, including Demo paths rejected by a nearby corner. Both sides blocked or incomplete/invalid alternate probes never switch. Supports stickybomb launchers BEFORE charging begins, with measured latency at most 150 ms; never switches an existing charge/release. No queued/choked commands or center-fire launchers. Briefly pauses attacks/automated actions until packet acknowledgement and latency grace, then rechecks. The actual near-wall firing guard remains 48 units; valid grenade impacts and sticky placements remain allowed.");
 					FSlider(Vars::Aimbot::Projectile::MaxSimulationTime, FSliderEnum::Left);
 					PushTransparent(!Vars::Aimbot::Projectile::StrafePrediction.Value);
 					{
@@ -836,7 +887,7 @@ void CMenu::MenuAimbot(int iTab)
 					if(IsItemHovered()) SetTooltip("Requires Projectile / self damage diagnostics. Own pill/sticky lifetime observations and secondary-fire request edges run without aim selection or Auto shoot; held requests refresh at most four times per second. Sampled enemy exposure screening still requires an aimed candidate and Auto shoot. Logs ammo_lifetime, ammo_detonation_request, ammo_evidence and ammo_shadow. Disappearance is NOT a confirmed explosion; requests are NOT confirmed detonations. No shot suppression or target switching.");
 					FDropdown(Vars::Aimbot::Projectile::AmmoEvidenceSources);
 					FToggle(Vars::Aimbot::Projectile::AmmoConservation);
-					if(IsItemHovered()) SetTooltip("Experimental live behavior, OFF by default. Grenade-launcher Auto shoot only, while Auto detonate requests normal stickies. Own settled stickies at least 5 seconds old; excludes uncertain defenses, fast/airborne targets, high delay and nearby threats. Validates replacement targets through the normal solver. Up to 100 ms of diversion/wait, then 1 second of normal firing. Manual input is untouched. Pills and charged weapons are not supported yet. Independent of diagnostic toggles/source selection.");
+					if(IsItemHovered()) SetTooltip("Experimental live behavior, OFF by default. Auto shoot: rocket launchers, Direct Hit, Scorch Shot, grenade and normal stickybomb launchers. Demo weapons credit recently fired unbounced pills and pending Auto detonate of settled normal stickies aged 5 seconds. Sticky firing can switch to a normally validated target, or briefly hold an automated charge instead of releasing it. No new charge starts during a brief wait; manual/unknown charges and charges near maximum are excluded. Up to 100 ms diversion/wait, then 1 second normal firing. Rockets/Scorch use imminent fixed-world impacts. No idle-sticky kill promises, afterburn, bounces, rolling-pill fuse guesses, Scottish Resistance, Beggar's, Rocket Jumper or other charged weapons. Independent of diagnostic toggles/source selection.");
 					FDropdown(Vars::Aimbot::Projectile::AmmoConservationFallback);
 					if(IsItemHovered()) SetTooltip("When a conservatively covered target has no validated replacement: briefly withhold Auto shoot within the 100 ms action window, or shoot the original target anyway. A request is not a confirmed detonation; normal firing resumes when evidence is uncertain.");
 					PushTransparent(!Vars::Aimbot::Projectile::AutoRelease.Value);
@@ -856,7 +907,6 @@ void CMenu::MenuAimbot(int iTab)
 							FSlider(Vars::Aimbot::Projectile::VerticalShift, FSliderEnum::Right);
 							FSlider(Vars::Aimbot::Projectile::DragOverride, FSliderEnum::Left);
 							FSlider(Vars::Aimbot::Projectile::TimeOverride, FSliderEnum::Right);
-							FToggle(Vars::Aimbot::Projectile::LobAnglesUnderpredict);
 
 							Divider();
 							FSlider(Vars::Aimbot::Projectile::HuntsmanLerp, FSliderEnum::Left);
@@ -946,12 +996,22 @@ void CMenu::MenuAimbot(int iTab)
 						}
 					} EndSection();
 				}
-				if (Section("Melee"))
-				{
-					FToggle(Vars::Aimbot::Melee::AutoBackstab, FToggleEnum::Left);
-					FToggle(Vars::Aimbot::Melee::IgnoreRazorback, FToggleEnum::Right);
-					FToggle(Vars::Aimbot::Melee::SwingPrediction, FToggleEnum::Left);
-					FToggle(Vars::Aimbot::Melee::WhipTeam, FToggleEnum::Right);
+                if (Section("Melee"))
+                {
+                    FSlider(Vars::Aimbot::Melee::AimFOV);
+                    if(IsItemHovered()) SetTooltip("Separate melee targeting cone, independent of the general aim FOV. Defaults to 20 degrees. Zero disables automatic melee targeting; range, wall and backstab checks still apply.");
+					std::vector<const char*> meleeModifierPreview;
+					for (auto* option : { &Vars::Aimbot::Melee::AutoBackstab, &Vars::Aimbot::Melee::SwingPrediction, &Vars::Aimbot::Melee::IgnoreRazorback, &Vars::Aimbot::Melee::WhipTeam, &Vars::Aimbot::Melee::PrioritizeMedics })
+						if (FGet(*option)) meleeModifierPreview.push_back(option->m_vNames.front());
+					int meleeModifiers = 0;
+					FDropdown("Modifiers##Melee modifiers", &meleeModifiers, {}, {}, FDropdownEnum::Multi, 0, "None", nullptr, nullptr, {}, 0,
+						[] {
+							FDropdownToggle(Vars::Aimbot::Melee::AutoBackstab);
+							FDropdownToggle(Vars::Aimbot::Melee::SwingPrediction);
+							FDropdownToggle(Vars::Aimbot::Melee::IgnoreRazorback);
+							FDropdownToggle(Vars::Aimbot::Melee::WhipTeam);
+							FDropdownToggle(Vars::Aimbot::Melee::PrioritizeMedics);
+						}, meleeModifierPreview);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
@@ -1741,6 +1801,59 @@ void CMenu::MenuVisuals(int iTab)
 					FToggle(Vars::Visuals::Effects::DrawIconsThroughWalls);
 					FToggle(Vars::Visuals::Effects::DrawDamageNumbersThroughWalls);
 				} EndSection();
+				if (Section("Radar"))
+				{
+					FToggle(Vars::Visuals::Radar::Enabled);
+					FDropdown(Vars::Visuals::Radar::Mode);
+					FDropdown(Vars::Visuals::Radar::Shape, FDropdownEnum::Left);
+					FDropdown(Vars::Visuals::Radar::Position, FDropdownEnum::Right);
+					FDropdown(Vars::Visuals::Radar::Orientation);
+					FSlider(Vars::Visuals::Radar::Size, FSliderEnum::Left);
+					FSlider(Vars::Visuals::Radar::Range, FSliderEnum::Right);
+					FSlider(Vars::Visuals::Radar::OffsetX, FSliderEnum::Left);
+					FSlider(Vars::Visuals::Radar::OffsetY, FSliderEnum::Right);
+					FDropdown(Vars::Visuals::Radar::Players);
+					FToggle(Vars::Visuals::Radar::Markers, FToggleEnum::Left);
+					FToggle(Vars::Visuals::Radar::ClassIcons, FToggleEnum::Right);
+					FToggle(Vars::Visuals::Radar::Names, FToggleEnum::Left);
+					FToggle(Vars::Visuals::Radar::Health, FToggleEnum::Right);
+					FToggle(Vars::Visuals::Radar::Height, FToggleEnum::Left);
+					FToggle(Vars::Visuals::Radar::Distance, FToggleEnum::Right);
+					FToggle(Vars::Visuals::Radar::Local, FToggleEnum::Left);
+					FToggle(Vars::Visuals::Radar::Rings, FToggleEnum::Right);
+					FToggle(Vars::Visuals::Radar::Outline, FToggleEnum::Left);
+					FToggle(Vars::Visuals::Radar::Crit, FToggleEnum::Right);
+					FToggle(Vars::Visuals::Radar::Ticks, FToggleEnum::Left);
+					FToggle(Vars::Visuals::Radar::Binds, FToggleEnum::Right);
+					FToggle(Vars::Visuals::Radar::BindBackground, FToggleEnum::Left);
+					FToggle(Vars::Visuals::Radar::HideStandalone, FToggleEnum::Right);
+					FToggle(Vars::Visuals::Radar::ShowBindKey);
+					FSlider(Vars::Visuals::Radar::IconScale, FSliderEnum::Left);
+					FSlider(Vars::Visuals::Radar::NameScale, FSliderEnum::Right);
+					FSlider(Vars::Visuals::Radar::DistanceScale, FSliderEnum::Left);
+					FSlider(Vars::Visuals::Radar::HeightScale, FSliderEnum::Right);
+					FSlider(Vars::Visuals::Radar::HealthWidthScale, FSliderEnum::Left);
+					FSlider(Vars::Visuals::Radar::HealthHeightScale, FSliderEnum::Right);
+					FToggle(Vars::Visuals::Radar::InterfaceColors, FToggleEnum::Left);
+					FToggle(Vars::Visuals::Radar::GroupColors, FToggleEnum::Right);
+					if (FToggle(Vars::Visuals::Radar::InterfaceBorder) && FGet(Vars::Visuals::Radar::InterfaceBorder))
+						FSet(Vars::Visuals::Radar::Border,Vars::Visuals::Radar::Border.Default);
+					FDropdown(Vars::Visuals::Radar::BarStyle);
+					FSlider(Vars::Visuals::Radar::HeightTolerance, FSliderEnum::Left);
+					FSlider(Vars::Visuals::Radar::Opacity, FSliderEnum::Right);
+					FColorPicker(Vars::Visuals::Radar::Background, FColorPickerEnum::Left);
+					if (FColorPicker(Vars::Visuals::Radar::Border, FColorPickerEnum::Right))
+						FSet(Vars::Visuals::Radar::InterfaceBorder,false);
+					FColorPicker(Vars::Visuals::Radar::Text, FColorPickerEnum::Left);
+					FColorPicker(Vars::Visuals::Radar::LocalColor, FColorPickerEnum::Right);
+					FColorPicker(Vars::Visuals::Radar::Enemy, FColorPickerEnum::Left);
+					FColorPicker(Vars::Visuals::Radar::Team, FColorPickerEnum::Right);
+					FColorPicker(Vars::Visuals::Radar::HealthColor, FColorPickerEnum::Left);
+					FColorPicker(Vars::Visuals::Radar::CritColor, FColorPickerEnum::Right);
+					FColorPicker(Vars::Visuals::Radar::TickColor, FColorPickerEnum::Left);
+					FColorPicker(Vars::Visuals::Radar::BindActive, FColorPickerEnum::Right);
+					FColorPicker(Vars::Visuals::Radar::BindInactive, FColorPickerEnum::Left);
+				} EndSection();
 			}
 			/* Column 2 */
 			TableNextColumn();
@@ -2162,6 +2275,10 @@ void CMenu::MenuMisc(int iTab)
 			}
 			EndTable();
 		}
+		if (Section("Skin changer"))
+		{
+			SkinChanger::Menu();
+		} EndSection();
 		break;
 	}
 	}
@@ -4547,6 +4664,7 @@ struct BindInfo_t
 void CMenu::DrawBinds()
 {
 	using namespace ImGui;
+	if (!m_bIsOpen && I::EngineClient->IsInGame() && H::Entities.GetLocal() && F::Radar.SuppressBinds()) return;
 
 	if (!F::Binds.m_bDisplay)
 		return;
