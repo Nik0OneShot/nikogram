@@ -1,4 +1,6 @@
-  ## <img src=".github/assets/nikogram.png" alt="Nikogram" height="180">
+<p align="center">
+  <img src=".github/assets/nikogram.png" alt="Nikogram" height="220">
+</p>
 
 amalgam except nullcore plus niko oneshot plus cool features
 
