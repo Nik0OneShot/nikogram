@@ -13,7 +13,9 @@ MAKE_SIGNATURE(CWeaponMedigun_ManageChargeEffect_CreateName_Call, "client.dll", 
 // Verified against the installed x64 client and Valve's econ_entity.cpp. Keep
 // schema descriptors opaque: the engine owns their layout and lifetime.
 MAKE_SIGNATURE(Skin_GetItemSchema, "client.dll", "48 83 EC 28 E8 ? ? ? ? 48 83 C0 08 48 83 C4 28 C3", 0x0);
-MAKE_SIGNATURE(Skin_GetWeaponParticle, "client.dll", "4C 8B DC 49 89 5B 10 49 89 73 18 57 48 81 EC 80 00 00 00 0F B7 99 B8 04 00 00", 0x0);
+// Schema tree offset moved in the October 6 build. Match the lookup's code
+// rather than embedding the schema member offset in the signature.
+MAKE_SIGNATURE(Skin_GetWeaponParticle, "client.dll", "4C 8B DC 49 89 5B 10 49 89 73 18 57 48 81 EC 80 00 00 00 0F B7 99 ? ? ? ? 33 C0 49 89 43 A0 0F 57 C0", 0x0);
 MAKE_SIGNATURE(Skin_UpdateWeaponParticle, "client.dll", "4C 89 44 24 18 88 54 24 10 55 41 54 41 56 48 8D 6C 24 B9 48 81 EC B0 00 00 00 4D 8B E0 4C 8B F1", 0x0);
 MAKE_SIGNATURE(Skin_UpdateKillstreakEyes, "client.dll", "44 88 44 24 18 89 54 24 10 55 53 56 57 41 57 48 8D 6C 24 C9 48 81 EC 90 00 00 00 48 8B 91 28 29 00 00", 0x0);
 

@@ -9,6 +9,172 @@
 #include <numeric>
 #include <unordered_set>
 
+void CMovementSimulation::BeginReuse(CBaseEntity* target)
+{
+    m_pReuseTarget=target;
+    m_nReuseCount=m_nReuseCursor=m_nReuseBytes=0;
+    m_bReuseChecked=m_bReuseAllowed=m_bReuseDisabled=m_bReuseValidation=false;
+    m_iReuseTick=I::GlobalVars->tickcount;
+    m_flReuseInterval=TICK_INTERVAL;
+    m_nReuseHandle=target?target->As<IHandleEntity>()->GetRefEHandle().ToInt():0;
+    m_pReuseMap=nullptr;
+}
+
+void CMovementSimulation::EndReuse()
+{
+    m_pReuseTarget=nullptr;
+    m_vReuseFrames.resize(m_nReuseCount); // Release unused snapshots retained from larger targets.
+    m_nReuseCount=0; // Storage capacity may be retained; no state is reused outside this scope.
+    m_bReuseAllowed=false;
+}
+
+bool CMovementSimulation::PackReuse(MoveStorage& storage,std::vector<byte>& packed)
+{
+    const auto size=storage.m_pPlayer->GetIntermediateDataSize();
+    auto* map=storage.m_pPlayer->GetPredDescMap();
+    if(!map || !size || size>65536) return false;
+    packed.resize(size);
+    std::fill(packed.begin(),packed.end(),byte{});
+    CPredictionCopy copy={PC_EVERYTHING,packed.data(),PC_DATA_PACKED,storage.m_pPlayer,PC_DATA_NORMAL};
+    copy.TransferData("MovementReuseCapture",storage.m_pPlayer->entindex(),map);
+    return true;
+}
+
+// Exclude the restore buffer, original command and path container: their ownership
+// stays with the current live simulation. All prediction scalars are copied/checked.
+#define REUSE_FIELDS(X) \
+    X(m_pPlayer) X(m_flAverageYaw) X(m_flCounterTime) \
+    X(m_vDiagnosticStartOrigin) X(m_vDiagnosticStartVelocity) X(m_bDiagnosticStartGrounded) \
+    X(m_bLedgeAware) X(m_bLedgeBraking) X(m_flLedgeStartTime) X(m_bBunnyHop) \
+    X(m_flSimTime) X(m_flPredictedDelta) X(m_flPredictedSimTime) X(m_flDiagnosticNetworkOriginTime) \
+    X(m_bDirectMove) X(m_bPredictNetworked) X(m_vPredictedOrigin) \
+    X(m_bFailed) X(m_bInitFailed) X(m_bInitialized)
+
+bool CMovementSimulation::SameReuseState(const MoveStorage& a,const MoveStorage& b)
+{
+#define CHECK_REUSE(field) if(a.field!=b.field) return false;
+    REUSE_FIELDS(CHECK_REUSE)
+#undef CHECK_REUSE
+    // Value comparisons deliberately ignore padding (including bitfield padding).
+#define CHECK_MOVE(field) if(a.m_MoveData.field!=b.m_MoveData.field) return false;
+    CHECK_MOVE(m_bFirstRunOfFunctions) CHECK_MOVE(m_bGameCodeMovedPlayer) CHECK_MOVE(m_nPlayerHandle)
+    CHECK_MOVE(m_nImpulseCommand) CHECK_MOVE(m_vecViewAngles) CHECK_MOVE(m_vecAbsViewAngles)
+    CHECK_MOVE(m_nButtons) CHECK_MOVE(m_nOldButtons) CHECK_MOVE(m_flForwardMove) CHECK_MOVE(m_flOldForwardMove)
+    CHECK_MOVE(m_flSideMove) CHECK_MOVE(m_flUpMove) CHECK_MOVE(m_flMaxSpeed) CHECK_MOVE(m_flClientMaxSpeed)
+    CHECK_MOVE(m_vecVelocity) CHECK_MOVE(m_vecAngles) CHECK_MOVE(m_vecOldAngles) CHECK_MOVE(m_outStepHeight)
+    CHECK_MOVE(m_outWishVel) CHECK_MOVE(m_outJumpVel) CHECK_MOVE(m_vecConstraintCenter)
+    CHECK_MOVE(m_flConstraintRadius) CHECK_MOVE(m_flConstraintWidth) CHECK_MOVE(m_flConstraintSpeedFactor)
+    CHECK_MOVE(m_vecAbsOrigin)
+#undef CHECK_MOVE
+#define CHECK_COUNTER(field) if(a.m_CounterStrafe.field!=b.m_CounterStrafe.field) return false;
+    CHECK_COUNTER(valid) CHECK_COUNTER(ax) CHECK_COUNTER(ay) CHECK_COUNTER(center) CHECK_COUNTER(drift)
+    CHECK_COUNTER(speed) CHECK_COUNTER(confidence) CHECK_COUNTER(driftLimit)
+#undef CHECK_COUNTER
+    return true;
+}
+
+void CMovementSimulation::CopyReuseState(MoveStorage& destination,const MoveStorage& source)
+{
+#define COPY_REUSE(field) destination.field=source.field;
+    REUSE_FIELDS(COPY_REUSE)
+#undef COPY_REUSE
+    destination.m_MoveData=source.m_MoveData;
+    destination.m_CounterStrafe=source.m_CounterStrafe;
+}
+#undef REUSE_FIELDS
+
+bool CMovementSimulation::TryReuseTick(MoveStorage& storage,bool path,RunTickCallback* callback)
+{
+    if(!m_pReuseTarget || storage.m_pPlayer!=m_pReuseTarget || m_bReuseDisabled || !path || callback || LandingReplay::active)
+        return false;
+    auto* capture=ProjectileDiagnostics::current;
+    if(m_iReuseTick!=I::GlobalVars->tickcount || m_flReuseInterval!=TICK_INTERVAL
+        || m_nReuseHandle!=storage.m_pPlayer->As<IHandleEntity>()->GetRefEHandle().ToInt()
+        || (m_pReuseMap && m_pReuseMap!=storage.m_pPlayer->GetPredDescMap()))
+    {m_bReuseDisabled=true;return false;}
+    if(!m_bReuseChecked)
+    {
+        ProjectileDiagnostics::Profile timer(ProjectileDiagnostics::MovementReuseCapture);
+        m_bReuseChecked=true;
+        const Vec3 absoluteOrigin=storage.m_pPlayer->GetAbsOrigin();
+        if(!PackReuse(storage,m_vReuseScratch)) {m_bReuseDisabled=true;return false;}
+        auto* map=storage.m_pPlayer->GetPredDescMap();
+        if(m_nReuseCount && (m_pReuseMap!=map || absoluteOrigin!=m_vReuseInitialAbs || m_vReuseScratch!=m_vReuseInitial || !SameReuseState(storage,m_ReuseInitial)))
+        {
+            // A changed initialization starts a fresh trajectory, never an approximate match.
+            m_nReuseCount=m_nReuseBytes=0;
+            if(capture) ++ProjectileDiagnostics::reuse.invalidations;
+        }
+        if(!m_nReuseCount)
+        {
+            m_vReuseInitial=m_vReuseScratch;
+            m_vReuseInitialAbs=absoluteOrigin;
+            CopyReuseState(m_ReuseInitial,storage);
+            m_pReuseMap=map;
+        }
+        m_bReuseAllowed=true;
+    }
+    if(!m_bReuseAllowed) return false;
+    if(m_nReuseCursor && m_nReuseCursor<=m_nReuseCount)
+    {
+        ProjectileDiagnostics::Profile timer(ProjectileDiagnostics::MovementReuseCapture);
+        if(storage.m_pPlayer->GetAbsOrigin()!=m_vReuseFrames[m_nReuseCursor-1].absoluteOrigin || !PackReuse(storage,m_vReuseScratch)
+            || m_vReuseScratch!=m_vReuseFrames[m_nReuseCursor-1].packed
+            || !SameReuseState(storage,m_vReuseFrames[m_nReuseCursor-1].state))
+        {
+            m_bReuseDisabled=true;
+            if(capture) ++ProjectileDiagnostics::reuse.invalidations;
+            return false;
+        }
+    }
+    if(m_nReuseCursor>=m_nReuseCount) return false;
+    // On sampled commands compare selected cached ticks with genuine fresh simulation.
+    // The fresh result remains authoritative; a mismatch disables reuse for this scope.
+    if(capture && m_nReuseCursor%32==0)
+    {m_bReuseValidation=true;return false;}
+    ProjectileDiagnostics::Profile timer(ProjectileDiagnostics::MovementReuseReplay);
+    auto& frame=m_vReuseFrames[m_nReuseCursor++];
+    CPredictionCopy copy={PC_EVERYTHING,storage.m_pPlayer,PC_DATA_NORMAL,frame.packed.data(),PC_DATA_PACKED};
+    copy.TransferData("MovementReuseReplay",storage.m_pPlayer->entindex(),storage.m_pPlayer->GetPredDescMap());
+    CopyReuseState(storage,frame.state);
+    storage.m_pPlayer->SetAbsOrigin(frame.absoluteOrigin);
+    storage.m_vPath.push_back(frame.pathPoint);
+    if(capture) ++ProjectileDiagnostics::reuse.hits;
+    return true;
+}
+
+void CMovementSimulation::CaptureReuseTick(MoveStorage& storage,bool path,RunTickCallback* callback)
+{
+    if(!m_pReuseTarget || storage.m_pPlayer!=m_pReuseTarget || !m_bReuseAllowed || m_bReuseDisabled || !path || callback || LandingReplay::active)
+        return;
+    ProjectileDiagnostics::Profile timer(ProjectileDiagnostics::MovementReuseCapture);
+    auto* capture=ProjectileDiagnostics::current;
+    if(m_bReuseValidation)
+    {
+        m_bReuseValidation=false;
+        const bool matched=storage.m_pPlayer->GetAbsOrigin()==m_vReuseFrames[m_nReuseCursor].absoluteOrigin && PackReuse(storage,m_vReuseScratch)
+            && m_vReuseScratch==m_vReuseFrames[m_nReuseCursor].packed
+            && SameReuseState(storage,m_vReuseFrames[m_nReuseCursor].state);
+        if(capture) {++ProjectileDiagnostics::reuse.validations;if(!matched) ++ProjectileDiagnostics::reuse.mismatches;}
+        if(!matched) {m_bReuseDisabled=true;return;}
+        ++m_nReuseCursor;
+        return;
+    }
+    if(m_nReuseCursor!=m_nReuseCount) return;
+    if(m_nReuseCount>=512) {m_bReuseAllowed=false;return;}
+    const size_t retained=m_nReuseCount<m_vReuseFrames.size()?m_vReuseFrames[m_nReuseCount].packed.capacity():0;
+    const size_t bytes=std::max(size_t(storage.m_pPlayer->GetIntermediateDataSize()),retained)+sizeof(ReuseFrame);
+    if(bytes>4*1024*1024 || m_nReuseBytes>4*1024*1024-bytes) {m_bReuseAllowed=false;return;}
+    if(m_vReuseFrames.size()<=m_nReuseCount) m_vReuseFrames.emplace_back();
+    auto& frame=m_vReuseFrames[m_nReuseCount];
+    frame.absoluteOrigin=storage.m_pPlayer->GetAbsOrigin();
+    if(!PackReuse(storage,frame.packed)) {m_bReuseDisabled=true;return;}
+    CopyReuseState(frame.state,storage);
+    frame.pathPoint=storage.m_MoveData.m_vecAbsOrigin;
+    ++m_nReuseCount;++m_nReuseCursor;m_nReuseBytes+=bytes;
+    if(capture) {++ProjectileDiagnostics::reuse.captures;ProjectileDiagnostics::reuse.bytes+=bytes;}
+}
+
 bool CMovementSimulation::Store(MoveStorage& tMoveStorage)
 {
 	auto pMap = tMoveStorage.m_pPlayer->GetPredDescMap();
@@ -262,6 +428,7 @@ void CMovementSimulation::StorePlayer(CTFPlayer* pPlayer, CMoveData& tMoveData, 
 
 bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tMoveStorage, bool bHitchance, bool bStrafe, bool bPredict)
 {
+    if(pEntity==m_pReuseTarget) {m_nReuseCursor=0;m_bReuseChecked=m_bReuseAllowed=m_bReuseValidation=false;}
     ProjectileDiagnostics::Profile profile(ProjectileDiagnostics::MovementInit);
 	if (tMoveStorage.m_bInitialized) Restore(tMoveStorage);
 	tMoveStorage = {};
@@ -869,6 +1036,8 @@ void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTick
 	if (!tMoveStorage.m_bInitialized || tMoveStorage.m_bFailed || !tMoveStorage.m_pPlayer || !tMoveStorage.m_pPlayer->IsPlayer())
 		return;
 
+    if(TryReuseTick(tMoveStorage,bPath,pCallback)) return;
+
 	// make sure frametime and prediction vars are right
 	const bool oldPrediction = I::Prediction->m_bInPrediction, oldFirst = I::Prediction->m_bFirstTimePredicted;
 	const float oldFrametime = I::GlobalVars->frametime;
@@ -1108,6 +1277,7 @@ void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTick
     if(!LandingReplay::active) PrivateLearning::EngineTick(&tMoveStorage,tMoveStorage.m_flSimTime,
         tMoveStorage.m_MoveData.m_vecAbsOrigin.x,tMoveStorage.m_MoveData.m_vecAbsOrigin.y,
         tMoveStorage.m_vPredictedOrigin.x,tMoveStorage.m_vPredictedOrigin.y);
+    CaptureReuseTick(tMoveStorage,bPath,pCallback);
 }
 
 void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTickCallback fCallback)

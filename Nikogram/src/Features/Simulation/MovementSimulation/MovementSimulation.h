@@ -58,6 +58,32 @@ struct MoveData
 class CMovementSimulation
 {
 private:
+    struct ReuseFrame
+    {
+        MoveStorage state;
+        std::vector<byte> packed;
+        Vec3 pathPoint;
+        Vec3 absoluteOrigin;
+    };
+    CBaseEntity* m_pReuseTarget=nullptr;
+    std::vector<ReuseFrame> m_vReuseFrames;
+    std::vector<byte> m_vReuseInitial,m_vReuseScratch;
+    MoveStorage m_ReuseInitial;
+    Vec3 m_vReuseInitialAbs;
+    size_t m_nReuseCount=0,m_nReuseCursor=0,m_nReuseBytes=0;
+    bool m_bReuseChecked=false,m_bReuseAllowed=false;
+    bool m_bReuseDisabled=false,m_bReuseValidation=false;
+    int m_iReuseTick=0;
+    float m_flReuseInterval=0.f;
+    unsigned long m_nReuseHandle=0;
+    void* m_pReuseMap=nullptr;
+    bool PackReuse(MoveStorage& storage,std::vector<byte>& packed);
+    bool SameReuseState(const MoveStorage& a,const MoveStorage& b);
+    void CopyReuseState(MoveStorage& destination,const MoveStorage& source);
+    bool TryReuseTick(MoveStorage& storage,bool path,RunTickCallback* callback);
+    void CaptureReuseTick(MoveStorage& storage,bool path,RunTickCallback* callback);
+    void BeginReuse(CBaseEntity* target);
+    void EndReuse();
 	bool Store(MoveStorage& tMoveStorage);
 	bool AcceptRecord(CTFPlayer* player, float time, const Vec3& origin, const Vec3& velocity);
     void StoreCounterHistory(int index);
@@ -79,6 +105,14 @@ private:
 	std::vector<std::array<Vec3, 4>> m_vBounds;
 
 public:
+    struct ReuseScope
+    {
+        CMovementSimulation& owner;
+        ReuseScope(CMovementSimulation& simulation,CBaseEntity* target):owner(simulation) {owner.BeginReuse(target);}
+        ~ReuseScope() {owner.EndReuse();}
+        ReuseScope(const ReuseScope&)=delete;
+        ReuseScope& operator=(const ReuseScope&)=delete;
+    };
     CounterStrafe::Audit DiagnosticCounterAudit(CTFPlayer* player);
 	void Clear();
 	void Store();

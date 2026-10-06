@@ -120,7 +120,7 @@ namespace SkinChanger
                 if(std::filesystem::exists(file)&&std::filesystem::file_size(file)>1024*1024)
                 {if(std::filesystem::exists(previous))std::filesystem::remove(previous);std::filesystem::rename(file,previous);}
                 SYSTEMTIME utc{};GetSystemTime(&utc);
-                std::ofstream(file,std::ios::app)<<"[skinchanger-v129] run="<<diagnosticRun<<" utc="
+                std::ofstream(file,std::ios::app)<<"[skinchanger-v136] run="<<diagnosticRun<<" utc="
                     <<std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",utc.wYear,utc.wMonth,utc.wDay,utc.wHour,utc.wMinute,utc.wSecond)
                     <<" ms="<<int64_t(Now()*1000)<<' '<<message<<'\n';}catch(...){}
         }

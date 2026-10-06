@@ -10,7 +10,7 @@
 MAKE_SIGNATURE(CBaseAnimating_InternalDrawModel, "client.dll", "48 8B C4 55 56 48 8D 6C 24 ? 48 81 EC ? ? ? ? 44 8B 81", 0x0);
 MAKE_SIGNATURE(CBaseViewModel_DrawModel, "client.dll", "40 53 55 56 48 83 EC ? 80 B9", 0x0);
 MAKE_SIGNATURE(SkinPaint_WeaponSkinBind, "client.dll", "48 8B C4 55 53 48 8D A8 F8 FE FF FF 48 81 EC F8 01 00 00 48 89 70 08 48 8B F2", 0x0);
-MAKE_SIGNATURE(Skin_KillstreakSheenBind, "client.dll", "48 89 54 24 10 55 57 41 54 48 8D 6C 24 B9 48 81 EC F0 00 00 00 48 8B 41 08 48 8B FA 4C 8B E1", 0x0);
+MAKE_SIGNATURE(Skin_KillstreakSheenBind, "client.dll", "4C 8B DC 49 89 53 10 55 57 41 54 49 8D 6B A1 48 81 EC F0 00 00 00 48 8B 41 08 48 8B FA 4C 8B E1", 0x0);
 
 MAKE_HOOK(Skin_KillstreakSheenBind, S::Skin_KillstreakSheenBind(), void, void* proxy,void* renderable)
 {

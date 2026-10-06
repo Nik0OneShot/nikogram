@@ -57,6 +57,7 @@ struct Point_t
 	Vec3 m_vPoint = {};
 	Solution_t m_tSolution = {};
 	uint8_t m_iType = PointTypeEnum::Direct;
+    size_t m_iSearchOrder = 0; // Deterministic ties in the bounded splash shortlist.
 };
 
 struct Offset_t
@@ -99,7 +100,7 @@ private:
 	Directs_t GetDirects();
 	Splashes_t GetSplashes();
 	void SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& vSplashPoints, uint8_t iFlags = CalculateFlagsEnum::None);
-	std::vector<Point_t> GetSplashPoints(Vec3 vOrigin, std::vector<Setup_t>& vSplashPoints, int iSimTime, uint8_t iFlags = CalculateFlagsEnum::Accuracy, bool bFirst = false);
+    void GetSplashPoints(Vec3 vOrigin, std::vector<Setup_t>& vSplashPoints, std::vector<Point_t>& vPoints, int iSimTime, uint8_t iFlags = CalculateFlagsEnum::Accuracy, bool bFirst = false);
 
 	void CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& tOut, uint8_t iFlags = CalculateFlagsEnum::Accuracy, int iTolerance = -1);
 	bool TestAngle(const Vec3& vPoint, const Vec3& vAngles, int iSimTime, uint8_t iType, uint8_t iFlags, bool bSecondTest = false);
@@ -126,6 +127,9 @@ private:
     int CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate);
     bool CandidateAngleAllowed(const Vec3& angle,const Vec3& point,const Vec3& origin);
     bool m_bAdaptivePass=false, m_bAdaptiveRetained=false;
+    bool m_bReuseCooldownPreview=false;
+    std::optional<Vec3> m_vCooldownPreviewPoint;
+    std::vector<DrawBox_t> m_vCooldownPreviewBoxes;
     float m_flAdaptiveTargetFov=180.f,m_flAdaptiveDistance=10000.f;
     int m_iAdaptiveEntity=-1,m_iAdaptiveTick=-1000;
     Vec3 m_vAdaptiveMins={},m_vAdaptiveMaxs={};
@@ -141,6 +145,7 @@ private:
 	MoveStorage m_tMoveStorage = {};
 	ProjectileInfo m_tProjInfo = {};
 	std::vector<Setup_t> m_vSplashPoints = {};
+    std::vector<float> m_vSplashDistances;
 
 	bool m_bLastTickHeld = false;
 
@@ -156,6 +161,7 @@ private:
 	int m_iResult = false;
 	bool m_bUpdate = true;
 	bool m_bPreviewOnly = false;
+    bool m_bSearchedThisCommand = false;
     bool m_bWorldBlocked=false;
     float m_flObservationFlight=0.f;
     float m_flObservationTime=0.f;

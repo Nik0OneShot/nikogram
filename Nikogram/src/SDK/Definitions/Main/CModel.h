@@ -6,7 +6,7 @@
 
 #define	AREA_SOLID 1
 #define	AREA_TRIGGERS 2
-#define NUMSIDES_BOXBRUSH 0xFFFF
+#define NUMSIDES_BOXBRUSH 0xFFFFFFFF
 #define	MAXLIGHTMAPS 4
 
 #define SURFDRAW_NOLIGHT		0x00000001
@@ -385,8 +385,8 @@ struct cnode_t
 struct cbrush_t
 {
 	int				contents;
-	unsigned short	numsides;
-	unsigned short	firstbrushside;
+	int				numsides;
+	int				firstbrushside;
 
 	inline int GetBox() const { return firstbrushside; }
 	inline void SetBox(int boxID)
@@ -396,6 +396,7 @@ struct cbrush_t
 	}
 	inline bool IsBox() const { return numsides == NUMSIDES_BOXBRUSH ? true : false; }
 };
+static_assert(sizeof(cbrush_t) == 12, "TF2 collision brush layout must match the updated engine");
 
 struct cboxbrush_t
 {

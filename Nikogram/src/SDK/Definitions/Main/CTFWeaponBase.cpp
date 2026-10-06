@@ -2,7 +2,9 @@
 
 #include "../../SDK.h"
 
-MAKE_SIGNATURE(CTFPlayerSharedUtils_GetEconItemViewByLoadoutSlot, "client.dll", "48 89 6C 24 ? 56 41 54 41 55 41 56 41 57 48 83 EC", 0x0);
+// Include the loadout search's player-class read; the shorter prologue also
+// matched the middle of an unrelated schema function after the game update.
+MAKE_SIGNATURE(CTFPlayerSharedUtils_GetEconItemViewByLoadoutSlot, "client.dll", "48 89 6C 24 ? 56 41 54 41 55 41 56 41 57 48 83 EC 30 44 8B A9 ? ? ? ? 48 8D B1", 0x0);
 MAKE_SIGNATURE(CEconItemView_GetItemName, "client.dll", "40 53 48 83 EC ? 48 8B D9 C6 81 ? ? ? ? ? E8 ? ? ? ? 48 8B 8B", 0x0);
 
 bool CTFWeaponBase::HasPrimaryAmmoForShot()
