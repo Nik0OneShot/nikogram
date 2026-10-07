@@ -376,3 +376,8 @@ PRIVATE-LEARNING.md
 **/EngineComparisonRuns/
 *evaluation-report.json
 *model-report.json
+
+# Keep development helper scripts out of the public source.
+*.ps1
+*.bat
+*.cmd

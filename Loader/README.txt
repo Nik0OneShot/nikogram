@@ -1,4 +1,4 @@
-Nikogram offline loader 0.1.3
+Nikogram offline loader 0.1.4
 
 Run Nikogram-Loader.exe. Open TF2 separately, wait for detection, then click inject.
 Native injection is the only supported method. The method selector and the
@@ -32,20 +32,20 @@ Extract DLL saves the exact sphere-cache batch 5 public DLL. Extract source save
 a complete source bundle: the matching Nikogram source and a Loader directory
 with this application's source, branding, payload inputs and dependency sources.
 Check files, runtime logs and private Nikogram sources are not included.
-Only the explicit distribution list in Source-Files.ps1 is packaged. Development
-preview/check commands and dependency examples are not part of the application.
+Development scripts, preview/check commands and dependency examples are not
+part of the application or its source archive.
 
 Rebuild (developers only): Windows x64, Visual Studio C++ tools including ATL,
-Windows SDK, and PowerShell 7. Run Loader/Build.ps1 after extracting the bundle.
-The build script uses the installed VS 2026 toolset v145; adjust its toolchain
-path for another installation. No network retrieval is part of this script.
-It packages the source and then builds the static dependency and EXE. End users
-do not need Visual Studio, PowerShell scripts or a separate runtime installation.
+Windows SDK, and toolset v145. Open NikogramLoader.vcxproj in Visual Studio and
+build Release | x64. The project builds its dependency and packages the embedded
+source using native MSBuild tasks. No helper scripts or network retrieval are
+needed. End users only need Nikogram-Loader.exe, not Visual Studio.
 
-The original Nikogram payload and its original source ZIP are included as build
+The original Nikogram payload and its matching source ZIP are included as build
 inputs in Loader/assets, so the loader can be rebuilt without recompiling TF2
 code. If replacing the payload, also replace its matching source and update the
-SHA256 constants in Loader.cpp. The supplied source may be modified/rebuilt;
+SHA256 constants in Loader.cpp. The source omits the optional font-conversion
+script; its generated font header remains included. The supplied source may be modified/rebuilt;
 reverse engineering for debugging modifications to LGPL components is permitted.
 
 Nikogram branding supplied by the project owner. Original loader code is under

@@ -16,3 +16,6 @@
 **/[Ee]xample*/
 **/[Bb]enchmark*/
 preview*.png
+*.ps1
+*.bat
+*.cmd

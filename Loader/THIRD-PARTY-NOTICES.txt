@@ -1,4 +1,4 @@
-Nikogram Loader 0.1.3
+Nikogram Loader 0.1.4
 
 Injection library: Blackbone by DarthTon.
 Upstream revision: 5ede6ce50cd8ad34178bfa6cae05768ff6b3859b

@@ -14,4 +14,17 @@
  <ItemGroup><ClInclude Include="Loader.h"/><ClInclude Include="resource.h"/></ItemGroup>
  <ItemGroup><ResourceCompile Include="resources.rc"/></ItemGroup>
  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets"/>
+ <!-- Build and resource packaging use Visual Studio's native tasks only. -->
+ <Target Name="PrepareLoaderResources" BeforeTargets="PrepareForBuild">
+  <MSBuild Projects="$(ProjectDir)vendor\Blackbone\src\BlackBone\BlackBone.vcxproj" Targets="Build" Properties="Configuration=Release;Platform=x64;PlatformToolset=$(PlatformToolset);PostBuildEventUseInBuild=false;OutDir=$(ProjectDir)vendor\lib\;IntDir=$(ProjectDir)build\blackbone\"/>
+  <ItemGroup>
+   <_LoaderSource Include="Main.cpp;Loader.cpp;Loader.h;resource.h;resources.rc;loader.manifest;NikogramLoader.vcxproj;README.txt;LICENSE.txt;THIRD-PARTY-NOTICES.txt;assets\nikogram.png;assets\Nikogram.dll;assets\Nikogram-source.zip;vendor\Blackbone\LICENSE;vendor\Blackbone\src\**\*.c;vendor\Blackbone\src\**\*.cpp;vendor\Blackbone\src\**\*.h;vendor\Blackbone\src\**\*.hpp;vendor\Blackbone\src\**\*.inl;vendor\Blackbone\src\**\*.asm;vendor\Blackbone\src\**\*.rc;vendor\Blackbone\src\**\*.def;vendor\Blackbone\src\**\*.vcxproj;vendor\Blackbone\src\3rd_party\DIA\lib\amd64\diaguids.lib;vendor\Blackbone\src\3rd_party\AsmJit\LICENSE.md;vendor\Blackbone\src\3rd_party\rewolf-wow64ext\lgpl-3.0.txt;vendor\Blackbone\src\3rd_party\rewolf-wow64ext\GPL-3.0.txt"
+    Exclude="**\obj\**;**\build\**;**\bin\**;**\output\**;**\tests\**;**\test\**;**\Testing\**;**\checks\**;**\sample\**;**\Samples\**;**\examples\**;**\benchmarks\**;**\BlackBoneTest\**"/>
+  </ItemGroup>
+  <RemoveDir Directories="$(ProjectDir)build\source-bundle"/>
+  <MakeDir Directories="$(ProjectDir)build\source-bundle"/>
+  <Unzip SourceFiles="$(ProjectDir)assets\Nikogram-source.zip" DestinationFolder="$(ProjectDir)build\source-bundle"/>
+  <Copy SourceFiles="@(_LoaderSource)" DestinationFiles="@(_LoaderSource->'$(ProjectDir)build\source-bundle\Loader\%(Identity)')"/>
+  <ZipDirectory SourceDirectory="$(ProjectDir)build\source-bundle" DestinationFile="$(ProjectDir)assets\source-bundle.zip" Overwrite="true"/>
+ </Target>
 </Project>
