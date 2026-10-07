@@ -1,0 +1,18 @@
+# Local build products and generated embedded archive.
+/build/
+/output/
+/vendor/lib/
+/assets/source-bundle.zip
+*.log
+*.pdb
+*.obj
+*.tlog
+*.exp
+
+# Never publish local verification or experimental material.
+**/[Tt]est*/
+**/[Cc]heck*/
+**/[Ss]ample*/
+**/[Ee]xample*/
+**/[Bb]enchmark*/
+preview*.png
