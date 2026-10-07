@@ -393,9 +393,11 @@ void CWorld::UncacheEntities()
 
 
 
-std::vector<Face_t> CWorld::GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs, int iMask, ITraceFilter* pFilter, int iFlags)
+std::vector<Face_t> CWorld::GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs, int iMask, ITraceFilter* pFilter, int iFlags, bool (*continueSearch)())
 {
+	if (continueSearch && !continueSearch()) return {};
 	Cache();
+	if (continueSearch && !continueSearch()) return {};
 
 	std::vector<Face_t> vFaces;
 
@@ -404,6 +406,7 @@ std::vector<Face_t> CWorld::GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs,
 		CUtlVector<int> vBrushes; I::EngineTrace->GetBrushesInAABB(vMins, vMaxs, &vBrushes, iMask);
 		for (int iBrush = 0; iBrush < vBrushes.Count(); iBrush++)
 		{
+			if (continueSearch && !continueSearch()) return vFaces;
 			cbrush_t* pBrush = &I::BSPData->map_brushes[vBrushes[iBrush]];
 			if (!m_mFaceCache.contains(pBrush))
 				continue;
@@ -417,6 +420,7 @@ std::vector<Face_t> CWorld::GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs,
 			{
 				for (auto& tFace : vCache)
 				{
+					if (continueSearch && !continueSearch()) return vFaces;
 					if (FaceValid(tFace.m_vVertices, &tFace.m_vNormal, &vMins, &vMaxs))
 					{
 						vFaces.push_back(tFace);
@@ -429,6 +433,7 @@ std::vector<Face_t> CWorld::GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs,
 			{
 				for (auto& tFace : vCache)
 				{
+					if (continueSearch && !continueSearch()) return vFaces;
 					if (FaceValid(tFace.m_vVertices, &tFace.m_vNormal, &vMins, &vMaxs))
 						vFaces.push_back(tFace);
 				}
@@ -440,6 +445,7 @@ std::vector<Face_t> CWorld::GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs,
 	{
 		for (int iDisplacement = 0; iDisplacement < *I::DispCollTreeCount; iDisplacement++)
 		{
+			if (continueSearch && !continueSearch()) return vFaces;
 			CDispCollTree* pDispTree = &(*I::DispCollTrees)[iDisplacement];
 			if (!Math::IsBoxIntersectingBox(vMins, vMaxs, pDispTree->m_mins, pDispTree->m_maxs))
 				continue;
@@ -447,6 +453,7 @@ std::vector<Face_t> CWorld::GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs,
 			int iFaces = pDispTree->GetFaceCount();
 			for (int iFace = 0; iFace < iFaces; iFace++)
 			{
+				if (continueSearch && !continueSearch()) return vFaces;
 				CDispCollTri* pTri = &pDispTree->m_aTris[iFace];
 						
 				std::vector<Vec3> vVertices = { pDispTree->m_aVerts[pTri->GetVert(0)], pDispTree->m_aVerts[pTri->GetVert(1)], pDispTree->m_aVerts[pTri->GetVert(2)] };
@@ -462,6 +469,7 @@ std::vector<Face_t> CWorld::GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs,
 		CEntityEnumerator tEnumerator; I::SpatialPartition->EnumerateElementsInBox(I::EngineTrace->SpatialPartitionMask(), vMins, vMaxs, false, &tEnumerator);
 		for (auto pHandleEntity : tEnumerator.m_vEntities)
 		{
+			if (continueSearch && !continueSearch()) return vFaces;
 			if (pFilter && !pFilter->ShouldHitEntity(pHandleEntity, iMask))
 				continue;
 
@@ -490,6 +498,7 @@ std::vector<Face_t> CWorld::GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs,
 			auto& vCache = m_mFaceCache[pCollide];
 			for (auto& tFace : vCache)
 			{
+				if (continueSearch && !continueSearch()) return vFaces;
 				std::vector<Vec3> vVertices = tFace.m_vVertices;
 				Vec3 vNormal = tFace.m_vNormal;
 				if (!pCollideable->GetCollisionAngles())

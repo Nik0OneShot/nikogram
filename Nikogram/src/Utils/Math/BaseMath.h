@@ -117,6 +117,20 @@ namespace Math
 		return Lerp(c, d, SimpleSpline(t));
 	}
 
+	// Same first root and arithmetic as SolveQuadratic, without constructing a
+	// vector when the caller does not use the second root.
+	inline bool SolveQuadraticFirst(float a, float b, float c, float& first)
+	{
+		float flRoot = powf(b, 2.f) - 4 * a * c;
+		if (flRoot < 0)
+			return false;
+
+		a *= 2;
+		b = -b;
+		first = (b + sqrt(flRoot)) / a;
+		return true;
+	}
+
 	inline std::vector<float> SolveQuadratic(float a, float b, float c)
 	{
 		float flRoot = powf(b, 2.f) - 4 * a * c;

@@ -622,7 +622,9 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 		}
 	}
 
-	// set m_pEnv params
+	// The analytic branch never steps m_pEnv. Configure it only when it will
+	// be used; every later physics initialization still refreshes all settings.
+	if (m_bPhysics)
 	{
 		float flMaxVelocity = 1000000.f;
 		float vMaxAngularVelocity = 1000000.f;

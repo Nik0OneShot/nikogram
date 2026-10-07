@@ -92,7 +92,7 @@ public:
 	void UncacheProps();
 	void UncacheEntities();
 
-	std::vector<Face_t> GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs, int iMask = MASK_SOLID, ITraceFilter* pFilter = nullptr, int iFlags = FaceTypeEnum::All);
+	std::vector<Face_t> GetFacesInAABB(const Vec3& vMins, const Vec3& vMaxs, int iMask = MASK_SOLID, ITraceFilter* pFilter = nullptr, int iFlags = FaceTypeEnum::All, bool (*continueSearch)() = nullptr);
 
 	void SetVerticesValidCallback(VerticesValidCallback* pCallback = nullptr);
 	void SetBoundsValidCallback(BoundsValidCallback* pCallback = nullptr);
