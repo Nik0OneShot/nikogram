@@ -1,4 +1,7 @@
 #include "Binds.h"
+#include "ConditionSensor.h"
+#include "../Aimbot/AimModes.h"
+#include "../ImGui/MenuMode.h"
 
 #include "../ImGui/Menu/Menu.h"
 #include "../Configs/Configs.h"
@@ -43,7 +46,7 @@ static inline void LoopVars(int iBind, std::vector<BaseVar*>& vVars = G::Vars)
 	}
 }
 
-static inline void GetBinds(int iParent, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, std::vector<Bind_t>& vBinds, bool bManage = true, int iDepth = 0)
+static inline void GetBinds(int iParent, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, std::vector<Bind_t>& vBinds, CConditionSensor& sensor, bool bManage = true, int iDepth = 0)
 {
 	// a bind can't be nested deeper than the number of binds, so anything past that is a parent cycle
 	if (vBinds.empty() || iDepth > int(vBinds.size()))
@@ -84,6 +87,11 @@ static inline void GetBinds(int iParent, CTFPlayer* pLocal, CTFWeaponBase* pWeap
 				}
 				break;
 			}
+			case BindEnum::Behind:
+			case BindEnum::Threat:
+				tBind.m_bActive=sensor.Evaluate(tBind.m_iType,tBind.m_tConditions);
+				if(tBind.m_bNot)tBind.m_bActive=!tBind.m_bActive;
+				break;
 			case BindEnum::Class:
 			{
 				const int iClass = pLocal ? pLocal->m_iClass() : TF_CLASS_UNDEFINED;
@@ -175,7 +183,7 @@ static inline void GetBinds(int iParent, CTFPlayer* pLocal, CTFWeaponBase* pWeap
 
 		if (tBind.m_bActive)
 		{
-			GetBinds(i, pLocal, pWeapon, vBinds, bManage, iDepth + 1);
+			GetBinds(i, pLocal, pWeapon, vBinds, sensor, bManage, iDepth + 1);
 			LoopVars(i, tBind.m_vVars);
 		}
 	}
@@ -183,12 +191,15 @@ static inline void GetBinds(int iParent, CTFPlayer* pLocal, CTFWeaponBase* pWeap
 
 void CBinds::SetVars(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bManage)
 {
+	AimModes::Ensure();
 	s_mVars.clear();
 	s_bUI = I::EngineVGui->IsGameUIVisible() || I::MatSystemSurface->IsCursorVisible() && !I::EngineClient->IsPlayingDemo();
 	s_bMenu = F::Menu.m_bIsOpen && !ImGui::GetIO().WantTextInput && !F::Menu.m_bInKeybind;
 
-	GetBinds(DEFAULT_BIND, pLocal, pWeapon, m_vBinds, bManage);
+	CConditionSensor sensor(pLocal);
+	GetBinds(DEFAULT_BIND, pLocal, pWeapon, m_vBinds, sensor, bManage);
 	LoopVars(DEFAULT_BIND);
+	AimModes::Apply(MenuMode::Active==MenuMode::Moonlit);
 
 	m_bDisplay = F::Menu.m_bIsOpen || Vars::Menu::BindWindow.Value && !s_bUI;
 }

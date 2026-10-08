@@ -1,4 +1,5 @@
 #include "Visuals.h"
+#include "../ImGui/MoonlitHud.h"
 
 #include "../Simulation/ProjectileSimulation/ProjectileSimulation.h"
 #include "../Aimbot/AimbotProjectile/AimbotProjectile.h"
@@ -9,6 +10,7 @@
 #include "../Spectate/Spectate.h"
 #include "../CritHack/CritHack.h"
 #include "../Ticks/Ticks.h"
+#include "../PacketManip/AntiAim/AntiAim.h"
 #include "FakeAngle/FakeAngle.h"
 #include "AnimInterp/AnimInterp.h"
 #include "../World/World.h"
@@ -267,7 +269,10 @@ void CVisuals::DrawPickupTimers()
 
 		Vec3 vScreen;
 		if (SDK::W2S(tPickup.m_vLocation, vScreen))
-			H::Draw.StringOutlined(H::Fonts.GetFont(FONT_ESP), vScreen.x, vScreen.y, pGroup->m_tColor, Vars::Menu::Theme::Background.Value, ALIGN_CENTER, std::format("{:.1f}s", flTime).c_str());
+		{
+			if (MoonlitHud::Enabled()) MoonlitHud::Pill(vScreen.x, vScreen.y, std::format("{:.1f}s", flTime), pGroup->m_tColor, MoonlitHud::Detail(), true);
+			else H::Draw.StringOutlined(H::Fonts.GetFont(FONT_ESP), vScreen.x, vScreen.y, pGroup->m_tColor, Vars::Menu::Theme::Background.Value, ALIGN_CENTER, std::format("{:.1f}s", flTime).c_str());
+		}
 
 		it++;
 	}
@@ -1233,7 +1238,12 @@ void CVisuals::LocalAnimations(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserC
 		ResetLocalAnimationQueue();
 	m_pQueuedLocal = pLocal;
 	m_pQueuedModel = pLocal->GetModel();
-	m_vAngles.push_back(pCmd->viewangles);
+	const LocalAnimationCommand snapshot = { pCmd->viewangles, pLocal->m_vecVelocity(),
+		TICKS_TO_TIME(pLocal->m_nTickBase()), pCmd->command_number, G::AntiAim && !bSendPacket };
+	if (!m_vAngles.empty() && m_vAngles.back().command == pCmd->command_number)
+		m_vAngles.back() = snapshot;
+	else
+		m_vAngles.push_back(snapshot);
 	if (m_vAngles.size() > 66) // don't grow unbounded if packets are never sent
 		m_vAngles.erase(m_vAngles.begin());
 	if (pWeapon)
@@ -1250,18 +1260,27 @@ void CVisuals::LocalAnimations(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserC
 
 	float flOldFrametime = I::GlobalVars->frametime;
 	float flOldCurtime = I::GlobalVars->curtime;
+	const Vec3 vOldVelocity = pLocal->m_vecVelocity();
+	AnimFrame_t tRealFrame = {};
+	bool bRealFrame = false;
 	I::GlobalVars->frametime = TICK_INTERVAL;
-	I::GlobalVars->curtime = TICKS_TO_TIME(pLocal->m_nTickBase());
-	for (auto& vAngle : m_vAngles)
+	for (const auto& command : m_vAngles)
 	{
+		const auto& vAngle = command.angles;
+		I::GlobalVars->curtime = command.time;
+		pLocal->m_vecVelocity() = command.velocity;
 		if (pLocal->IsTaunting() && pLocal->m_bAllowMoveDuringTaunt())
 			pLocal->m_flTauntYaw() = vAngle.y;
 		pAnimState->Update(pAnimState->m_flEyeYaw = vAngle.y, vAngle.x);
 		pLocal->FrameAdvance(TICK_INTERVAL);
+		if (command.realPose)
+			bRealFrame = F::AnimInterp.CaptureFrame(pLocal, tRealFrame);
 	}
-	// Don't expose the transient real/fake steering poses inside this simulation batch.
-	// Keep all command simulation above, but publish only its completed visual state.
-	F::AnimInterp.Record(pLocal, int(m_vAngles.size()), true);
+	pLocal->m_vecVelocity() = vOldVelocity;
+	// Simulation retains EVERY outgoing command, including the final fake. Only
+	// the local display gets the last actual real-command pose, not the fake's
+	// eye/torso overwrite. No desired-yaw pose is manufactured here.
+	F::AnimInterp.Record(pLocal, int(m_vAngles.size()), true, G::AntiAim && bRealFrame ? &tRealFrame : nullptr);
 	I::GlobalVars->frametime = flOldFrametime;
 	I::GlobalVars->curtime = flOldCurtime;
 	m_vAngles.clear();

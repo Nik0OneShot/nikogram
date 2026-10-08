@@ -54,6 +54,7 @@ private:
 	bool m_bSettingUpBones = false;
 
 public:
+	Vec2 m_vIndicatorSize = {100, 40};
 	void Store();
 	void CreateMove(CUserCmd* pCmd);
 	void ToCursor(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, const Vec3& shotAngles);

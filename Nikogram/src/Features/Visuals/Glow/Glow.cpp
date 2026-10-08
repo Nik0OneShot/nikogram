@@ -186,6 +186,7 @@ void CGlow::Store(CTFPlayer* pLocal)
 
 void CGlow::RenderFirst()
 {
+	if (!F::Groups.GroupsActive()) return;
 	auto pRenderContext = I::MaterialSystem->GetRenderContext();
 	if (!pRenderContext || !CheckMaterials())
 		return;
@@ -205,6 +206,7 @@ void CGlow::RenderFirst()
 
 void CGlow::RenderSecond()
 {
+	if (!F::Groups.GroupsActive()) return;
 	auto pRenderContext = I::MaterialSystem->GetRenderContext();
 	if (!pRenderContext || !CheckMaterials())
 		return;

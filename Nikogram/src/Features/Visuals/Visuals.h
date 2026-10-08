@@ -32,7 +32,8 @@ private:
 	std::unordered_map<CBaseEntity*, Projectile_t> m_mProjectiles = {};
 	std::vector<Sightline_t> m_vSightLines = {};
 	std::vector<PickupData_t> m_vPickups = {};
-	std::vector<Vec3> m_vAngles = {};
+	struct LocalAnimationCommand { Vec3 angles, velocity; float time; int command; bool realPose; };
+	std::vector<LocalAnimationCommand> m_vAngles = {};
 	CTFPlayer* m_pQueuedLocal = nullptr;
 	const void* m_pQueuedModel = nullptr;
 

@@ -3,6 +3,8 @@
 #include "MeleeDiagnostics.h"
 #include "AutoFlarePunch.h"
 #include "AimFOVVisualPolicy.h"
+#include "SmoothAim.h"
+#include "../Ticks/Ticks.h"
 
 #include "AimbotHitscan/AimbotHitscan.h"
 #include "AimbotProjectile/AimbotProjectile.h"
@@ -84,6 +86,7 @@ void CAimbot::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 #include "AutoViewmodelSwitch.h"
 void CAimbot::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
+    SmoothAim::Begin(pLocal,pWeapon,pCmd,!F::Ticks.GetShootAngle());
 	m_bHitscanAssisted = false;
 	F::AutoAirblast.m_bPlayerBlast=false;
 	m_bRunningSecondary=false;
@@ -102,6 +105,7 @@ void CAimbot::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 	G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
 	if (F::AutoAirblast.m_bPlayerBlast) G::Attacking=1;
 	F::AutoFlarePunch.Shot(pWeapon,pCmd);
+    SmoothAim::Finish();
 }
 
 void CAimbot::Draw(CTFPlayer* pLocal)

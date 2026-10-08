@@ -35,6 +35,7 @@ struct BuildingCache_t : EntityCache_t
 
 struct PlayerCache_t : BuildingCache_t
 {
+	int m_iDapperESP = 0;
 	bool m_bBones = false;
 	int m_iClassIcon = 0;
 	CHudTexture* m_pWeaponIcon = nullptr;

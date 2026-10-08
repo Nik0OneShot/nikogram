@@ -17,12 +17,25 @@ class CMenu
 {
 private:
 	void DrawMenu();
+	void DrawMoonlit();
+    bool DrawInterfacePreferences(bool showStyleChoice = true);
+	void DrawMenuStyleChoice();
+	std::string m_sInterfaceStatus;
 
 	void MenuAimbot(int iTab = 0);
 	void MenuTriggerbot();
 	void MenuHVH(int iTab = 0);
 	void MenuVisuals(int iTab = 0);
 	void MenuMisc(int iTab = 0);
+	void MenuMoonlitMisc();
+	void MenuMoonlitVisuals();
+	void MoonlitAim(bool legit);
+	void MoonlitAntiAim();
+	void MoonlitESP();
+	void MoonlitMisc();
+	void MoonlitPlayers();
+	void MoonlitConfigs();
+	void MoonlitEditor();
 	void MenuLogs(int iTab = 0);
 	void MenuSettings(int iTab = 0);
 	void MenuSearch(std::string sSearch);

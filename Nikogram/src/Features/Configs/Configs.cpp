@@ -1,6 +1,9 @@
 #include "Configs.h"
 #include "BundledDefault.h"
 #include "ConfigColours.h"
+#include "../Aimbot/AimModes.h"
+#include "../ImGui/Menu/MoonlitBinding.h"
+#include "../Aimbot/SplashSearchPolicy.h"
 
 #include "../Binds/Binds.h"
 #include "../Visuals/Groups/Groups.h"
@@ -420,6 +423,7 @@ static inline void LoadMain(BaseVar*& pBase, boost::property_tree::ptree& tTree)
 
 bool CConfigs::SaveConfig(const std::string& sConfigName, bool bNotify)
 {
+	AimModes::Ensure();
 	try
 	{
 		boost::property_tree::ptree tWrite;
@@ -440,6 +444,17 @@ bool CConfigs::SaveConfig(const std::string& sConfigName, bool bNotify)
 				SaveJson(tChild, "Not", tBind.m_bNot);
 				SaveJson(tChild, "Active", tBind.m_bActive);
 				SaveJson(tChild, "Parent", tBind.m_iParent);
+				if(tBind.m_iType==BindEnum::Behind||tBind.m_iType==BindEnum::Threat)
+				{
+					const auto options=ConditionPolicy::Normalize(tBind.m_tConditions);
+					SaveJson(tChild,"EnemyClass",options.enemyClass);
+					SaveJson(tChild,"BehindRange",options.behindRange);
+					SaveJson(tChild,"BehindArc",options.behindArc);
+					SaveJson(tChild,"BehindVisible",options.behindVisible);
+					SaveJson(tChild,"AimTolerance",options.aimTolerance);
+					SaveJson(tChild,"ProjectileWindow",options.projectileWindow);
+					SaveJson(tChild,"SniperAnyAim",options.sniperAnyAim);
+				}
 
 				tSub.put_child(std::to_string(iID), tChild);
 			}
@@ -485,7 +500,9 @@ bool CConfigs::SaveConfig(const std::string& sConfigName, bool bNotify)
 				SaveJson(tChild, "Buildings", tGroup.m_iBuildings);
 				SaveJson(tChild, "Projectiles", tGroup.m_iProjectiles);
 				SaveJson(tChild, "ESP", tGroup.m_iESP);
+				SaveJson(tChild, "DapperESP", tGroup.m_iDapperESP);
 				SaveJson(tChild, "CustomNameColor", tGroup.m_bCustomNameColor);
+				SaveJson(tChild, "MoonlitInformation", tGroup.m_bMoonlitInformation);
 				SaveJson(tChild, "NameColor", tGroup.m_tNameColor);
 				SaveJson(tChild, "Chams", tGroup.m_tChams);
 				SaveJson(tChild, "Glow", tGroup.m_tGlow);
@@ -525,6 +542,7 @@ bool CConfigs::SaveConfig(const std::string& sConfigName, bool bNotify)
 
 bool CConfigs::LoadConfig(const std::string& sConfigName, bool bNotify)
 {
+	AimModes::Ensure();
 	try
 	{
 		if (!std::filesystem::exists(m_sConfigPath + sConfigName + m_sConfigExtension))
@@ -553,6 +571,14 @@ bool CConfigs::LoadConfig(const std::string& sConfigName, bool bNotify)
 				LoadJson(tChild, "Not", tBind.m_bNot);
 				LoadJson(tChild, "Active", tBind.m_bActive);
 				LoadJson(tChild, "Parent", tBind.m_iParent);
+				LoadJson(tChild,"EnemyClass",tBind.m_tConditions.enemyClass);
+				LoadJson(tChild,"BehindRange",tBind.m_tConditions.behindRange);
+				LoadJson(tChild,"BehindArc",tBind.m_tConditions.behindArc);
+				LoadJson(tChild,"BehindVisible",tBind.m_tConditions.behindVisible);
+				LoadJson(tChild,"AimTolerance",tBind.m_tConditions.aimTolerance);
+				LoadJson(tChild,"ProjectileWindow",tBind.m_tConditions.projectileWindow);
+				LoadJson(tChild,"SniperAnyAim",tBind.m_tConditions.sniperAnyAim);
+				tBind.m_tConditions=ConditionPolicy::Normalize(tBind.m_tConditions);
 				if (F::Binds.m_vBinds.size() == tBind.m_iParent)
 					tBind.m_iParent = DEFAULT_BIND - 1; // prevent infinite loop
 
@@ -603,6 +629,20 @@ bool CConfigs::LoadConfig(const std::string& sConfigName, bool bNotify)
 				else Load(DragBox_t, *tSub)
 				else Load(WindowBox_t, *tSub)
 			}
+            for(auto& [bind,mode]:Vars::Aimbot::Projectile::SplashMode.Map)
+                mode=SplashSearchPolicy::NormalizeMode(mode);
+			if(!tSub->get_child_optional(Vars::AimModes::Schema.Name()))
+			{
+				AimModes::SeedLegacy();
+				auto& activation=Vars::ESP::MoonlitEnabled;
+				const auto match=MoonlitBinding::Inspect(activation,F::Binds.m_vBinds,true);
+				if(match.index<0&&!match.advanced&&activation.Map.size()==1)
+				{Vars::ESP::MoonlitMaster.Map[DEFAULT_BIND]=activation.Map[DEFAULT_BIND];activation.Map[DEFAULT_BIND]=true;}
+			}
+			// v0.3.4 used hold-to-show ESP; retain its key/mode, now hold-to-hide.
+			if(tSub->get<int>(std::string(Vars::AimModes::Schema.Name())+".-1",0)<2)
+				MoonlitBinding::MigrateDefaultOn(Vars::ESP::MoonlitEnabled,F::Binds.m_vBinds);
+			Vars::AimModes::Schema.Map[DEFAULT_BIND]=2;
 			// Migrate the former standalone toggle, including bound overrides, on old configs.
 			if(auto legacy=tSub->get_child_optional("Vars::Aimbot::Projectile::PreventSelfDamage"))
 			{
@@ -634,7 +674,10 @@ bool CConfigs::LoadConfig(const std::string& sConfigName, bool bNotify)
 				LoadJson(tChild, "Buildings", tGroup.m_iBuildings);
 				LoadJson(tChild, "Projectiles", tGroup.m_iProjectiles);
 				LoadJson(tChild, "ESP", tGroup.m_iESP);
+				LoadJson(tChild, "DapperESP", tGroup.m_iDapperESP);
+				tGroup.m_iDapperESP = std::clamp(tGroup.m_iDapperESP, 0, 3);
 				LoadJson(tChild, "CustomNameColor", tGroup.m_bCustomNameColor);
+				LoadJson(tChild, "MoonlitInformation", tGroup.m_bMoonlitInformation);
 				LoadJson(tChild, "NameColor", tGroup.m_tNameColor);
 				LoadJson(tChild, "Chams", tGroup.m_tChams);
 				LoadJson(tChild, "Glow", tGroup.m_tGlow);
@@ -689,6 +732,7 @@ static inline void LoadMiscMain(BaseVar*& pBase, boost::property_tree::ptree& tT
 
 bool CConfigs::SaveVisual(const std::string& sConfigName, bool bNotify)
 {
+	AimModes::Ensure();
 	try
 	{
 		boost::property_tree::ptree tWrite;
@@ -732,8 +776,10 @@ bool CConfigs::SaveVisual(const std::string& sConfigName, bool bNotify)
 				SaveJson(tChild, "Buildings", tGroup.m_iBuildings);
 				SaveJson(tChild, "Projectiles", tGroup.m_iProjectiles);
 				SaveJson(tChild, "ESP", tGroup.m_iESP);
+				SaveJson(tChild, "DapperESP", tGroup.m_iDapperESP);
 				SaveJson(tChild, "CustomNameColor", tGroup.m_bCustomNameColor);
 				SaveJson(tChild, "NameColor", tGroup.m_tNameColor);
+				SaveJson(tChild, "MoonlitInformation", tGroup.m_bMoonlitInformation);
 				SaveJson(tChild, "Chams", tGroup.m_tChams);
 				SaveJson(tChild, "Glow", tGroup.m_tGlow);
 				SaveJson(tChild, "OffscreenArrows", tGroup.m_bOffscreenArrows);
@@ -768,6 +814,7 @@ bool CConfigs::SaveVisual(const std::string& sConfigName, bool bNotify)
 
 bool CConfigs::LoadVisual(const std::string& sConfigName, bool bNotify)
 {
+	AimModes::Ensure();
 	try
 	{
 		if (!std::filesystem::exists(m_sVisualsPath + sConfigName + m_sConfigExtension))
@@ -817,8 +864,11 @@ bool CConfigs::LoadVisual(const std::string& sConfigName, bool bNotify)
 				LoadJson(tChild, "Buildings", tGroup.m_iBuildings);
 				LoadJson(tChild, "Projectiles", tGroup.m_iProjectiles);
 				LoadJson(tChild, "ESP", tGroup.m_iESP);
+				LoadJson(tChild, "DapperESP", tGroup.m_iDapperESP);
+				tGroup.m_iDapperESP = std::clamp(tGroup.m_iDapperESP, 0, 3);
 				LoadJson(tChild, "CustomNameColor", tGroup.m_bCustomNameColor);
 				LoadJson(tChild, "NameColor", tGroup.m_tNameColor);
+				LoadJson(tChild, "MoonlitInformation", tGroup.m_bMoonlitInformation);
 				LoadJson(tChild, "Chams", tGroup.m_tChams);
 				LoadJson(tChild, "Glow", tGroup.m_tGlow);
 				LoadJson(tChild, "OffscreenArrows", tGroup.m_bOffscreenArrows);
@@ -886,6 +936,7 @@ void CConfigs::DeleteConfig(const std::string& sConfigName, bool bNotify)
 
 void CConfigs::ResetConfig(const std::string& sConfigName, bool bNotify)
 {
+	AimModes::Ensure();
 	try
 	{
 		if (sConfigName == "default")
@@ -948,6 +999,7 @@ void CConfigs::DeleteVisual(const std::string& sConfigName, bool bNotify)
 
 void CConfigs::ResetVisual(const std::string& sConfigName, bool bNotify)
 {
+	AimModes::Ensure();
 	try
 	{
 		F::Groups.m_vGroups.clear();

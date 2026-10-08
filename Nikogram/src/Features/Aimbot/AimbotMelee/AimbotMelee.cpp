@@ -1,4 +1,5 @@
 #include "AimbotMelee.h"
+#include "../SmoothAim.h"
 #include "../MeleeDiagnostics.h"
 #include "../MeleePredictionPolicy.h"
 #include "../MeleeTrace.h"
@@ -368,6 +369,7 @@ bool CAimbotMelee::CanBackstab(CBaseEntity* pTarget, CTFPlayer* pLocal, Vec3 vEy
 
 int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 {
+    SmoothAim::CandidateScope smoothing(tTarget.m_pEntity,true);
 	if (Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Unsimulated && H::Entities.GetChoke(tTarget.m_pEntity->entindex()) > Vars::Aimbot::General::TickTolerance.Value)
 	{ MD::Event("unsimulated_rejected",tTarget.m_pEntity->entindex()); return false; }
 
@@ -457,6 +459,8 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
             if(duplicate || points[index].DistToSqr(m_vEyePos)<.0001f) continue;
             tTarget.m_vPos=points[index];
             const Vec3 goal=Math::CalcAngle(m_vEyePos,tTarget.m_vPos);
+            if(SmoothAim::VisibleGuidance()&&(!F::AimbotGlobal.ShouldAimAtAngle(goal)
+                ||!MeleeContactPolicy::InFOV(Math::CalcFov(G::OriginalCmd.viewangles,goal),Vars::Aimbot::Melee::AimFOV.Value)))continue;
             Aim(G::CurrentUserCmd->viewangles,goal,tTarget.m_vAngleTo);
             const float angle=Math::CalcFov(I::EngineClient->GetViewAngles(),tTarget.m_vAngleTo);
             MD::Geometry("contact",tTarget.m_pEntity->entindex(),angle,m_vEyePos.DistTo(tTarget.m_vPos),flRange,
@@ -521,7 +525,8 @@ bool CAimbotMelee::Aim(const Vec3& vCurAngle, const Vec3& vToAngle, Vec3& vOut, 
 		vOut = vToAngle;
 		break;
 	case Vars::Aimbot::General::AimTypeEnum::Smooth:
-		vOut = vCurAngle.LerpAngle(vToAngle, Vars::Aimbot::General::AssistStrength.Value / 100.f);
+		if (!SmoothAim::Preview(vToAngle,vOut))
+			vOut = vCurAngle.LerpAngle(vToAngle, Vars::Aimbot::General::AssistStrength.Value / 100.f);
 		bReturn = true;
 		break;
 	case Vars::Aimbot::General::AimTypeEnum::Assistive:
@@ -553,6 +558,7 @@ void CAimbotMelee::Aim(CUserCmd* pCmd, Vec3& vAngles, int iMethod)
 	case Vars::Aimbot::General::AimTypeEnum::Assistive:
 		pCmd->viewangles = vAngles;
 		I::EngineClient->SetViewAngles(vAngles);
+        if(iMethod==Vars::Aimbot::General::AimTypeEnum::Smooth)SmoothAim::Select(vAngles);
 		break;
 	case Vars::Aimbot::General::AimTypeEnum::Silent:
 		if (G::Attacking == 1 || bUnsure)
@@ -670,6 +676,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
     MD::Event("doubletap_ticks",-1,float(m_iDoubletapTicks));
 	for (auto& tTarget : vTargets)
 	{
+        SmoothAim::CandidateScope smoothing(tTarget.m_pEntity);
 		const auto iResult = CanHit(tTarget, pLocal, pWeapon);
 		MD::Event("can_hit_result",tTarget.m_pEntity->entindex(),float(iResult));
 		if (!iResult) continue;
@@ -784,6 +791,7 @@ bool CAimbotMelee::RunSapper(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 		return true;
 
 	auto& tTarget = vTargets.front();
+    SmoothAim::CandidateScope smoothing(tTarget.m_pEntity);
 
 	bool bShouldAim = true;
 	if (Vars::Aimbot::General::AutoShoot.Value)

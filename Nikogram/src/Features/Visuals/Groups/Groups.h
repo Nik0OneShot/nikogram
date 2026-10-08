@@ -25,6 +25,8 @@ struct Group_t
 	int m_iProjectiles = 0b0;
 
 	int m_iESP = 0b0;
+	int m_iDapperESP = 0; // Off / portrait / money / Giga Mann; player overlay.
+	bool m_bMoonlitInformation = true; // Additive, defaults on for legacy configs.
 	bool m_bCustomNameColor = false;
 	Color_t m_tNameColor = { 255, 255, 255, 255 };
 	Color_t NameColor() const { return m_bCustomNameColor ? m_tNameColor : m_tColor.Alpha(255); }

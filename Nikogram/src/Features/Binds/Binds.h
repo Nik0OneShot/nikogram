@@ -1,7 +1,8 @@
 #pragma once
 #include "../../SDK/SDK.h"
+#include "ConditionPolicy.h"
 
-Enum(Bind, Key, Class, WeaponType, ItemSlot, Misc)
+Enum(Bind, Key, Class, WeaponType, ItemSlot, Misc, Behind, Threat)
 namespace BindEnum
 {
 	Enum(Key, Hold, Toggle, DoubleClick)
@@ -26,6 +27,7 @@ struct Bind_t
 	KeyStorage m_tKeyStorage = {};
 
 	int m_iParent = DEFAULT_BIND;
+	ConditionPolicy::Options m_tConditions;
 
 	std::vector<BaseVar*> m_vVars = {};
 };

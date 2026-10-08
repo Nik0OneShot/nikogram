@@ -5,6 +5,7 @@
 #include "../../Configs/Configs.h"
 #include "../../Binds/Binds.h"
 #include "../Groups/Groups.h"
+#include "../Dapper/Dapper.h"
 #include <filesystem>
 #include <fstream>
 
@@ -164,6 +165,13 @@ void CMaterials::LoadMaterials()
 			"\n\t$selfillumtint \"[0 0 0]\""
 			"\n}",
 		true);
+	Dapper::Load();
+	for(int i=0;i<3;++i)
+	{
+		if(const auto texture=Dapper::TextureName(i))
+			StoreStruct(Dapper::Names[i],std::format(
+				"\"UnlitGeneric\"\n{{\n$basetexture \"{}\"\n$basetexturetransform \"center .5 .5 scale 4 4 rotate 0 translate 0 0\"\n$model 1\n}}",texture),true);
+	}
 	// user materials
 	for (auto& tEntry : std::filesystem::directory_iterator(F::Configs.m_sMaterialsPath))
 	{
@@ -249,6 +257,7 @@ void CMaterials::UnloadMaterials()
 		Remove(tMaterial.m_pMaterial);
 	m_mMaterials.clear();
 	m_mMatList.clear();
+	Dapper::Unload();
 
 	F::Glow.Unload();
 	F::CameraWindow.Unload();

@@ -1,5 +1,9 @@
 #include "Menu.h"
 #include "BindLayout.h"
+#include "../MoonlitHud.h"
+#include "../../Backtrack/Backtrack.h"
+#include "../../NoSpread/NoSpreadHitscan/NoSpreadHitscan.h"
+#include "../../Visuals/PlayerConditions/PlayerConditions.h"
 
 #include "Components.h"
 #include "../../Triggerbot/TriggerPolicy.h"
@@ -9,6 +13,7 @@
 #include "../Notifications/Notifications.h"
 #include "../../Configs/Configs.h"
 #include "../../Binds/Binds.h"
+#include "../../Binds/BindPresentation.h"
 #include "../../CritHack/CritHack.h"
 #include "../../Ticks/Ticks.h"
 #include "../../Visuals/SpectatorList/SpectatorList.h"
@@ -149,7 +154,6 @@ void CMenu::DrawMenu()
     const bool applyReset = resetLayout;
     resetLayout = false;
     static std::string search;
-    static std::string saveStatus;
     const ImVec2 screen = GetIO().DisplaySize;
 	NikoPet::World.windows.clear();
     if (screen.x < 180.f || screen.y < 100.f) return;
@@ -328,167 +332,7 @@ void CMenu::DrawMenu()
             }
             else if (i == Interface)
             {
-                MenuPresets::Load();
-                static int selectedPreset = -2; // Existing workspace colours may not match a preset.
-                static char presetName[128] = "";
-                static std::string loadedPreset;
-                int saveRow = -1, deleteRow = -1;
-                TextUnformatted("Menu configs");
-                PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
-                if (BeginChild("MenuPresetList", { 0, H::Draw.Scale(90) }, ImGuiChildFlags_Borders))
-                {
-                    for (int index = 0; index < int(MenuPresets::Items.size()); ++index)
-                    {
-                        const auto& preset = MenuPresets::Items[index];
-                        PushID(index);
-                        const ImVec2 pos = GetCursorScreenPos();
-                        const float rowWidth = GetContentRegionAvail().x;
-                        const ImVec2 rowStart = GetCursorPos();
-                        GetWindowDrawList()->AddRectFilled(pos, pos + ImVec2(rowWidth, H::Draw.Scale(22)), IM_COL32(55, 55, 55, 255));
-                        SetCursorPos(rowStart + ImVec2(0, H::Draw.Scale(1)));
-                        if (CompactManagerIcon(loadedPreset == preset.name ? ICON_MD_REFRESH : ICON_MD_DOWNLOAD))
-                        {
-                            selectedPreset = index;
-                            snprintf(presetName, sizeof(presetName), "%s", preset.name.c_str());
-                            MenuPresets::Apply(preset);
-                            loadedPreset = preset.name;
-                            saveStatus = Workspace::Save() ? "Menu config loaded." : "Loaded, but could not save workspace preferences.";
-                        }
-                        if (IsItemHovered()) SetTooltip(loadedPreset == preset.name ? "Reload config" : "Load config");
-                        SetCursorPos(rowStart + ImVec2(H::Draw.Scale(25), 0));
-                        const float nameWidth = std::max(1.f, rowWidth - H::Draw.Scale(77));
-                        if (Selectable(TruncateText(preset.name, nameWidth).c_str(), selectedPreset == index, 0, { nameWidth, H::Draw.Scale(22) }))
-                        {
-                            selectedPreset = index;
-                            snprintf(presetName, sizeof(presetName), "%s", preset.name.c_str());
-                        }
-                        PushDisabled(!MenuPresets::Writable);
-                        SetCursorPos(rowStart + ImVec2(rowWidth - H::Draw.Scale(47), H::Draw.Scale(1)));
-                        if (CompactManagerIcon(ICON_MD_SAVE)) saveRow = index;
-                        if (IsItemHovered()) SetTooltip("Save current settings / rename");
-                        SetCursorPos(rowStart + ImVec2(rowWidth - H::Draw.Scale(22), H::Draw.Scale(1)));
-                        if (CompactManagerIcon(ICON_MD_DELETE)) deleteRow = index;
-                        if (IsItemHovered()) SetTooltip("Delete config");
-                        PopDisabled();
-                        SetCursorPos(rowStart); Dummy({ rowWidth, H::Draw.Scale(22) });
-                        PopID();
-                    }
-                }
-                EndChild();
-                SetNextItemWidth(-1);
-                InputTextWithHint("##MenuPresetName", "Config name...", presetName, sizeof(presetName));
-                auto savePreset = [&](bool create)
-                {
-                    std::string name = presetName;
-                    const auto first = name.find_first_not_of(" \t\r\n");
-                    if (first == std::string::npos) { saveStatus = "Enter a config name first."; return; }
-                    name = name.substr(first, name.find_last_not_of(" \t\r\n") - first + 1);
-                    auto items = MenuPresets::Items;
-                    for (int n = 0; n < int(items.size()); ++n)
-                        if ((create || n != selectedPreset) && _stricmp(items[n].name.c_str(), name.c_str()) == 0)
-                        { saveStatus = "That config name already exists."; return; }
-                    const auto preset = MenuPresets::Capture(name);
-                    int target = selectedPreset;
-                    const bool renamingLoaded = !create && target >= 0 && items[target].name == loadedPreset;
-                    if (create) { target = int(items.size()); items.push_back(preset); }
-                    else items[target] = preset;
-                    if (MenuPresets::Store(items))
-                    {
-                        selectedPreset = target;
-                        if (renamingLoaded) loadedPreset = name;
-                        saveStatus = Workspace::Save() ? "Menu config saved." : "Config saved, but workspace preferences could not be saved.";
-                    }
-                    else saveStatus = MenuPresets::Error;
-                };
-                BeginDisabled(!MenuPresets::Writable);
-                if (Button("Create")) savePreset(true);
-                EndDisabled();
-                if (saveRow >= 0)
-                {
-                    if (selectedPreset != saveRow)
-                        snprintf(presetName, sizeof(presetName), "%s", MenuPresets::Items[saveRow].name.c_str());
-                    selectedPreset = saveRow;
-                    savePreset(false);
-                }
-                if (deleteRow >= 0)
-                {
-                    selectedPreset = deleteRow;
-                    snprintf(presetName, sizeof(presetName), "%s", MenuPresets::Items[deleteRow].name.c_str());
-                    OpenPopup("Delete menu config?");
-                }
-                if (BeginPopupModal("Delete menu config?", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-                {
-                    TextUnformatted("Delete the selected saved menu config?");
-                    if (Button("Delete"))
-                    {
-                        auto items = MenuPresets::Items;
-                        if (selectedPreset >= 0 && selectedPreset < int(items.size()))
-                        {
-                            const bool deletingLoaded = items[selectedPreset].name == loadedPreset;
-                            items.erase(items.begin() + selectedPreset);
-                            if (MenuPresets::Store(items)) { if (deletingLoaded) loadedPreset.clear(); selectedPreset = -2; presetName[0] = '\0'; saveStatus = "Config deleted; current appearance kept."; }
-                            else saveStatus = MenuPresets::Error;
-                        }
-                        CloseCurrentPopup();
-                    }
-                    SameLine(); if (Button("Cancel")) CloseCurrentPopup();
-                    EndPopup();
-                }
-                PopStyleVar();
-                if (!MenuPresets::Error.empty()) TextWrapped("%s", MenuPresets::Error.c_str());
-                Separator();
-                TextUnformatted("Workspace preferences (separate from gameplay configs)");
-                Separator();
-                Checkbox("Compact taskbar", &Workspace::CompactTaskbar);
-                Checkbox("Taskbar at top", &Workspace::TopTaskbar);
-                Checkbox("Snap windows to screen edges", &Workspace::Snap);
-                SliderFloat("Text scale", &Workspace::FontScale, 0.85f, 1.5f, "%.2fx");
-                ColorEdit3("Accent", Workspace::Accent, ImGuiColorEditFlags_NoInputs);
-                float borderColour[3] = { Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2) };
-                if (ColorEdit3("Border / outline color", borderColour, ImGuiColorEditFlags_NoInputs))
-                {
-                    std::copy_n(borderColour, 3, Workspace::InterfaceBorderColour);
-                    Workspace::InterfaceBorderCustom = true;
-                    Workspace::InterfaceBorderSelected = true;
-                }
-                SameLine(); if (Button("Use accent##Border")) { Workspace::InterfaceBorderSelected = true; Workspace::InterfaceBorderCustom = false; }
-                SameLine(); if (Button("Use config##Border")) Workspace::InterfaceBorderSelected = false;
-                ColorEdit3("Background", Workspace::Background, ImGuiColorEditFlags_NoInputs);
-                float activeText[3] = { Workspace::TextChannel(0), Workspace::TextChannel(1), Workspace::TextChannel(2) };
-                if (ColorEdit3("Text active", activeText, ImGuiColorEditFlags_NoInputs))
-                { std::copy_n(activeText, 3, Workspace::TextColour); Workspace::TextColourOverride = true; }
-                SameLine(); if (Button("Use accent##ActiveText")) Workspace::TextColourOverride = false;
-                float inactiveText[3] = { Workspace::InactiveTextChannel(0), Workspace::InactiveTextChannel(1), Workspace::InactiveTextChannel(2) };
-                if (ColorEdit3("Text inactive color", inactiveText, ImGuiColorEditFlags_NoInputs))
-                { std::copy_n(inactiveText, 3, Workspace::InactiveTextColour); Workspace::InactiveTextOverride = true; }
-                SameLine(); if (Button("Use darker accent##InactiveText")) Workspace::InactiveTextOverride = false;
-                float titleText[3] = { Workspace::TitleTextChannel(0), Workspace::TitleTextChannel(1), Workspace::TitleTextChannel(2) };
-                if (ColorEdit3("Text Title Color", titleText, ImGuiColorEditFlags_NoInputs))
-                { std::copy_n(titleText, 3, Workspace::TitleTextColour); Workspace::TitleTextOverride = true; }
-                SameLine(); if (Button("Use brighter accent##TitleText")) Workspace::TitleTextOverride = false;
-				Separator(); TextUnformatted("Pets");
-                Checkbox("Pets enabled", &Workspace::PetEnabled);
-                Checkbox("Niko", &Workspace::PetNiko);SameLine();Checkbox("Alula", &Workspace::PetAlula);SameLine();Checkbox("Calamus", &Workspace::PetCalamus);
-                Checkbox("Quiet interactions", &Workspace::PetSocial);
-                Checkbox("Scare game", &Workspace::PetScares);SameLine();Checkbox("Chase game", &Workspace::PetChase);
-                Checkbox("The World Machine", &Workspace::PetWorldMachine);
-                NikoPet::GameControls();
-				Separator();
-				SliderInt("Pet size", &Workspace::PetSize, 32, 128, "%d px", ImGuiSliderFlags_AlwaysClamp);
-				if (Button("Small##Pet")) Workspace::PetSize = 48;
-				SameLine(); if (Button("Medium##Pet")) Workspace::PetSize = 64;
-				SameLine(); if (Button("Large##Pet")) Workspace::PetSize = 128;
-				Checkbox("Occasional running", &Workspace::PetRun); SameLine(); Checkbox("Jumping", &Workspace::PetJump);
-				Checkbox("Climb windows", &Workspace::PetClimb); SameLine(); Checkbox("Pick up / throw", &Workspace::PetDrag);
-				SliderInt("Rest after", &Workspace::PetRest, 15, 600, "%d sec", ImGuiSliderFlags_AlwaysClamp);
-				Workspace::PetSleep = std::max(Workspace::PetSleep, Workspace::PetRest + 15);
-				SliderInt("Sleep after", &Workspace::PetSleep, Workspace::PetRest + 15, 1200, "%d sec", ImGuiSliderFlags_AlwaysClamp);
-				TextWrapped("Menu-only pet. Top taskbar: gentle hanging/climbing, no running, jumping or sleeping. Drag and release to drop; release while moving to throw. Closing the menu resets rest timers.");
-				Separator();
-                TextWrapped("Drag title bars to move windows. Drag window edges to resize. Layout is remembered automatically.");
-                if (!saveStatus.empty()) TextWrapped("%s", saveStatus.c_str());
-                Separator();
-                if (Button("Open menu / HUD settings")) { launch(Main); mainTab = 3; visualTab = 2; search.clear(); }
+                if (DrawInterfacePreferences()) { launch(Main); mainTab = 3; visualTab = 2; search.clear(); }
             }
             else
             {
@@ -663,6 +507,194 @@ void CMenu::DrawMenu()
 }
 
 #pragma region Tabs
+
+void CMenu::DrawMenuStyleChoice()
+{
+    using namespace ImGui;
+    TextUnformatted("Menu style");
+    int choice = MenuMode::Pending >= 0 ? MenuMode::Pending : MenuMode::Active;
+    SetNextItemWidth(std::min(GetContentRegionAvail().x, H::Draw.Scale(260)));
+    if (Combo("##MenuStyle", &choice, "Nullcore\0Moonlit\0")) MenuMode::Choose(choice);
+    if (MenuMode::Pending >= 0) TextWrapped("Menu style will change when you close the menu.");
+    if (!m_sInterfaceStatus.empty()) TextWrapped("%s", m_sInterfaceStatus.c_str());
+    Separator();
+}
+
+bool CMenu::DrawInterfacePreferences(bool showStyleChoice)
+{
+    using namespace ImGui;
+    bool openHUD = false;
+    if (showStyleChoice) DrawMenuStyleChoice();
+                MenuPresets::Load();
+                static int selectedPreset = -2; // Existing workspace colours may not match a preset.
+                static char presetName[128] = "";
+                static std::string loadedPreset;
+                int saveRow = -1, deleteRow = -1;
+                TextUnformatted("Menu configs");
+                PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
+                if (BeginChild("MenuPresetList", { 0, H::Draw.Scale(90) }, ImGuiChildFlags_Borders))
+                {
+                    for (int index = 0; index < int(MenuPresets::Items.size()); ++index)
+                    {
+                        const auto& preset = MenuPresets::Items[index];
+                        PushID(index);
+                        const ImVec2 pos = GetCursorScreenPos();
+                        const float rowWidth = GetContentRegionAvail().x;
+                        const ImVec2 rowStart = GetCursorPos();
+                        GetWindowDrawList()->AddRectFilled(pos, pos + ImVec2(rowWidth, H::Draw.Scale(22)), IM_COL32(55, 55, 55, 255));
+                        SetCursorPos(rowStart + ImVec2(0, H::Draw.Scale(1)));
+                        if (CompactManagerIcon(loadedPreset == preset.name ? ICON_MD_REFRESH : ICON_MD_DOWNLOAD))
+                        {
+                            selectedPreset = index;
+                            snprintf(presetName, sizeof(presetName), "%s", preset.name.c_str());
+                            MenuPresets::Apply(preset);
+                            loadedPreset = preset.name;
+                            m_sInterfaceStatus = Workspace::Save() ? "Menu config loaded." : "Loaded, but could not save workspace preferences.";
+                        }
+                        if (IsItemHovered()) SetTooltip(loadedPreset == preset.name ? "Reload config" : "Load config");
+                        SetCursorPos(rowStart + ImVec2(H::Draw.Scale(25), 0));
+                        const float nameWidth = std::max(1.f, rowWidth - H::Draw.Scale(77));
+                        if (Selectable(TruncateText(preset.name, nameWidth).c_str(), selectedPreset == index, 0, { nameWidth, H::Draw.Scale(22) }))
+                        {
+                            selectedPreset = index;
+                            snprintf(presetName, sizeof(presetName), "%s", preset.name.c_str());
+                        }
+                        PushDisabled(!MenuPresets::Writable);
+                        SetCursorPos(rowStart + ImVec2(rowWidth - H::Draw.Scale(47), H::Draw.Scale(1)));
+                        if (CompactManagerIcon(ICON_MD_SAVE)) saveRow = index;
+                        if (IsItemHovered()) SetTooltip("Save current settings / rename");
+                        SetCursorPos(rowStart + ImVec2(rowWidth - H::Draw.Scale(22), H::Draw.Scale(1)));
+                        if (CompactManagerIcon(ICON_MD_DELETE)) deleteRow = index;
+                        if (IsItemHovered()) SetTooltip("Delete config");
+                        PopDisabled();
+                        SetCursorPos(rowStart); Dummy({ rowWidth, H::Draw.Scale(22) });
+                        PopID();
+                    }
+                }
+                EndChild();
+                SetNextItemWidth(-1);
+                InputTextWithHint("##MenuPresetName", "Config name...", presetName, sizeof(presetName));
+                auto savePreset = [&](bool create)
+                {
+                    std::string name = presetName;
+                    const auto first = name.find_first_not_of(" \t\r\n");
+                    if (first == std::string::npos) { m_sInterfaceStatus = "Enter a config name first."; return; }
+                    name = name.substr(first, name.find_last_not_of(" \t\r\n") - first + 1);
+                    auto items = MenuPresets::Items;
+                    for (int n = 0; n < int(items.size()); ++n)
+                        if ((create || n != selectedPreset) && _stricmp(items[n].name.c_str(), name.c_str()) == 0)
+                        { m_sInterfaceStatus = "That config name already exists."; return; }
+                    const auto preset = MenuPresets::Capture(name);
+                    int target = selectedPreset;
+                    const bool renamingLoaded = !create && target >= 0 && items[target].name == loadedPreset;
+                    if (create) { target = int(items.size()); items.push_back(preset); }
+                    else items[target] = preset;
+                    if (MenuPresets::Store(items))
+                    {
+                        selectedPreset = target;
+                        if (renamingLoaded) loadedPreset = name;
+                        m_sInterfaceStatus = Workspace::Save() ? "Menu config saved." : "Config saved, but workspace preferences could not be saved.";
+                    }
+                    else m_sInterfaceStatus = MenuPresets::Error;
+                };
+                BeginDisabled(!MenuPresets::Writable);
+                if (Button("Create")) savePreset(true);
+                EndDisabled();
+                if (saveRow >= 0)
+                {
+                    if (selectedPreset != saveRow)
+                        snprintf(presetName, sizeof(presetName), "%s", MenuPresets::Items[saveRow].name.c_str());
+                    selectedPreset = saveRow;
+                    savePreset(false);
+                }
+                if (deleteRow >= 0)
+                {
+                    selectedPreset = deleteRow;
+                    snprintf(presetName, sizeof(presetName), "%s", MenuPresets::Items[deleteRow].name.c_str());
+                    OpenPopup("Delete menu config?");
+                }
+                if (BeginPopupModal("Delete menu config?", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    TextUnformatted("Delete the selected saved menu config?");
+                    if (Button("Delete"))
+                    {
+                        auto items = MenuPresets::Items;
+                        if (selectedPreset >= 0 && selectedPreset < int(items.size()))
+                        {
+                            const bool deletingLoaded = items[selectedPreset].name == loadedPreset;
+                            items.erase(items.begin() + selectedPreset);
+                            if (MenuPresets::Store(items)) { if (deletingLoaded) loadedPreset.clear(); selectedPreset = -2; presetName[0] = '\0'; m_sInterfaceStatus = "Config deleted; current appearance kept."; }
+                            else m_sInterfaceStatus = MenuPresets::Error;
+                        }
+                        CloseCurrentPopup();
+                    }
+                    SameLine(); if (Button("Cancel")) CloseCurrentPopup();
+                    EndPopup();
+                }
+                PopStyleVar();
+                if (!MenuPresets::Error.empty()) TextWrapped("%s", MenuPresets::Error.c_str());
+                Separator();
+                TextUnformatted("Workspace preferences (separate from gameplay configs)");
+                Separator();
+                Checkbox("Compact taskbar", &Workspace::CompactTaskbar);
+                Checkbox("Taskbar at top", &Workspace::TopTaskbar);
+                Checkbox("Snap windows to screen edges", &Workspace::Snap);
+                SliderFloat("Text scale", &Workspace::FontScale, 0.85f, 1.5f, "%.2fx");
+                if (!MenuMode::DrawingMoonlit)
+                {
+                ColorEdit3("Accent", Workspace::Accent, ImGuiColorEditFlags_NoInputs);
+                float borderColour[3] = { Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2) };
+                if (ColorEdit3("Border / outline color", borderColour, ImGuiColorEditFlags_NoInputs))
+                {
+                    std::copy_n(borderColour, 3, Workspace::InterfaceBorderColour);
+                    Workspace::InterfaceBorderCustom = true;
+                    Workspace::InterfaceBorderSelected = true;
+                }
+                SameLine(); if (Button("Use accent##Border")) { Workspace::InterfaceBorderSelected = true; Workspace::InterfaceBorderCustom = false; }
+                SameLine(); if (Button("Use config##Border")) Workspace::InterfaceBorderSelected = false;
+                ColorEdit3("Background", Workspace::Background, ImGuiColorEditFlags_NoInputs);
+                float activeText[3] = { Workspace::TextChannel(0), Workspace::TextChannel(1), Workspace::TextChannel(2) };
+                if (ColorEdit3("Text active", activeText, ImGuiColorEditFlags_NoInputs))
+                { std::copy_n(activeText, 3, Workspace::TextColour); Workspace::TextColourOverride = true; }
+                SameLine(); if (Button("Use accent##ActiveText")) Workspace::TextColourOverride = false;
+                float inactiveText[3] = { Workspace::InactiveTextChannel(0), Workspace::InactiveTextChannel(1), Workspace::InactiveTextChannel(2) };
+                if (ColorEdit3("Text inactive color", inactiveText, ImGuiColorEditFlags_NoInputs))
+                { std::copy_n(inactiveText, 3, Workspace::InactiveTextColour); Workspace::InactiveTextOverride = true; }
+                SameLine(); if (Button("Use darker accent##InactiveText")) Workspace::InactiveTextOverride = false;
+                float titleText[3] = { Workspace::TitleTextChannel(0), Workspace::TitleTextChannel(1), Workspace::TitleTextChannel(2) };
+                if (ColorEdit3("Text Title Color", titleText, ImGuiColorEditFlags_NoInputs))
+                { std::copy_n(titleText, 3, Workspace::TitleTextColour); Workspace::TitleTextOverride = true; }
+                SameLine(); if (Button("Use brighter accent##TitleText")) Workspace::TitleTextOverride = false;
+                }
+                else TextWrapped("Moonlit uses its own palette. Your Nullcore colours are preserved and can be edited in Nullcore.");
+				Separator(); TextUnformatted("Pets");
+                Checkbox("Pets enabled", &Workspace::PetEnabled);
+                Checkbox("Niko", &Workspace::PetNiko);SameLine();Checkbox("Alula", &Workspace::PetAlula);SameLine();Checkbox("Calamus", &Workspace::PetCalamus);
+                Checkbox("Quiet interactions", &Workspace::PetSocial);
+                Checkbox("Scare game", &Workspace::PetScares);SameLine();Checkbox("Chase game", &Workspace::PetChase);
+                Checkbox("The World Machine", &Workspace::PetWorldMachine);
+                NikoPet::GameControls();
+				Separator();
+				SliderInt("Pet size", &Workspace::PetSize, 32, 128, "%d px", ImGuiSliderFlags_AlwaysClamp);
+				if (Button("Small##Pet")) Workspace::PetSize = 48;
+				SameLine(); if (Button("Medium##Pet")) Workspace::PetSize = 64;
+				SameLine(); if (Button("Large##Pet")) Workspace::PetSize = 128;
+				Checkbox("Occasional running", &Workspace::PetRun); SameLine(); Checkbox("Jumping", &Workspace::PetJump);
+				Checkbox("Climb windows", &Workspace::PetClimb); SameLine(); Checkbox("Pick up / throw", &Workspace::PetDrag);
+				SliderInt("Rest after", &Workspace::PetRest, 15, 600, "%d sec", ImGuiSliderFlags_AlwaysClamp);
+				Workspace::PetSleep = std::max(Workspace::PetSleep, Workspace::PetRest + 15);
+				SliderInt("Sleep after", &Workspace::PetSleep, Workspace::PetRest + 15, 1200, "%d sec", ImGuiSliderFlags_AlwaysClamp);
+				TextWrapped("Menu-only pet. Top taskbar: gentle hanging/climbing, no running, jumping or sleeping. Drag and release to drop; release while moving to throw. Closing the menu resets rest timers.");
+				Separator();
+                TextWrapped("Drag title bars to move windows. Drag window edges to resize. Layout is remembered automatically.");
+                if (!m_sInterfaceStatus.empty()) TextWrapped("%s", m_sInterfaceStatus.c_str());
+                Separator();
+                if (Button("Open menu / HUD settings")) openHUD = true;
+                if (Button("Save interface preferences")) m_sInterfaceStatus = Workspace::Save() ? "Interface preferences saved." : "Could not save interface preferences.";
+
+    return openHUD;
+}
+
 void CMenu::MenuTriggerbot()
 {
 	using namespace ImGui;
@@ -704,7 +736,15 @@ void CMenu::MenuAimbot(int iTab)
 			{
 				if (Section("General"))
 				{
-					FDropdown(Vars::Aimbot::General::AimType, FDropdownEnum::Left);
+					if (AimModes::Editing != AimModes::None)
+					{
+						auto style = FGet(Vars::Aimbot::General::AimType, true);
+						const bool legit = AimModes::Editing == AimModes::Legit;
+						FDropdown("Aim style", &style, legit ? std::vector<const char*>{"Smooth", "Assistive"} : std::vector<const char*>{"Plain", "Silent", "Locking"},
+							legit ? std::vector<int>{2, 5} : std::vector<int>{1, 3, 4}, FDropdownEnum::Left);
+						FSet(Vars::Aimbot::General::AimType, style);
+					}
+					else FDropdown(Vars::Aimbot::General::AimType, FDropdownEnum::Left);
 					FDropdown(Vars::Aimbot::General::TargetSelection, FDropdownEnum::Right);
 					FDropdown(Vars::Aimbot::General::Target, FDropdownEnum::Left);
 					FDropdown(Vars::Aimbot::General::Ignore, FDropdownEnum::Right);
@@ -718,6 +758,30 @@ void CMenu::MenuAimbot(int iTab)
 					}
 					PopTransparent();
 					FSlider(Vars::Aimbot::General::AssistStrength, FSliderEnum::Left);
+                    if(AimModes::Editing==AimModes::Legit)
+                    {
+                        if(FGet(Vars::Aimbot::General::CombinedGuidance,true))
+                        {
+                            FSlider(Vars::Aimbot::General::SmoothAmount,FSliderEnum::Left);
+                            FSlider(Vars::Aimbot::General::AssistAmount,FSliderEnum::Right);
+                            FDropdown(Vars::Aimbot::General::AssistHitbox);
+                            FSlider(Vars::Aimbot::General::SmoothTime);
+                        }
+                    }
+                    if(FGet(Vars::Aimbot::General::AimType,true)==Vars::Aimbot::General::AimTypeEnum::Smooth
+                        &&!(AimModes::Editing==AimModes::Legit&&FGet(Vars::Aimbot::General::CombinedGuidance,true)))
+                    {
+                        FDropdown(Vars::Aimbot::General::SmoothFormula);
+                        if(FGet(Vars::Aimbot::General::SmoothFormula,true)==Vars::Aimbot::General::SmoothFormulaEnum::Damped)
+                        {
+                            FSlider(Vars::Aimbot::General::SmoothTime);
+                            if(AimModes::Editing!=AimModes::Legit)
+                            {
+                                FSlider(Vars::Aimbot::General::SmoothSpeed,FSliderEnum::Left);
+                                FSlider(Vars::Aimbot::General::SmoothAcceleration,FSliderEnum::Right);
+                            }
+                        }
+                    }
 					PushTransparent(!(Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Unsimulated));
 					{
 						FSlider(Vars::Aimbot::General::TickTolerance, FSliderEnum::Right);
@@ -865,6 +929,8 @@ void CMenu::MenuAimbot(int iTab)
 					FDropdown(Vars::Aimbot::Projectile::StrafePrediction, FDropdownEnum::Left, 0, &predictHovered);
 					FTooltip("Counter strafe predict: detects repeated tight left/right movement and biases prediction toward its moving centre. Hit chance uses reversal balance, not measured hit probability.\nLedge aware prediction: when recent braking or reversal suggests an uncertain walk-off, checks hull support ahead and predicts slowing near the edge. Does not hold airborne targets on ledges. Uses your existing splash setting. Both options are experimental.", predictHovered);
 					FDropdown(Vars::Aimbot::Projectile::SplashPrediction, FDropdownEnum::Right);
+					FDropdown(Vars::Aimbot::Projectile::SplashMode);
+                    if(IsItemHovered()) SetTooltip("Trace: sample outward around the predicted target. Face: sample nearby collision surfaces and edges. Dynamic: a short Trace attempt, then Face if no fully validated shot was found, within one shared budget. Takes the first valid Dynamic shot; never waits for workers. Saves with your config. Does not bypass visibility or self-damage checks. Reflected projectiles use Trace when Dynamic is selected.");
 					FDropdown(Vars::Aimbot::Projectile::AutoDetonate, FDropdownEnum::Left);
 					FDropdown(Vars::Aimbot::Projectile::AutoAirblast, FDropdownEnum::Right);
 					FDropdown(Vars::Aimbot::Projectile::Hitboxes, FDropdownEnum::Left);
@@ -923,8 +989,7 @@ void CMenu::MenuAimbot(int iTab)
 						FText("Splash", { 5, 5 });
 						if (FPopupButton("Splash", { 0, -5 }, -8))
 						{
-							FDropdown(Vars::Aimbot::Projectile::SplashMode);
-							PushTransparent(Vars::Aimbot::Projectile::SplashMode.Value != Vars::Aimbot::Projectile::SplashModeEnum::Trace);
+							PushTransparent(Vars::Aimbot::Projectile::SplashMode.Value == Vars::Aimbot::Projectile::SplashModeEnum::Face);
 							{
 								FSlider(Vars::Aimbot::Projectile::SplashPointsDirect, FSliderEnum::Left);
 								FSlider(Vars::Aimbot::Projectile::SplashPointsArc, FSliderEnum::Right);
@@ -932,7 +997,7 @@ void CMenu::MenuAimbot(int iTab)
 								FSlider(Vars::Aimbot::Projectile::SplashRotateY, FSliderEnum::Right, Vars::Aimbot::Projectile::SplashRotateY[DEFAULT_BIND] < 0.f ? "random" : "%g");
 							}
 							PopTransparent();
-							PushTransparent(Vars::Aimbot::Projectile::SplashMode.Value != Vars::Aimbot::Projectile::SplashModeEnum::Face);
+							PushTransparent(Vars::Aimbot::Projectile::SplashMode.Value == Vars::Aimbot::Projectile::SplashModeEnum::Trace);
 							{
 								FSlider(Vars::Aimbot::Projectile::SplashDensityDirect, FSliderEnum::Left);
 								FSlider(Vars::Aimbot::Projectile::SplashDensityArc, FSliderEnum::Right);
@@ -1241,11 +1306,6 @@ void CMenu::MenuHVH(int iTab)
 					FToggle(Vars::AntiAim::MinWalk, FToggleEnum::Left);
 					SetCursorPos({ GetStyle().WindowPadding.x, std::max(afterSpinRow, GetCursorPosY()) });
 					DebugDummy({ 0, H::Draw.Scale(4) });
-					{
-						bool bHovered = false;
-						FToggle(Vars::AntiAim::RealCompensation, FToggleEnum::Left, &bHovered);
-						FTooltip("Steers your body onto the real yaw during choked ticks.\nUses bigger angle changes, so it's skipped with anti-cheat compatibility on.", bHovered);
-					}
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
@@ -1650,6 +1710,8 @@ void CMenu::MenuVisuals(int iTab)
 						}, ESPEnum::Name);
 					}
 					PopTransparent();
+					if(tGroup.m_iTargets & TargetsEnum::Players)
+						FDropdown("Dapper Mann ESP", &tGroup.m_iDapperESP, {"Off", "Dapper Mann", "Dapper Mann - Money", "Giga Mann"});
 				} EndSection();
 				if (Section("Chams"))
 				{
@@ -2645,6 +2707,7 @@ void CMenu::MenuLogs(int iTab)
 				SetCursorPos({ swatchLeft, nameOrigin.y + H::Draw.Scale(3) });
 				FColorPicker("Color", &tTag.m_tColor, AttachedColorPicker | FColorPickerEnum::Tooltip, {}, { H::Draw.Scale(10), editorHeight });
 				SetCursorPos(next);
+				Dummy({0,0}); // Submit the restored row end before EndChild (ImGui 1.92).
 			} EndChild();
 
 			if (BeginWidgetTable(1, vTable))
@@ -3440,8 +3503,21 @@ void CMenu::MenuSettings(int iTab)
 	// Binds
 	case 1:
 	{
+		const bool moonlit = MenuMode::DrawingMoonlit;
+		const float bindIconSize = moonlit ? 26.f : 20.f;
+		const float bindIconStep = moonlit ? 34.f : 25.f;
+		const float bindActionWidth = 5 * bindIconStep + 2;
+		const float bindRowHeight = moonlit ? BindLayout::MoonlitRowHeight(GetTextLineHeight(), H::Draw.Scale()) : H::Draw.Scale(22);
 		if (Section("Settings"))
 		{
+			if (moonlit)
+			{
+				FToggle(Vars::Menu::BindWindow, FToggleEnum::Left);
+				FToggle(Vars::Menu::BindWindowTitle, FToggleEnum::Right);
+				FToggle(Vars::Menu::MenuShowsBinds);
+			}
+			else
+			{
 			auto vTable = WidgetTable(3, H::Draw.Scale(22));
 
 			if (BeginWidgetTable(0, vTable))
@@ -3461,6 +3537,7 @@ void CMenu::MenuSettings(int iTab)
 				DebugDummy({ 0, H::Draw.Scale(6) });
 				FToggle(Vars::Menu::MenuShowsBinds);
 			} EndChild();
+			}
 			FToggle(Vars::Menu::BindWindowHorizontal);
 			FToggle(Vars::Menu::BindTextGlow);
 			FToggle(Vars::Menu::BindTextGlowCustom);
@@ -3478,17 +3555,20 @@ void CMenu::MenuSettings(int iTab)
 			if (bParent)
 				SetMouseCursor(ImGuiMouseCursor_Hand);
 
-			auto vTable = WidgetTable(2, H::Draw.Scale(80));
+			// Two dropdown rows plus their measured padding, independent of text scale.
+			const float editorHeight = moonlit ? BindLayout::MoonlitEditorHeight(CompactDropdownHeight(true), GetStyle().ItemSpacing.y, GetStyle().WindowPadding.y, H::Draw.Scale()) : H::Draw.Scale(80);
+			const float actionHeight = moonlit ? CompactDropdownHeight(true) / H::Draw.Scale() : 32.f;
+			auto vTable = WidgetTable(2, editorHeight, {}, ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, moonlit);
 
-			if (BeginWidgetTable(0, vTable))
+			if (BeginWidgetTable(0, vTable, moonlit))
 			{
 				FSDropdown("Name", &tBind.m_sName, {}, FDropdownEnum::Left | FSDropdownEnum::AutoUpdate);
 				{
 					auto sParent = bParent ? "..." : tBind.m_iParent != DEFAULT_BIND && tBind.m_iParent < F::Binds.m_vBinds.size() ? F::Binds.m_vBinds[tBind.m_iParent].m_sName : "None";
-					if (FButton(std::format("Parent: {}", sParent).c_str(), FButtonEnum::Right | FButtonEnum::SameLine | FButtonEnum::NoUpper | FButtonEnum::Compact, { 0, 32 }))
+					if (FButton(std::format("Parent: {}", sParent).c_str(), FButtonEnum::Right | FButtonEnum::SameLine | FButtonEnum::NoUpper | FButtonEnum::Compact, { 0, actionHeight }))
 						bParent = 2;
 				}
-				FDropdown("Type", &tBind.m_iType, { "Key", "Class", "Weapon type", "Item slot", "Misc" }, {}, FDropdownEnum::Left);
+				FDropdown("Type", &tBind.m_iType, { "Key", "Class", "Weapon type", "Item slot", "Misc", "Is behind", "On threat" }, {}, FDropdownEnum::Left);
 				switch (tBind.m_iType)
 				{
 				case BindEnum::Key: FDropdown("Behavior", &tBind.m_iInfo, { "Hold", "Toggle", "Double click" }, {}, FDropdownEnum::Right); break;
@@ -3496,10 +3576,12 @@ void CMenu::MenuSettings(int iTab)
 				case BindEnum::WeaponType: FDropdown("Weapon type", &tBind.m_iInfo, { "Hitscan", "Projectile", "Melee", "Throwable" }, {}, FDropdownEnum::Right); break;
 				case BindEnum::ItemSlot: FDropdown("Item slot", &tBind.m_iInfo, { "1", "2", "3", "4", "5", "6", "7", "8", "9" }, {}, FDropdownEnum::Right); break;
 				case BindEnum::Misc: FDropdown("Misc", &tBind.m_iInfo, { "Spectated", "Spectated 1st", "Spectated 3rd", "##Divider", "Zoomed", "Aiming" }, {}, FDropdownEnum::Right); break;
+				case BindEnum::Behind: FText("Enemies only", {}, FTextEnum::Right | FTextEnum::SameLine); break;
+				case BindEnum::Threat: FText("Lethal attack", {}, FTextEnum::Right | FTextEnum::SameLine); break;
 				}
 			} EndChild();
 
-			if (BeginWidgetTable(1, vTable))
+			if (BeginWidgetTable(1, vTable, moonlit))
 			{
 				int iNot = tBind.m_bNot;
 				FDropdown("While", &iNot, { "Active", "Not active" }, {}, FDropdownEnum::Left);
@@ -3507,24 +3589,24 @@ void CMenu::MenuSettings(int iTab)
 				FDropdown("Visibility", &tBind.m_iVisibility, { "Always", "While active", "Hidden" }, {}, FDropdownEnum::Right);
 				const float actionY = GetCursorPosY();
 				if (tBind.m_iType == 0)
-					FKeybind("Key", tBind.m_iKey, FButtonEnum::Compact, { Vars::Menu::PrimaryKey[DEFAULT_BIND], Vars::Menu::SecondaryKey[DEFAULT_BIND] }, { 0, 32 }, -80);
+					FKeybind("Key", tBind.m_iKey, FButtonEnum::Compact, { Vars::Menu::PrimaryKey[DEFAULT_BIND], Vars::Menu::SecondaryKey[DEFAULT_BIND] }, { 0, actionHeight }, -80);
 
 				// create/modify button
 				bool bCreate = false, bClear = false, bParent = true;
 				if (tBind.m_iParent != DEFAULT_BIND)
 					bParent = F::Binds.m_vBinds.size() > tBind.m_iParent;
 
-				SetCursorPos({ GetWindowWidth() - H::Draw.Scale(80), actionY });
+				SetCursorPos({ GetWindowWidth() - H::Draw.Scale(80) - (moonlit ? GetStyle().WindowPadding.x : 0.f), actionY });
 				PushDisabled(!bParent || !(tBind.m_iType == BindEnum::Key ? tBind.m_iKey : true));
 				{
 					bool bMatch = iBind != DEFAULT_BIND && F::Binds.m_vBinds.size() > iBind;
-					bCreate = FButton(bMatch ? ICON_MD_SETTINGS : ICON_MD_ADD, FButtonEnum::Compact, { 32, 32 }, 0, F::Render.IconFont);
+					bCreate = FButton(bMatch ? ICON_MD_SETTINGS : ICON_MD_ADD, FButtonEnum::Compact, { 32, actionHeight }, 0, F::Render.IconFont);
 				}
 				PopDisabled();
 
 				// clear button
-				SetCursorPos({ GetWindowWidth() - H::Draw.Scale(40), actionY });
-				bClear = FButton(ICON_MD_CLEAR, FButtonEnum::Compact, { 32, 32 }, 0, F::Render.IconFont);
+				SetCursorPos({ GetWindowWidth() - H::Draw.Scale(40) - (moonlit ? GetStyle().WindowPadding.x : 0.f), actionY });
+				bClear = FButton(ICON_MD_CLEAR, FButtonEnum::Compact, { 32, actionHeight }, 0, F::Render.IconFont);
 
 				if (bCreate)
 					F::Binds.AddBind(iBind, tBind);
@@ -3535,6 +3617,7 @@ void CMenu::MenuSettings(int iTab)
 				}
 			} EndChild();
 
+			DrawConditionOptions(tBind);
 			PushStyleColor(ImGuiCol_Text, F::Render.Inactive.Value);
 			SetCursorPos({ H::Draw.Scale(13), GetCursorPosY() + H::Draw.Scale(4) });
 			FText("Binds");
@@ -3569,7 +3652,7 @@ void CMenu::MenuSettings(int iTab)
 			};
 			auto fPositionToIndex = [&](ImVec2 vPos, int iLayer = DEFAULT_BIND)
 			{
-				int iIndex = floorf((vPos.y - GetCursorPosY() - H::Draw.Scale(2)) / (H::Draw.Scale(24) + GetStyle().ItemSpacing.y));
+				int iIndex = floorf((vPos.y - GetCursorPosY() - H::Draw.Scale(2)) / (bindRowHeight + H::Draw.Scale(2) + GetStyle().ItemSpacing.y));
 				iIndex = std::clamp(iIndex, 0, int(F::Binds.m_vBinds.size() - 1));
 				iIndex = fNumberToIndex(iIndex, iLayer);
 				return iIndex;
@@ -3646,6 +3729,10 @@ void CMenu::MenuSettings(int iTab)
 						sType = "slot";
 						sInfo = std::format("{}", _tBind.m_iInfo + 1);
 						break;
+					case BindEnum::Behind:
+						sType = "behind"; sInfo = ConditionPolicy::ClassName(_tBind.m_tConditions.enemyClass); break;
+					case BindEnum::Threat:
+						sType = "threat"; sInfo = std::format("{:.2f}s", _tBind.m_tConditions.projectileWindow); break;
 					case BindEnum::Misc:
 						switch (_tBind.m_iInfo)
 						{
@@ -3675,17 +3762,20 @@ void CMenu::MenuSettings(int iTab)
 					if (_tBind.m_bNot && (_tBind.m_iType != BindEnum::Key || _tBind.m_iInfo == BindEnum::KeyEnum::Hold))
 						sType = std::format("not {}", sType);
 
-					ImVec2 vOriginalPos = { H::Draw.Scale(8) + H::Draw.Scale(28) * std::min(x, 3), GetCursorPosY() + H::Draw.Scale(2) };
+					ImVec2 vOriginalPos = { (moonlit ? GetStyle().WindowPadding.x : H::Draw.Scale(8)) + H::Draw.Scale(28) * std::min(x, 3), GetCursorPosY() + H::Draw.Scale(2) };
 
 					// background
 					float flWidth = GetWindowWidth() - GetStyle().WindowPadding.x * 2 - H::Draw.Scale(28) * std::min(x, 3);
-					float flHeight = H::Draw.Scale(22);
+					float flHeight = bindRowHeight;
+					const float textY = moonlit ? (flHeight - GetTextLineHeight()) * .5f : H::Draw.Scale(4);
+					const float iconY = moonlit ? (flHeight - H::Draw.Scale(bindIconSize)) * .5f : H::Draw.Scale(2);
 					ImVec2 vDrawPos = GetDrawPos() + vOriginalPos;
 					// Use the player list's neutral row tint, independent of the black panel fill.
 					Color_t rowColor = Color_t(127, 127, 127, 255).Lerp(Vars::Menu::Theme::Background.Value, 0.5f, LerpEnum::NoAlpha);
+					if (moonlit) rowColor = ColorFloatToByte(F::Render.Background1p5L);
 					if (iBind == _iBind)
 						rowColor = rowColor.Lerp(ColorFloatToByte(F::Render.Accent), 0.2f, LerpEnum::NoAlpha);
-					GetWindowDrawList()->AddRectFilled(vDrawPos, vDrawPos + ImVec2(flWidth, flHeight), ColorByteToFloat(rowColor));
+					GetWindowDrawList()->AddRectFilled(vDrawPos, vDrawPos + ImVec2(flWidth, flHeight), ColorByteToFloat(rowColor), moonlit ? H::Draw.Scale(6) : 0.f);
 					if (iBind == _iBind)
 					{
 						float flInset = H::Draw.Scale(0.5f) - 0.5f;
@@ -3702,47 +3792,49 @@ void CMenu::MenuSettings(int iTab)
 						PopStyleColor();
 					}
 
-					float flTextWidth = flWidth - H::Draw.Scale(127);
+					float flTextWidth = flWidth - H::Draw.Scale(bindActionWidth);
 					PushTransparent(!F::Binds.WillBeEnabled(_iBind), true);
 
 					// Match the list heading's left edge; retain parent/child indentation.
-					SetCursorPos({ H::Draw.Scale(13) + H::Draw.Scale(28) * std::min(x, 3), vOriginalPos.y + H::Draw.Scale(4) });
-					PushStyleColor(ImGuiCol_Text, _tBind.m_bActive ? F::Render.Accent.Value : F::Render.Active.Value);
+					SetCursorPos({ vOriginalPos.x + H::Draw.Scale(5), vOriginalPos.y + textY });
+					const auto displayed=BindPresentation::Get(_tBind,_iBind,BindPresentation::ParentsActive(_tBind,F::Binds.m_vBinds),MenuMode::Active==MenuMode::Moonlit);
+					PushStyleColor(ImGuiCol_Text, displayed.active ? F::Render.Accent.Value : F::Render.Active.Value);
 					FText(TruncateText(_tBind.m_sName, flTextWidth * (1.f / 3) - H::Draw.Scale(20)).c_str());
+					if(IsItemHovered())SetTooltip("%s: %s\nBind condition: %s",displayed.feature?"Feature":"Condition",displayed.active?"active":"inactive",_tBind.m_bActive?"matched":"not matched");
 					PopStyleColor();
 
-					SetCursorPos(vOriginalPos + ImVec2(flTextWidth * (1.f / 3), H::Draw.Scale(4)));
+					SetCursorPos(vOriginalPos + ImVec2(flTextWidth * (1.f / 3), textY));
 					FText(sType.c_str());
 
-					SetCursorPos(vOriginalPos + ImVec2(flTextWidth * (2.f / 3), H::Draw.Scale(4)));
+					SetCursorPos(vOriginalPos + ImVec2(flTextWidth * (2.f / 3), textY));
 					FText(sInfo.c_str());
 
 					// buttons
-					int iOffset = 1;
+					float iOffset = 1;
 
-					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += 25), H::Draw.Scale(2)));
-					bool bDelete = CompactManagerIcon(ICON_MD_DELETE);
+					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += bindIconStep), iconY));
+					bool bDelete = CompactManagerIcon(ICON_MD_DELETE, bindIconSize);
 
-					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += 25), H::Draw.Scale(2)));
-					if (CompactManagerIcon(ICON_MD_EDIT))
+					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += bindIconStep), iconY));
+					if (CompactManagerIcon(ICON_MD_EDIT, bindIconSize))
 						CurrentBind = CurrentBind != _iBind ? _iBind : DEFAULT_BIND;
 
-					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += 25), H::Draw.Scale(2)));
-					if (CompactManagerIcon(!_tBind.m_bNot ? ICON_MD_CODE : ICON_MD_CODE_OFF))
+					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += bindIconStep), iconY));
+					if (CompactManagerIcon(!_tBind.m_bNot ? ICON_MD_CODE : ICON_MD_CODE_OFF, bindIconSize))
 						_tBind.m_bNot = !_tBind.m_bNot;
 
 					PushTransparent(Transparent || _tBind.m_iVisibility == BindVisibilityEnum::Hidden, true);
-					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += 25), H::Draw.Scale(2)));
-					if (CompactManagerIcon(_tBind.m_iVisibility == BindVisibilityEnum::Always ? ICON_MD_VISIBILITY : ICON_MD_VISIBILITY_OFF))
+					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += bindIconStep), iconY));
+					if (CompactManagerIcon(_tBind.m_iVisibility == BindVisibilityEnum::Always ? ICON_MD_VISIBILITY : ICON_MD_VISIBILITY_OFF, bindIconSize))
 						_tBind.m_iVisibility = (_tBind.m_iVisibility + 1) % 3;
 					PopTransparent(1, 1);
 
-					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += 25), H::Draw.Scale(2)));
-					if (CompactManagerIcon(_tBind.m_bEnabled ? ICON_MD_TOGGLE_ON : ICON_MD_TOGGLE_OFF))
+					SetCursorPos(vOriginalPos + ImVec2(flWidth - H::Draw.Scale(iOffset += bindIconStep), iconY));
+					if (CompactManagerIcon(_tBind.m_bEnabled ? ICON_MD_TOGGLE_ON : ICON_MD_TOGGLE_OFF, bindIconSize))
 						_tBind.m_bEnabled = !_tBind.m_bEnabled;
 
 					SetCursorPos(vOriginalPos);
-					bool bClicked = InvisibleButton(std::format("##{}", _iBind).c_str(), { flWidth - H::Draw.Scale(127), flHeight });
+					bool bClicked = InvisibleButton(std::format("##{}", _iBind).c_str(), { flWidth - H::Draw.Scale(bindActionWidth), flHeight });
 					bool bPopup = IsItemClicked(ImGuiMouseButton_Right);
 
 					PopTransparent(1, 1);
@@ -3796,7 +3888,7 @@ void CMenu::MenuSettings(int iTab)
 								_tBind.m_sName = sInput;
 						}
 
-						FDropdown("Type", &_tBind.m_iType, { "Key", "Class", "Weapon type", "Item slot", "Misc" }, {}, FDropdownEnum::Left);
+						FDropdown("Type", &_tBind.m_iType, { "Key", "Class", "Weapon type", "Item slot", "Misc", "Is behind", "On threat" }, {}, FDropdownEnum::Left);
 						switch (_tBind.m_iType)
 						{
 						case BindEnum::Key: FDropdown("Behavior", &_tBind.m_iInfo, { "Hold", "Toggle", "Double click" }, {}, FDropdownEnum::Right); break;
@@ -3804,9 +3896,12 @@ void CMenu::MenuSettings(int iTab)
 						case BindEnum::WeaponType: FDropdown("Weapon type", &_tBind.m_iInfo, { "Hitscan", "Projectile", "Melee", "Throwable" }, {}, FDropdownEnum::Right); break;
 						case BindEnum::ItemSlot: FDropdown("Item slot", &_tBind.m_iInfo, { "1", "2", "3", "4", "5", "6", "7", "8", "9" }, {}, FDropdownEnum::Right); break;
 						case BindEnum::Misc: FDropdown("Misc", &_tBind.m_iInfo, { "Spectated", "Spectated 1st", "Spectated 3rd", "##Divider", "Zoomed", "Aiming" }, {}, FDropdownEnum::Right); break;
+						case BindEnum::Behind: FText("Enemies only", {}, FTextEnum::Right | FTextEnum::SameLine); break;
+						case BindEnum::Threat: FText("Lethal attack", {}, FTextEnum::Right | FTextEnum::SameLine); break;
 						}
 						if (_tBind.m_iType == BindEnum::Key)
 							FKeybind("Key", _tBind.m_iKey);
+						DrawConditionOptions(_tBind);
 
 						PopStyleVar();
 						EndPopup();
@@ -4257,6 +4352,7 @@ void CMenu::MenuSearch(std::string sSearch)
 		{
 			if (!Vars::Debug::Options[DEFAULT_BIND] && pBase->m_iFlags & DEBUGVAR)
 				continue;
+			if (std::string_view(pBase->Name()).starts_with("Vars::AimModes::"))continue;
 
 			std::vector<const char*> vSearch = { pBase->Name(), pBase->Section() };
 			vSearch.insert(vSearch.end(), pBase->m_vNames.begin(), pBase->m_vNames.end());
@@ -4494,6 +4590,8 @@ struct DragBoxStorage_t
 {
 	DragBox_t m_tDragBox;
 	float m_flScale;
+	ImVec2 m_vSize;
+	int m_iStyle = MenuMode::Nullcore;
 };
 static std::unordered_map<uint32_t, DragBoxStorage_t> s_mDragBoxStorage = {};
 void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bShouldDraw, ImVec2 vSize)
@@ -4505,21 +4603,24 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 
 	auto tDragBox = FGet(tVar, true);
 	auto uHash = FNV1A::Hash32(sLabel);
-	const bool bCritPanel = &tVar == &Vars::Menu::CritsDisplay || &tVar == &Vars::Menu::TicksDisplay || &tVar == &Vars::Menu::SpectatorsDisplay;
+	const bool bCritPanel = &tVar == &Vars::Menu::CritsDisplay || &tVar == &Vars::Menu::TicksDisplay || &tVar == &Vars::Menu::SpectatorsDisplay
+		|| (MoonlitHud::Enabled() && (&tVar == &Vars::Menu::PingDisplay || &tVar == &Vars::Menu::ConditionsDisplay || &tVar == &Vars::Menu::SeedPredictionDisplay));
 	const bool bSpectatorPanel = &tVar == &Vars::Menu::SpectatorsDisplay;
 
 	bool bContains = s_mDragBoxStorage.contains(uHash);
 	auto& tStorage = s_mDragBoxStorage[uHash];
+	const bool themeSizeChanged = (MoonlitHud::Enabled() || tStorage.m_iStyle == MenuMode::Moonlit)
+		&& (tStorage.m_iStyle != MenuMode::Active || tStorage.m_vSize.x != vSize.x || tStorage.m_vSize.y != vSize.y);
 
 	SetNextWindowSize(vSize, ImGuiCond_Always);
-	if (!bContains || tDragBox != tStorage.m_tDragBox || H::Draw.Scale() != tStorage.m_flScale)
+	if (!bContains || tDragBox != tStorage.m_tDragBox || H::Draw.Scale() != tStorage.m_flScale || themeSizeChanged)
 		SetNextWindowPos({ float(tDragBox.x - vSize.x / 2), float(tDragBox.y) }, ImGuiCond_Always);
 	if (bCritPanel)
 	{
 		ImVec2 pos(float(tDragBox.x) - vSize.x / 2, float(tDragBox.y));
-		if (auto window = FindWindowByName(sLabel); window && bContains && tDragBox == tStorage.m_tDragBox && H::Draw.Scale() == tStorage.m_flScale)
+		if (auto window = FindWindowByName(sLabel); window && bContains && tDragBox == tStorage.m_tDragBox && H::Draw.Scale() == tStorage.m_flScale && !themeSizeChanged)
 			pos = window->Pos;
-		const float bar = H::Draw.Scale(26);
+		const float bar = MoonlitHud::Enabled() ? 0.f : H::Draw.Scale(26);
 		pos.x = BindLayout::ClampAxis(pos.x, vSize.x, 0.f, GetIO().DisplaySize.x);
 		pos.y = BindLayout::ClampAxis(pos.y, vSize.y, Workspace::TopTaskbar ? bar : 0.f,
 			GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : bar));
@@ -4552,7 +4653,7 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 				if (IsItemActive() && IsMouseDragging(ImGuiMouseButton_Left, 0.f))
 				{
 					const ImVec2 delta = GetIO().MousePos - resizeMouse;
-					const float bar = H::Draw.Scale(26);
+					const float bar = MoonlitHud::Enabled() ? 0.f : H::Draw.Scale(26);
 					const float minY = Workspace::TopTaskbar ? bar : 0.f;
 					const float maxY = GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : bar);
 					const auto [newX, newW] = SpectatorStyle::ResizeAxis(resizePos.x, resizeSize.x, delta.x, right,
@@ -4565,7 +4666,8 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 					FSet(Vars::Menu::SpectatorHeight, int(vSize.y));
 				}
 				const ImVec2 point = vWindowPos + ImVec2(right ? vSize.x - 1 : 1, bottom ? vSize.y - 1 : 1);
-				const auto colour = GetColorU32(ImVec4(Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2), 1.f));
+				const auto colour = MoonlitHud::Enabled() ? IM_COL32(192,163,243,255)
+					: GetColorU32(ImVec4(Workspace::BorderChannel(0), Workspace::BorderChannel(1), Workspace::BorderChannel(2), 1.f));
 				GetWindowDrawList()->AddLine(point, point + ImVec2(right ? -grip : grip, 0), colour, 2.f);
 				GetWindowDrawList()->AddLine(point, point + ImVec2(0, bottom ? -grip : grip), colour, 2.f);
 				PopID();
@@ -4574,14 +4676,14 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 
 		if (bCritPanel)
 		{
-			const float bar = H::Draw.Scale(26);
+			const float bar = MoonlitHud::Enabled() ? 0.f : H::Draw.Scale(26);
 			vWindowPos.x = BindLayout::ClampAxis(vWindowPos.x, vSize.x, 0.f, GetIO().DisplaySize.x);
 			vWindowPos.y = BindLayout::ClampAxis(vWindowPos.y, vSize.y,
 				Workspace::TopTaskbar ? bar : 0.f, GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : bar));
 			SetWindowPos(vWindowPos);
 		}
 		tDragBox.x = vWindowPos.x + vSize.x / 2, tDragBox.y = vWindowPos.y;
-		tStorage = { tDragBox, H::Draw.Scale() };
+		tStorage = { tDragBox, H::Draw.Scale(), vSize, MenuMode::Active };
 		FSet(tVar, tDragBox);
 
 		// The crit panel is an empty drag surface. Only position the cursor when
@@ -4664,6 +4766,8 @@ struct BindInfo_t
 void CMenu::DrawBinds()
 {
 	using namespace ImGui;
+	const bool moonlit = MoonlitHud::Enabled();
+	const int rowStride = moonlit ? 36 : 28;
 	if (!m_bIsOpen && I::EngineClient->IsInGame() && H::Entities.GetLocal() && F::Radar.SuppressBinds()) return;
 
 	if (!F::Binds.m_bDisplay)
@@ -4678,7 +4782,8 @@ void CMenu::DrawBinds()
 			if (iParent != tBind.m_iParent || !tBind.m_bEnabled && !m_bIsOpen)
 				continue;
 
-			if (tBind.m_iVisibility == BindVisibilityEnum::Always || tBind.m_iVisibility == BindVisibilityEnum::WhileActive && tBind.m_bActive || m_bIsOpen)
+			const auto display=BindPresentation::Get(tBind,iBind,bParentActive,MenuMode::Active==MenuMode::Moonlit);
+			if (tBind.m_iVisibility == BindVisibilityEnum::Always || tBind.m_iVisibility == BindVisibilityEnum::WhileActive && display.active || m_bIsOpen)
 			{
 				std::string sType; std::string sInfo;
 				switch (tBind.m_iType)
@@ -4721,6 +4826,10 @@ void CMenu::DrawBinds()
 					sType = "slot";
 					sInfo = std::format("{}", tBind.m_iInfo + 1);
 					break;
+				case BindEnum::Behind:
+					sType = "behind"; sInfo = ConditionPolicy::ClassName(tBind.m_tConditions.enemyClass); break;
+				case BindEnum::Threat:
+					sType = "threat"; sInfo = std::format("{:.2f}s", tBind.m_tConditions.projectileWindow); break;
 				case BindEnum::Misc:
 					switch (tBind.m_iInfo)
 					{
@@ -4747,11 +4856,11 @@ void CMenu::DrawBinds()
 					}
 					break;
 				}
-				if (tBind.m_bNot && (tBind.m_iType != BindEnum::Key || tBind.m_iInfo == BindEnum::KeyEnum::Hold))
+				if (!display.feature && tBind.m_bNot && (tBind.m_iType != BindEnum::Key || tBind.m_iInfo == BindEnum::KeyEnum::Hold))
 					sInfo = std::format("not {}", sInfo);
 
 				vInfo.emplace_back(tBind.m_sName.c_str(), sType, sInfo, iBind, tBind,
-					bParentActive && tBind.m_bEnabled && tBind.m_bActive);
+					display.active);
 			}
 
 			if (tBind.m_bActive || m_bIsOpen)
@@ -4777,6 +4886,7 @@ void CMenu::DrawBinds()
 	}
 	PopFont();
 	flNameWidth += H::Draw.Scale(9), flInfoWidth += H::Draw.Scale(9), flStateWidth += H::Draw.Scale(9);
+	if (moonlit) { flNameWidth += H::Draw.Scale(12); flStateWidth += H::Draw.Scale(12); }
 
 	float flWidth = flNameWidth + flInfoWidth + flStateWidth + (m_bIsOpen ? H::Draw.Scale(113) : H::Draw.Scale(14));
 	const float flCardWidth = flWidth - H::Draw.Scale(12);
@@ -4785,12 +4895,12 @@ void CMenu::DrawBinds()
 		GetIO().DisplaySize.x, flStride, H::Draw.Scale(16));
 	const int iRows = BindLayout::Rows(int(vInfo.size()), iColumns);
 	flWidth = iColumns * flStride + H::Draw.Scale(6);
-	float flHeight = H::Draw.Scale(28 * iRows + (Vars::Menu::BindWindowTitle.Value ? 38 : 10));
+	float flHeight = H::Draw.Scale(rowStride * iRows + (Vars::Menu::BindWindowTitle.Value ? (moonlit ? 48 : 38) : (moonlit ? 18 : 10)));
 	SetNextWindowSize({ flWidth, flHeight }, ImGuiCond_Always);
 	ImVec2 vLivePos(float(tDragBox.x), float(tDragBox.y));
 	if (auto window = FindWindowByName("Binds"); window && tDragBox == tOld)
 		vLivePos = window->Pos;
-	const float flTaskbar = m_bIsOpen ? H::Draw.Scale(26) : 0.f;
+	const float flTaskbar = m_bIsOpen && !moonlit ? H::Draw.Scale(26) : 0.f;
 	vLivePos.x = BindLayout::ClampAxis(vLivePos.x, flWidth, 0.f, GetIO().DisplaySize.x);
 	vLivePos.y = BindLayout::ClampAxis(vLivePos.y, flHeight, Workspace::TopTaskbar ? flTaskbar : 0.f,
 		GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : flTaskbar));
@@ -4800,13 +4910,18 @@ void CMenu::DrawBinds()
 	{
 		ImVec2 vWindowPos = GetWindowPos();
 		const ImVec2 vActualSize = GetWindowSize();
-		const float flBar = m_bIsOpen ? H::Draw.Scale(26) : 0.f;
+		const float flBar = m_bIsOpen && !moonlit ? H::Draw.Scale(26) : 0.f;
 		vWindowPos.x = BindLayout::ClampAxis(vWindowPos.x, vActualSize.x, 0.f, GetIO().DisplaySize.x);
 		vWindowPos.y = BindLayout::ClampAxis(vWindowPos.y, vActualSize.y,
 			Workspace::TopTaskbar ? flBar : 0.f, GetIO().DisplaySize.y - (Workspace::TopTaskbar ? 0.f : flBar));
 		SetWindowPos(vWindowPos);
 
-		if (Vars::Menu::BindWindowTitle.Value)
+		if (moonlit)
+		{
+			GetWindowDrawList()->AddRectFilled(vWindowPos, vWindowPos + vActualSize, IM_COL32(33,27,48,245), H::Draw.Scale(12));
+			GetWindowDrawList()->AddRect(vWindowPos, vWindowPos + vActualSize, IM_COL32(72,59,92,255), H::Draw.Scale(12));
+		}
+		else if (Vars::Menu::BindWindowTitle.Value)
 			RenderTwoToneBackground(H::Draw.Scale(28), F::Render.Background0, F::Render.Background0p5, F::Render.Background2);
 		else
 			RenderBackground(F::Render.Background0p5, F::Render.Background2);
@@ -4815,17 +4930,22 @@ void CMenu::DrawBinds()
 		if (m_bIsOpen)
 			FSet(Vars::Menu::BindsDisplay, tDragBox);
 
-		int iListStart = 8;
+		int iListStart = moonlit ? 12 : 8;
 		if (Vars::Menu::BindWindowTitle.Value)
 		{
 			SetCursorPos({ H::Draw.Scale(8), H::Draw.Scale(6) });
-			IconImage(ICON_MD_KEYBOARD, F::Render.Accent);
+			if (moonlit && Workspace::PetEnabled)
+			{
+				if (auto icon = F::Render.NikoLauncherIcon()) Image(icon, {H::Draw.Scale(20), H::Draw.Scale(20)});
+				else IconImage(ICON_MD_KEYBOARD, F::Render.Accent);
+			}
+			else IconImage(ICON_MD_KEYBOARD, F::Render.Accent);
 			PushFont(F::Render.FontLarge);
 			SetCursorPos({ H::Draw.Scale(30), H::Draw.Scale(7) });
 			FText("Binds");
 			PopFont();
 
-			iListStart = 36;
+			iListStart = moonlit ? 44 : 36;
 		}
 
 		PushFont(F::Render.FontSmall);
@@ -4833,13 +4953,16 @@ void CMenu::DrawBinds()
 		int i = 0; for (auto& [sName, sInfo, sState, iBind, tBind, bEffectiveActive] : vInfo)
 		{
 			const float flCardX = H::Draw.Scale(6) + (i % iColumns) * flStride;
-			const float flTextY = H::Draw.Scale(iListStart + 28 * (i / iColumns));
+			const float flTextY = H::Draw.Scale(iListStart + rowStride * (i / iColumns));
 			const float flCardRight = flCardX + flCardWidth;
 			float flPosX = flCardX - H::Draw.Scale(6);
 			const ImVec2 vMin(vWindowPos.x + flCardX, vWindowPos.y + flTextY - H::Draw.Scale(4));
-			const ImVec2 vMax(vMin.x + flCardWidth, vMin.y + H::Draw.Scale(24));
-			GetWindowDrawList()->AddRectFilled(vMin, vMax, IM_COL32(0, 0, 0, 255));
-			if (bEffectiveActive)
+			const ImVec2 vMax(vMin.x + flCardWidth, vMin.y + H::Draw.Scale(moonlit ? 30 : 24));
+			GetWindowDrawList()->AddRectFilled(vMin, vMax, moonlit ? IM_COL32(43,36,60,255) : IM_COL32(0,0,0,255), moonlit ? H::Draw.Scale(8) : 0.f);
+			if (moonlit)
+				GetWindowDrawList()->AddCircleFilled(vMin + ImVec2(H::Draw.Scale(8), H::Draw.Scale(15)), H::Draw.Scale(2.5f),
+					bEffectiveActive ? IM_COL32(192,163,243,255) : IM_COL32(100,87,120,255));
+			if (bEffectiveActive && !moonlit)
 			{
 				// A steady glow communicates activation without distracting flashing.
 				// Keep the halo inside the existing row gutter so neighbouring binds stay distinct.
@@ -4860,7 +4983,7 @@ void CMenu::DrawBinds()
 				const ImVec2 inset(scale, scale);
 				GetWindowDrawList()->AddRect(vMin + inset, vMax - inset, tint(.55f), 0.f, ImDrawFlags_None, scale);
 			}
-			GetWindowDrawList()->AddRect(vMin, vMax, GetColorU32(F::Render.Accent.Value));
+			if (!moonlit) GetWindowDrawList()->AddRect(vMin, vMax, GetColorU32(F::Render.Accent.Value));
 			PushID(iBind);
 
 			if (m_bIsOpen)
@@ -4900,16 +5023,22 @@ void CMenu::DrawBinds()
 				PopStyleColor();
 			};
 
-			SetCursorPos({ flPosX += H::Draw.Scale(12), flTextY });
-			PushStyleColor(ImGuiCol_Text, tBind.m_bActive ? F::Render.Accent.Value : F::Render.Inactive.Value);
+			SetCursorPos({ flPosX += H::Draw.Scale(moonlit ? 22 : 12), flTextY });
+			PushStyleColor(ImGuiCol_Text, bEffectiveActive ? F::Render.Accent.Value : F::Render.Inactive.Value);
 			drawBindText(sName);
 			PopStyleColor();
 
 			SetCursorPos({ flPosX += flNameWidth, flTextY });
-			PushStyleColor(ImGuiCol_Text, tBind.m_bActive ? F::Render.Active.Value : F::Render.Inactive.Value);
+			PushStyleColor(ImGuiCol_Text, bEffectiveActive ? F::Render.Active.Value : F::Render.Inactive.Value);
 			drawBindText(sInfo.c_str());
 
 			SetCursorPos({ flPosX += flInfoWidth, flTextY });
+			if (moonlit)
+			{
+				const auto keyPos = GetCursorScreenPos();
+				GetWindowDrawList()->AddRectFilled(keyPos - ImVec2(H::Draw.Scale(4), H::Draw.Scale(2)),
+					keyPos + CalcTextSize(sState.c_str()) + ImVec2(H::Draw.Scale(4), H::Draw.Scale(2)), IM_COL32(25,21,33,255), H::Draw.Scale(5));
+			}
 			drawBindText(sState.c_str());
 			PopStyleColor();
 
@@ -4988,6 +5117,8 @@ static inline void ManageVars()
 		Vars::ESP::ActiveGroups.m_vValues.push_back(tGroup.m_sName.c_str());
 }
 
+#include "Moonlit.inl"
+
 void CMenu::Render()
 {
 	using namespace ImGui;
@@ -4996,6 +5127,7 @@ void CMenu::Render()
 		return;
 
 	m_bInKeybind = false;
+	if (!m_bIsOpen || MenuMode::Active != MenuMode::Moonlit) MoonlitUI::CancelCapture();
 	if (m_bIsOpen)
 	{
 		for (short iKey = 1; iKey < 255; iKey++)
@@ -5009,11 +5141,21 @@ void CMenu::Render()
 	if (U::KeyHandler.Pressed(Vars::Menu::PrimaryKey.Value) || U::KeyHandler.Pressed(Vars::Menu::SecondaryKey.Value))
 		I::MatSystemSurface->SetCursorAlwaysVisible(m_bIsOpen = !m_bIsOpen);
 
+    const auto applyClosedStyle = [&] {
+        if (m_bIsOpen || !MenuMode::ApplyClosed()) return;
+        ClearActiveID(); ClosePopupsOverWindow(nullptr, false); ActiveMap.clear();
+        m_bInKeybind = false; NikoPet::Close();
+        m_sInterfaceStatus = Workspace::Save() ? "Menu style saved." : "Menu changed, but preferences could not be saved.";
+    };
+    applyClosedStyle();
+
 	PushFont(F::Render.FontRegular);
 	if (m_bIsOpen)
 	{
 		ManageVars();
-		DrawMenu();
+		if (MenuMode::Active == MenuMode::Moonlit) DrawMoonlit();
+        else DrawMenu();
+        applyClosedStyle();
 
 		AddDraggable("Ticks", Vars::Menu::TicksDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Ticks,
 			{ F::Ticks.m_vIndicatorSize.x, F::Ticks.m_vIndicatorSize.y });
@@ -5021,9 +5163,12 @@ void CMenu::Render()
 			{ F::CritHack.m_vIndicatorSize.x, F::CritHack.m_vIndicatorSize.y });
 		AddDraggable("Spectators", Vars::Menu::SpectatorsDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Spectators,
 			{ F::SpectatorList.m_vIndicatorSize.x, F::SpectatorList.m_vIndicatorSize.y });
-		AddDraggable("Ping", Vars::Menu::PingDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Ping);
-		AddDraggable("Conditions", Vars::Menu::ConditionsDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Conditions);
-		AddDraggable("Seed prediction", Vars::Menu::SeedPredictionDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::SeedPrediction);
+		AddDraggable("Ping", Vars::Menu::PingDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Ping,
+			MoonlitHud::Enabled() ? ImVec2(F::Backtrack.m_vIndicatorSize.x, F::Backtrack.m_vIndicatorSize.y) : ImVec2(H::Draw.Scale(100),H::Draw.Scale(40)));
+		AddDraggable("Conditions", Vars::Menu::ConditionsDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::Conditions,
+			MoonlitHud::Enabled() ? ImVec2(F::PlayerConditions.m_vIndicatorSize.x, F::PlayerConditions.m_vIndicatorSize.y) : ImVec2(H::Draw.Scale(100),H::Draw.Scale(40)));
+		AddDraggable("Seed prediction", Vars::Menu::SeedPredictionDisplay, FGet(Vars::Menu::Indicators) & Vars::Menu::IndicatorsEnum::SeedPrediction,
+			MoonlitHud::Enabled() ? ImVec2(F::NoSpreadHitscan.m_vIndicatorSize.x, F::NoSpreadHitscan.m_vIndicatorSize.y) : ImVec2(H::Draw.Scale(100),H::Draw.Scale(40)));
 		AddResizableDraggable("Camera", Vars::Visuals::Simulation::ProjectileWindow, FGet(Vars::Visuals::Simulation::ProjectileCamera), OptionalConstraints);
 
 		F::Render.Cursor = GetMouseCursor();
@@ -5048,8 +5193,20 @@ void CMenu::Render()
 		NikoPet::Suspend();
 		m_bWindowHovered = false;
 	}
-	DrawBinds();
-	F::Notifications.Draw();
+	if (MoonlitHud::Enabled())
+	{
+		MoonlitUI::StyleScope theme;
+		GetStyle().WindowPadding = {H::Draw.Scale(8), H::Draw.Scale(8)};
+		PushFont(F::Render.FontMoonlit);
+		DrawBinds();
+		F::Notifications.Draw();
+		PopFont();
+	}
+	else
+	{
+		DrawBinds();
+		F::Notifications.Draw();
+	}
 	if (m_bIsOpen)
 	{
 		NikoPet::Draw();

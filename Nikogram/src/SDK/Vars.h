@@ -284,6 +284,15 @@ NAMESPACE_BEGIN(Vars)
 			CVar(MaxTargets, "Max targets", 2, SLIDER_MIN, 1, 6);
 			CVar(IgnoreInvisible, "Ignore invisible", 50.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
 			CVar(AssistStrength, "Assist strength", 25.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 1.f, "%g%%");
+			CVarEnum(SmoothFormula, "Smooth formula", 0, NONE, nullptr, VA_LIST("Default", "Damped"), Default, Damped);
+			CVar(SmoothTime, "Smoothness", 140.f, SLIDER_CLAMP | SLIDER_PRECISION, 20.f, 600.f, 5.f, "%g ms");
+			CVar(SmoothSpeed, "Maximum turning speed", 180.f, SLIDER_CLAMP | SLIDER_PRECISION, 10.f, 720.f, 10.f, "%g deg/s");
+			CVar(SmoothAcceleration, "Turning acceleration", 1800.f, SLIDER_CLAMP | SLIDER_PRECISION, 100.f, 10000.f, 100.f, "%g deg/s2");
+			CVar(CombinedGuidance, "Smooth + Assistive", false);
+			CVar(SmoothAmount, "Smooth amount", 5.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 10.f, 0.5f, "%g / 10");
+			CVar(AssistAmount, "Assistive amount", 5.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 10.f, 0.5f, "%g / 10");
+			CVarEnum(AssistHitbox, "Assistive hitbox preference", 0, NONE, nullptr, VA_LIST("Closest enabled", "Prefer head"), Closest, Head);
+			CVarEnum(AimDestination, "Aim destination", 0, NONE, nullptr, VA_LIST("Point", "Region"), Point, Region);
 			CVar(TickTolerance, "Tick tolerance", 4, SLIDER_CLAMP, 0, 21);
 			CVar(AutoShoot, "Auto shoot", true);
 			CVar(FOVCircle, "FOV Circle", true, VISUAL);
@@ -392,9 +401,9 @@ NAMESPACE_BEGIN(Vars)
 			CVar(HuntsmanPullPoint, "Huntsman pull point", false, NOSAVE | DEBUGVAR);
 			CVar(HuntsmanPullNoZ, "Pull no Z", false, NOSAVE | DEBUGVAR);
 
-			CVarEnum(SplashMode, "Splash mode", 0, NOSAVE | DEBUGVAR, nullptr,
-				VA_LIST("Trace", "Face"),
-				Trace, Face);
+			CVarEnum(SplashMode, "Splash search", 0, 0, nullptr,
+				VA_LIST("Trace", "Face", "Dynamic"),
+				Trace, Face, Dynamic);
 			CVar(SplashAirCount, "Splash air count", 0, NOSAVE | DEBUGVAR | SLIDER_MIN, 0, 10);
 			CVar(SplashPointsDirect, "Splash points direct", 100, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0, 400, 5);
 			CVar(SplashPointsArc, "Splash points arc", 100, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0, 400, 5);
@@ -461,6 +470,8 @@ NAMESPACE_BEGIN(Vars)
 	NAMESPACE_END(Aimbot)
 
 	NAMESPACE_BEGIN(Triggerbot)
+		CVar(Enabled, "Triggerbot enabled", true);
+		CVar(Activation, "Triggerbot activation", true);
 		CVar(BacktrackToCursor, "Backtrack to Cursor", false);
 		CVarEnum(Hitboxes, "Trigger hitboxes", 0, DROPDOWN_MULTI, "Off",
 			VA_LIST("Head", "Body", "Pelvis", "Arms", "Legs"),
@@ -526,6 +537,7 @@ NAMESPACE_BEGIN(Vars)
 
 	NAMESPACE_BEGIN(AntiAim, Antiaim)
 		CVar(Enabled, VA_LIST("Enabled", "Antiaim enabled"), false);
+		CVar(LegitEnabled, "Legit AA", false);
 		CVarEnum(PitchReal, "Real pitch", 0, NONE, nullptr,
 			VA_LIST("None", "Up", "Down", "Zero", "Jitter", "Reverse jitter"),
 			None, Up, Down, Zero, Jitter, ReverseJitter);
@@ -548,7 +560,6 @@ NAMESPACE_BEGIN(Vars)
 		CVar(FakeYawValue, "Fake value", -90.f, SLIDER_CLAMP | SLIDER_PRECISION, -180.f, 180.f, 5.f);
 		CVar(SpinSpeed, "Spin speed", 15.f, SLIDER_PRECISION, -30.f, 30.f);
 		CVar(MinWalk, "Minwalk", true);
-		CVar(RealCompensation, "Real compensation", false);
 		CVar(HidePitchOnShot, "Hide pitch on shot", false);
 
 		CVar(AntiAimLines, "Antiaim lines", false, NOSAVE);
@@ -568,6 +579,8 @@ NAMESPACE_BEGIN(Vars)
 	NAMESPACE_END(Resolver)
 
 	NAMESPACE_BEGIN(ESP)
+		CVar(MoonlitMaster, "ESP enabled", true, VISUAL);
+		CVar(MoonlitEnabled, "ESP master switch", true, VISUAL);
 		CVarValues(ActiveGroups, "Active groups", int(0b11111111111111111111111111111111), VISUAL | DROPDOWN_MULTI | DROPDOWN_NOSANITIZATION, nullptr);
 	NAMESPACE_END(ESP)
 
@@ -1038,4 +1051,14 @@ NAMESPACE_BEGIN(Vars)
 
 		CVar(DrawHitboxes, "Show hitboxes", false, NOSAVE);
 	NAMESPACE_END(Debug)
+	NAMESPACE_BEGIN(AimModes)
+		CVar(Schema, "Aim mode schema", 2, NOBIND);
+		CVar(RageEnabled, "Ragebot enabled", false);
+		CVar(LegitEnabled, "Legitbot enabled", false);
+		CVar(RageActivation, "Ragebot activation", true);
+		CVar(LegitActivation, "Legitbot activation", true);
+		CVar(CircleEnabled, "FOV circle", true, VISUAL);
+		CVar(CircleOverride, "Override both mode colours", false, VISUAL);
+		CVar(CircleColour, "FOV circle colour override", Color_t(255,255,255,100), VISUAL);
+	NAMESPACE_END(AimModes)
 NAMESPACE_END(Vars)

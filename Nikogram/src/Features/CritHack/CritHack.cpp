@@ -1,4 +1,5 @@
 #include "CritHack.h"
+#include "../ImGui/MoonlitHud.h"
 #include "CritIndicatorStyle.h"
 
 #include "../Ticks/Ticks.h"
@@ -680,6 +681,17 @@ void CCritHack::Draw(CTFPlayer* pLocal)
 		extras.emplace_back("DAMAGE", std::format("{:.0f}", floorf(m_flDamageTilFlip)));
 	if (enabled && m_iDesyncDamage)
 		extras.emplace_back("DESYNC", std::format("{:+}", m_iDesyncDamage));
+	if (MoonlitHud::Enabled())
+	{
+		auto rows = extras;
+		rows.insert(rows.begin(), {detailLabel, detail});
+		const auto pos = Vars::Menu::CritsDisplay.Value;
+		const auto count = enabled ? std::format("{:02}{} / {:02}", std::max(0, m_iAvailableCrits),
+			m_iAvailableCrits == BUCKET_ATTEMPTS ? "+" : "", std::max(0, m_iPotentialCrits)) : "-- / --";
+		m_vIndicatorSize = MoonlitHud::Meter(pos.x, pos.y, "crit reserve", status, count, "stored",
+			CritIndicatorStyle::BarCharge(CritIndicatorStyle::Charge(m_iAvailableCrits, m_iPotentialCrits, enabled), streaming), MoonlitHud::Gold, rows);
+		return;
+	}
 
 	const auto& labelFont = H::Fonts.GetFont(FONT_CRIT_LABEL);
 	const auto& countFont = H::Fonts.GetFont(FONT_CRIT_COUNT);

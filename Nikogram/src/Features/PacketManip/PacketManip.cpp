@@ -6,6 +6,7 @@
 static inline bool AntiAimCheck(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	return F::AntiAim.YawOn() && F::AntiAim.ShouldRun(pLocal, pWeapon, pCmd) && !F::Ticks.m_bRecharge
+		&& F::Ticks.CanChoke(false)
 		&& I::ClientState->chokedcommands < F::AntiAim.AntiAimTicks();
 }
 

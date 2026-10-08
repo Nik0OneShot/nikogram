@@ -16,12 +16,12 @@
 
 using namespace Gdiplus;
 namespace {
-constexpr int Width=760,Height=372;
+constexpr int Width=760,Height=422;
 constexpr UINT ResultMessage=WM_APP+1;
-enum Control { Inject=1002,Keep,ExtractDll,ExtractSource,Minimize,Close,Notices };
+enum Control { Inject=1002,Keep,ExtractDll,ExtractSource,Minimize,Close,Notices,StartupMenu };
 const Color Bg(255,23,18,29),Panel(255,33,25,39),Line(255,67,51,78),Text(255,241,233,247),Muted(255,185,167,200),Accent(255,197,161,236),Gold(255,255,219,146);
 struct App {
- HWND window=nullptr,inject=nullptr,keep=nullptr,dll=nullptr,source=nullptr,minimize=nullptr,close=nullptr,notices=nullptr;
+ HWND window=nullptr,inject=nullptr,keep=nullptr,dll=nullptr,source=nullptr,minimize=nullptr,close=nullptr,notices=nullptr,menu=nullptr,menuLabel=nullptr;
  HINSTANCE instance=nullptr;HFONT font=nullptr;HBRUSH brush=nullptr;float scale=1;
  std::unique_ptr<Image> logo;IStream* logoStream=nullptr;
  loader::Target target;bool busy=false,loaded=false;
@@ -53,19 +53,20 @@ void Paint(Graphics& g){
  if(app.logo)g.DrawImage(app.logo.get(),RectF(155,35,450,150));
  SolidBrush dot(app.target.ready?Gold:Muted);g.FillEllipse(&dot,24,207,7,7);
  Label(g,app.busy?L"loading nikogram...":app.loaded?L"DLL loaded; check Nikogram in-game":app.target.status.c_str(),RectF(40,195,470,31),14,Text);
- g.DrawLine(&line,554,200,554,316);
- g.DrawLine(&line,0,339,Width,339);
- Label(g,L"offline  /  x64",RectF(16,340,170,31),11,Muted);
- Label(g,L"sphere-cache build  /  source included",RectF(350,340,310,31),11,Muted);
+ g.DrawLine(&line,554,200,554,366);
+ g.DrawLine(&line,0,389,Width,389);
+ Label(g,L"offline  /  x64",RectF(16,390,170,31),11,Muted);
+ Label(g,L"moonlit build  /  source included",RectF(350,390,310,31),11,Muted);
 }
 void LoadLogo(){auto data=loader::Resource(ID_LOGO);app.logoStream=SHCreateMemStream(data.data(),UINT(data.size()));if(app.logoStream)app.logo.reset(Image::FromStream(app.logoStream));}
 void SizeControls(){
  auto place=[](HWND h,int x,int y,int w,int height){MoveWindow(h,app.Px(x),app.Px(y),app.Px(w),app.Px(height),TRUE);SendMessageW(h,WM_SETFONT,reinterpret_cast<WPARAM>(app.font),TRUE);};
  if(app.font)DeleteObject(app.font);
  app.font=CreateFontW(-app.Px(14),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
- place(app.inject,24,235,506,40);place(app.keep,24,285,300,28);
- place(app.dll,575,214,161,40);place(app.source,575,264,161,40);
- place(app.minimize,676,0,38,32);place(app.close,719,0,40,32);place(app.notices,675,344,65,23);
+ place(app.menuLabel,24,237,125,26);place(app.menu,155,233,375,180);
+ place(app.inject,24,285,506,40);place(app.keep,24,335,300,28);
+ place(app.dll,575,235,161,40);place(app.source,575,285,161,40);
+ place(app.minimize,676,0,38,32);place(app.close,719,0,40,32);place(app.notices,675,394,65,23);
  InvalidateRect(app.window,nullptr,TRUE);
 }
 void Refresh(){
@@ -97,6 +98,10 @@ LRESULT CALLBACK Procedure(HWND w,UINT message,WPARAM a,LPARAM b){
   app.inject=button(Inject,L"inject",BS_OWNERDRAW);app.keep=button(Keep,L"keep loader open",BS_AUTOCHECKBOX);SetWindowTheme(app.keep,L"",L"");
   app.dll=button(ExtractDll,L"extract dll",BS_OWNERDRAW);app.source=button(ExtractSource,L"extract source",BS_OWNERDRAW);
   app.minimize=button(Minimize,L"-",BS_OWNERDRAW);app.close=button(Close,L"x",BS_OWNERDRAW);app.notices=button(Notices,L"licenses",BS_OWNERDRAW);
+  app.menuLabel=CreateWindowExW(0,L"STATIC",L"Startup menu",WS_CHILD|WS_VISIBLE,0,0,0,0,w,nullptr,app.instance,nullptr);
+  app.menu=CreateWindowExW(0,L"COMBOBOX",L"Startup menu",WS_CHILD|WS_VISIBLE|WS_TABSTOP|CBS_DROPDOWNLIST|WS_VSCROLL,0,0,0,0,w,reinterpret_cast<HMENU>(INT_PTR(StartupMenu)),app.instance,nullptr);
+  for(auto label:{L"Use saved preference",L"Nullcore",L"Moonlit"})SendMessageW(app.menu,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label));
+  SendMessageW(app.menu,CB_SETCURSEL,0,0);
   SizeControls();Refresh();SetTimer(w,1,1000,nullptr);return 0;
  }
  case WM_DRAWITEM:{
@@ -123,13 +128,15 @@ LRESULT CALLBACK Procedure(HWND w,UINT message,WPARAM a,LPARAM b){
    bool confirmLegacy=app.target.legacyAttempt;
    if(confirmLegacy&&MessageBoxW(w,L"The old loader recorded an attempt without recording its mode. Nikogram is not in TF2's native module list.\n\nOnly continue if that attempt used NATIVE INJECT and Nikogram has fully unloaded. If you used manual mapping, or the outcome was uncertain, choose No and restart TF2.\n\nWas the previous attempt native, and has Nikogram fully unloaded?",L"Confirm previous native unload",MB_YESNO|MB_DEFBUTTON2|MB_ICONWARNING)!=IDYES)return 0;
    app.busy=true;EnableWindow(app.inject,FALSE);EnableWindow(app.dll,FALSE);EnableWindow(app.source,FALSE);EnableWindow(app.close,FALSE);InvalidateRect(w,nullptr,FALSE);
-   auto target=app.target;
-   std::thread([w,target,confirmLegacy]{auto result=new loader::Result(loader::Inject(target,confirmLegacy));if(!PostMessageW(w,ResultMessage,0,reinterpret_cast<LPARAM>(result)))delete result;}).detach();return 0;
+   auto target=app.target;const int startup=int(SendMessageW(app.menu,CB_GETCURSEL,0,0))-1;EnableWindow(app.menu,FALSE);
+   std::thread([w,target,confirmLegacy,startup]{auto result=new loader::Result(loader::Inject(target,confirmLegacy,startup));if(!PostMessageW(w,ResultMessage,0,reinterpret_cast<LPARAM>(result)))delete result;}).detach();return 0;
   }
  }break;
  case ResultMessage:{
   std::unique_ptr<loader::Result> result(reinterpret_cast<loader::Result*>(b));app.busy=false;app.loaded=result->success;
   EnableWindow(app.dll,TRUE);EnableWindow(app.source,TRUE);EnableWindow(app.close,TRUE);InvalidateRect(w,nullptr,FALSE);
+  EnableWindow(app.menu,TRUE);
+  if(result->startupWarning)MessageBoxW(w,result->message.c_str(),L"Startup menu choice",MB_OK|MB_ICONWARNING);
   if(!result->success){MessageBoxW(w,result->message.c_str(),L"Nikogram was not loaded",MB_OK|MB_ICONERROR);Refresh();}
   else if(SendMessageW(app.keep,BM_GETCHECK,0,0)!=BST_CHECKED)SetTimer(w,2,1400,nullptr);
   return 0;

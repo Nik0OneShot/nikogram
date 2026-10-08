@@ -52,6 +52,7 @@ static bool Capture(CTFPlayer* pPlayer, AnimFrame_t& tFrame)
 	tFrame.m_bSequenceLoops = pPlayer->m_bSequenceLoops();
 	tFrame.m_aPoseParameters = pPlayer->m_flPoseParameter();
 	tFrame.m_vRenderAngles = pAnimState->m_angRender;
+	tFrame.m_vRecordedEyeAngles = { pAnimState->m_flEyePitch, pAnimState->m_flEyeYaw, 0.f };
 
 	const int nSlots = std::min(pAnimState->m_aGestureSlots.Count(), int(GESTURE_SLOT_COUNT));
 	for (int i = 0; i < GESTURE_SLOT_COUNT; i++)
@@ -148,6 +149,8 @@ bool CAnimInterp::Enabled()
 
 void CAnimInterp::Forget(CTFPlayer* pPlayer)
 {
+	if (m_pLocalPose == pPlayer)
+		m_pLocalPose = nullptr;
 	for (auto it = m_mTimelines.begin(); it != m_mTimelines.end();)
 	{
 		if (it->second.m_pPlayer == pPlayer)
@@ -173,9 +176,33 @@ void CAnimInterp::BonesRebuilt(CBaseEntity* pEntity)
 		m_mDirtyPlayers.erase(pEntity->entindex());
 }
 
-void CAnimInterp::Record(CTFPlayer* pPlayer, int iElapsedTicks, bool bBatchEndpoint)
+bool CAnimInterp::CaptureFrame(CTFPlayer* pPlayer, AnimFrame_t& tFrame)
 {
-	if (!pPlayer || !Enabled() || iElapsedTicks <= 0)
+	return pPlayer && Capture(pPlayer, tFrame);
+}
+
+const AnimFrame_t* CAnimInterp::LocalRealFrame(CTFPlayer* pPlayer) const
+{
+	return pPlayer && pPlayer == m_pLocalPose && pPlayer->IsAlive()
+		&& pPlayer->GetModel() == m_tLocalPose.m_pModel
+		&& I::GlobalVars->realtime - m_flLocalPoseArrival <= STALE_TIME ? &m_tLocalPose : nullptr;
+}
+
+void CAnimInterp::Record(CTFPlayer* pPlayer, int iElapsedTicks, bool bBatchEndpoint, const AnimFrame_t* pDisplayFrame)
+{
+	if (!pPlayer || iElapsedTicks <= 0)
+		return;
+	if (bBatchEndpoint)
+	{
+		m_pLocalPose = nullptr;
+		if (pDisplayFrame && pDisplayFrame->m_pModel == pPlayer->GetModel() && pPlayer->IsAlive())
+		{
+			m_pLocalPose = pPlayer;
+			m_tLocalPose = *pDisplayFrame;
+			m_flLocalPoseArrival = I::GlobalVars->realtime;
+		}
+	}
+	if (!Enabled())
 		return;
 
 	auto& tTimeline = m_mTimelines[pPlayer->entindex()];
@@ -191,7 +218,13 @@ void CAnimInterp::Record(CTFPlayer* pPlayer, int iElapsedTicks, bool bBatchEndpo
 	}
 
 	AnimFrame_t tFrame = {};
-	if (!Capture(pPlayer, tFrame))
+	if (pDisplayFrame)
+	{
+		if (pDisplayFrame->m_pModel != pPlayer->GetModel())
+			return;
+		tFrame = *pDisplayFrame;
+	}
+	else if (!Capture(pPlayer, tFrame))
 		return;
 
 	tTimeline.m_iNextTick += iElapsedTicks;
@@ -392,6 +425,28 @@ void CAnimInterp::InvalidateAllBones()
 	ModelBoneCounter()++;
 }
 
+bool CAnimInterp::ApplyLocalPose()
+{
+	if (!m_pLocalPose || G::Unload || !G::AntiAim || I::EngineClient->IsPlayingDemo()
+		|| I::GlobalVars->realtime - m_flLocalPoseArrival > STALE_TIME)
+		return false;
+	const int iLocal = I::EngineClient->GetLocalPlayer();
+	auto pClient = I::ClientEntityList->GetClientEntity(iLocal);
+	auto pPlayer = pClient ? pClient->As<CTFPlayer>() : nullptr;
+	if (pPlayer != m_pLocalPose || !pPlayer->IsAlive() || pPlayer->IsDormant() || pPlayer->GetModel() != m_tLocalPose.m_pModel)
+		return false;
+	Applied_t tApplied = { pPlayer, iLocal };
+	if (!Capture(pPlayer, tApplied.m_tTrue))
+		return false;
+	Apply(pPlayer, m_tLocalPose);
+	m_vApplied.push_back(tApplied);
+	m_mDirtyPlayers[iLocal] = pPlayer;
+	m_bRendering = true;
+	RebuildFakeAngle(pPlayer, m_tLocalPose);
+	InvalidateAllBones();
+	return true;
+}
+
 void CAnimInterp::RenderStart()
 {
 	Restore(); // normally empty, RenderEnd already restored
@@ -403,6 +458,7 @@ void CAnimInterp::RenderStart()
 	if (!Enabled())
 	{
 		m_mTimelines.clear();
+		ApplyLocalPose(); // Keep real/fake selection correct with smoothing disabled.
 		return;
 	}
 
@@ -493,6 +549,9 @@ void CAnimInterp::Restore()
 
 void CAnimInterp::Reset()
 {
+	m_pLocalPose = nullptr;
+	m_tLocalPose = {};
+	m_flLocalPoseArrival = 0.f;
 	m_vApplied.clear(); // entities are going away, don't touch them
 	m_mTimelines.clear();
 	m_mDirtyPlayers.clear();

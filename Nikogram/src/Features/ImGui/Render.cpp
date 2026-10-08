@@ -2,6 +2,9 @@
 #include "Workspace.h"
 #include "Fonts/OneShotFont.h"
 #include "SteamDefaultAvatar.h"
+#include "NikogramLogo.h"
+#include "MoonlitHud.h"
+#include <mutex>
 
 #include "../../Hooks/Direct3DDevice9.h"
 #include <ImGui/imgui_impl_win32.h>
@@ -15,6 +18,7 @@
 
 void CRender::Render(IDirect3DDevice9* pDevice)
 {
+	if (!pDevice || pDevice->TestCooperativeLevel() != D3D_OK) return;
 	if (m_pLauncherDevice != pDevice)
 	{
 		ReleaseLauncherTextures();
@@ -40,6 +44,7 @@ void CRender::Render(IDirect3DDevice9* pDevice)
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
 
+	MoonlitHud::DrawBadges();
 	F::Menu.Render();
 
 	ImGui::EndFrame();
@@ -146,6 +151,8 @@ void CRender::LoadFonts()
 	FontBold = loadTerminus(14);
 	FontLarge = loadTerminus(16);
 	FontMono = loadTerminus(16);
+	FontMoonlit = io.Fonts->AddFontFromMemoryCompressedTTF(RobotoMedium_compressed_data, RobotoMedium_compressed_size, H::Draw.Scale(16), &tFontConfig);
+	FontMoonlitHeading = io.Fonts->AddFontFromMemoryCompressedTTF(RobotoMedium_compressed_data, RobotoMedium_compressed_size, H::Draw.Scale(25), &tFontConfig);
 
 	ImFontConfig tIconConfig;
 	tIconConfig.PixelSnapH = true;
@@ -203,6 +210,7 @@ void CRender::Initialize(IDirect3DDevice9* pDevice)
 void CRender::Unload()
 {
 	ReleaseLauncherTextures();
+	MoonlitHud::ReleaseBadge();
 	m_pLauncherDevice = nullptr;
 	// release the D3D9 objects and device reference ImGui holds, so load/unload cycles don't leak them
 	if (!m_bInitialized)
@@ -216,7 +224,7 @@ void CRender::Unload()
 
 IDirect3DTexture9* CRender::CreateLauncherTexture(const unsigned int* pixels, unsigned int width, unsigned int height)
 {
-	if (!m_pLauncherDevice || !pixels || !width || !height || width > 256 || height > 256) return nullptr;
+	if (!m_pLauncherDevice || !pixels || !width || !height || width > 1024 || height > 1024) return nullptr;
 	IDirect3DTexture9* texture = nullptr;
 	if (FAILED(m_pLauncherDevice->CreateTexture(width, height, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8,
 		D3DPOOL_DEFAULT, &texture, nullptr))) return nullptr;
@@ -234,6 +242,77 @@ IDirect3DTexture9* CRender::CreateLauncherTexture(const unsigned int* pixels, un
 
 #include "NikoIcon.h"
 
+namespace MoonlitHud
+{
+	namespace
+	{
+		struct BadgeDraw { int x, y, size, left, top, right, bottom; };
+		struct BadgeBatch { std::array<BadgeDraw, 256> draws{}; size_t count = 0; double time = 0.; };
+		BadgeBatch building, ready;
+		std::mutex badgeMutex;
+	}
+	void BeginBadges()
+	{
+		std::lock_guard lock(badgeMutex);
+		building.count = 0; // Keep the completed snapshot visible during the next Paint.
+	}
+	void EndBadges()
+	{
+		std::lock_guard lock(badgeMutex);
+		building.time = SDK::PlatFloatTime();
+		ready = building;
+		building.count = 0;
+	}
+	void InvalidateBadge()
+	{
+		std::lock_guard lock(badgeMutex);
+		building.count = ready.count = 0;
+	}
+	void ReleaseBadge() { InvalidateBadge(); }
+	bool Badge(int x, int y, int size)
+	{
+		if (!Enabled() || !Workspace::PetEnabled || size <= 0) return false;
+		int left, top, right, bottom; bool clippingDisabled;
+		I::MatSystemSurface->GetClippingRect(left, top, right, bottom, clippingDisabled);
+		if (clippingDisabled) { left = top = 0; right = H::Draw.m_nScreenW; bottom = H::Draw.m_nScreenH; }
+		if (x >= right || y >= bottom || x + size <= left || y + size <= top) return false;
+		std::lock_guard lock(badgeMutex);
+		if (building.count == building.draws.size()) return false;
+		building.draws[building.count++] = {x,y,size,left,top,right,bottom};
+		return true;
+	}
+	void DrawBadges()
+	{
+		if (!Enabled() || !Workspace::PetEnabled || SDK::CleanScreenshot()
+			|| !I::EngineClient->IsInGame() || !H::Entities.GetLocal())
+		{
+			InvalidateBadge();
+			return;
+		}
+		BadgeBatch batch;
+		{
+			std::lock_guard lock(badgeMutex);
+			batch = ready;
+			// Present can run more often than Paint. Reading must not consume the snapshot.
+		}
+		if (!batch.count) return;
+		const double age = SDK::PlatFloatTime() - batch.time;
+		if (age < 0. || age > .1) return;
+		const auto texture = F::Render.NikoLauncherIcon();
+		if (!texture) return;
+		// Use the same alpha-capable DX9 image as Binds. The background list keeps
+		// badges below menu windows; clipping remains the original HUD panel's.
+		auto* draw = ImGui::GetBackgroundDrawList();
+		for (size_t i = 0; i < batch.count; ++i)
+		{
+			const auto& b = batch.draws[i];
+			draw->PushClipRect({float(b.left),float(b.top)}, {float(b.right),float(b.bottom)}, true);
+			draw->AddImage(texture, {float(b.x),float(b.y)}, {float(b.x+b.size),float(b.y+b.size)});
+			draw->PopClipRect();
+		}
+	}
+}
+
 ImTextureID CRender::NikoLauncherIcon()
 {
 	if (!m_pNikoIcon) m_pNikoIcon = CreateLauncherTexture(NikoIconPixels, NikoIconWidth, NikoIconHeight);
@@ -242,6 +321,8 @@ ImTextureID CRender::NikoLauncherIcon()
 
 void CRender::ReleaseLauncherTextures()
 {
+	MoonlitHud::InvalidateBadge();
+	if (m_pNikogramLogo) { m_pNikogramLogo->Release(); m_pNikogramLogo = nullptr; }
 	for (auto& texture : m_pPetTextures) { if (texture) texture->Release(); texture = nullptr; }
 	if (m_pNikoIcon) { m_pNikoIcon->Release(); m_pNikoIcon = nullptr; }
 	if (m_pLocalAvatar) { m_pLocalAvatar->Release(); m_pLocalAvatar = nullptr; }
@@ -257,6 +338,12 @@ ImTextureID CRender::PetTexture(int frame, const unsigned int* pixels, unsigned 
 	auto& texture = m_pPetTextures[frame - 1];
 	if (!texture) texture = CreateLauncherTexture(pixels, width, height);
 	return reinterpret_cast<ImTextureID>(texture);
+}
+
+ImTextureID CRender::NikogramLogo()
+{
+    if (!m_pNikogramLogo) m_pNikogramLogo = CreateLauncherTexture(NikogramLogoPixels, NikogramLogoWidth, NikogramLogoHeight);
+    return reinterpret_cast<ImTextureID>(m_pNikogramLogo);
 }
 
 ImTextureID CRender::LauncherAvatar(bool privacy)

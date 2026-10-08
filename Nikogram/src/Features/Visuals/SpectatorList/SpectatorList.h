@@ -15,6 +15,7 @@ private:
     };
     std::vector<Spectator_t> m_vSpectators;
     void GetSpectators(CTFPlayer* local);
+    void DrawMoonlit(CTFPlayer* local);
 public:
     Vec2 m_vIndicatorSize = { 520, 70 };
     Vec2 m_vMinimumSize = { 200, 100 };

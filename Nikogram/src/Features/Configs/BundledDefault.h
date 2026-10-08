@@ -668,9 +668,6 @@ R"NIKODEFAULT(Effects": {
         "Vars::AntiAim::MinWalk": {
             "-1": "true"
         },
-        "Vars::AntiAim::RealCompensation": {
-            "-1": "true"
-        },
         "Vars::AntiAim::HidePitchOnShot": {
             "-1": "false"
         },

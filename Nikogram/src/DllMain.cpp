@@ -1,9 +1,11 @@
 #include <Windows.h>
+#include "MenuStartup.h"
 #include "Core/Core.h"
 #include "Utils/ExceptionHandler/ExceptionHandler.h"
 
 DWORD WINAPI MainThread(LPVOID lpParam)
 {
+	MenuStartup::Capture(); // Before startup checks; the loader can safely close after acknowledgement.
 	U::ExceptionHandler.Initialize(lpParam);
 
 	U::Core.Load();

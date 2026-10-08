@@ -6,6 +6,7 @@
 #include "SectionLayout.h"
 #include "../Fonts/MaterialDesign/IconDefinitions.h"
 #include "../../Binds/Binds.h"
+#include "../../Aimbot/AimModes.h"
 #include "../../Visuals/Materials/Materials.h"
 #include <ImGui/imgui_internal.h>
 #include <ImGui/imgui_stdlib.h>
@@ -239,7 +240,7 @@ namespace ImGui
 		ImVec2 vDrawPos = GetDrawPos();
 		ImDrawList* pDrawList = GetWindowDrawList();
 
-		pDrawList->AddRectFilled(vDrawPos, vDrawPos + vSize, uBackground, 0.f);
+		pDrawList->AddRectFilled(vDrawPos, vDrawPos + vSize, uBackground, MenuMode::DrawingMoonlit ? H::Draw.Scale(10) : 0.f);
 	}
 	inline void RenderBackground(ImU32 uBackground, ImU32 uBorder, float flInset = H::Draw.Scale())
 	{
@@ -247,10 +248,10 @@ namespace ImGui
 		ImVec2 vDrawPos = GetDrawPos();
 		ImDrawList* pDrawList = GetWindowDrawList();
 
-		pDrawList->AddRectFilled(vDrawPos + ImVec2(flInset, flInset), vDrawPos + vSize - ImVec2(flInset, flInset), uBackground, 0.f);
+		pDrawList->AddRectFilled(vDrawPos + ImVec2(flInset, flInset), vDrawPos + vSize - ImVec2(flInset, flInset), uBackground, MenuMode::DrawingMoonlit ? H::Draw.Scale(10) : 0.f);
 		
 		flInset += H::Draw.Scale(0.5f) - 0.5f - H::Draw.Scale();
-		pDrawList->AddRect(vDrawPos + ImVec2(flInset, flInset), vDrawPos + vSize - ImVec2(flInset, flInset), uBorder, 0.f, ImDrawFlags_None, H::Draw.Scale());
+		pDrawList->AddRect(vDrawPos + ImVec2(flInset, flInset), vDrawPos + vSize - ImVec2(flInset, flInset), uBorder, MenuMode::DrawingMoonlit ? H::Draw.Scale(10) : 0.f, ImDrawFlags_None, H::Draw.Scale());
 	}
 	inline void RenderTwoToneBackground(float flSize, ImU32 uTitle, ImU32 uBackground, bool bHorizontal = false)
 	{
@@ -316,7 +317,7 @@ namespace ImGui
 		ImDrawList* pDrawList = GetWindowDrawList();
 		pDrawList->PushClipRect(vPos + vClipMin, vPos + vClipMax, true);
 
-		bool bValid = flStep > 0.f && flVMax > flVMin; // avoid dividing by a zero step or range
+		bool bValid = !MenuMode::DrawingMoonlit && flStep > 0.f && flVMax > flVMin; // Moonlit draws a continuous rail; snapping is unchanged.
 		int iSteps = bValid ? int((flVMax - flVMin) / flStep) : 0;
 		if (bValid && (iSteps < 21 || (vPosMax.x - vPosMin.x) / iSteps > 6.f))
 		{
@@ -603,7 +604,18 @@ namespace ImGui
 		PushFont(F::Render.IconFont);
 
 		ImVec2 vOriginalPos = GetCursorPos();
-		bool bReturn = Button(std::format("{}##{}:{}", sIcon, vOriginalPos.x, vOriginalPos.y).c_str(), { flSize, flSize });
+		bool bReturn;
+		if (MenuMode::DrawingMoonlit)
+		{
+			// Tiny HUD buttons cannot inherit the roomy menu's FramePadding.
+			const auto pos = GetCursorScreenPos();
+			bReturn = InvisibleButton(std::format("{}##{}:{}", sIcon, vOriginalPos.x, vOriginalPos.y).c_str(), {flSize, flSize});
+			const float glyphSize = std::max(1.f, std::min(GetFontSize(), flSize - H::Draw.Scale(2)));
+			const auto extent = GetFont()->CalcTextSizeA(glyphSize, FLT_MAX, 0.f, sIcon);
+			GetWindowDrawList()->AddText(GetFont(), glyphSize, pos + (ImVec2(flSize, flSize) - extent) * .5f,
+				GetColorU32(ImGuiCol_Text), sIcon);
+		}
+		else bReturn = Button(std::format("{}##{}:{}", sIcon, vOriginalPos.x, vOriginalPos.y).c_str(), { flSize, flSize });
 
 		if (!Disabled && IsItemHovered() && GetMouseCursor() != ImGuiMouseCursor_Hand)
 		{
@@ -627,10 +639,10 @@ namespace ImGui
 		return Disabled ? false : bReturn;
 	}
 
-	inline bool CompactManagerIcon(const char* icon)
+	inline bool CompactManagerIcon(const char* icon, float boxSize = 20.f)
 	{
 		const ImVec2 pos = GetCursorScreenPos();
-		const float size = H::Draw.Scale(20), glyphSize = H::Draw.Scale(16);
+		const float size = H::Draw.Scale(boxSize), glyphSize = H::Draw.Scale(16);
 		const bool clicked = InvisibleButton(std::format("{}##{}:{}", icon, pos.x, pos.y).c_str(), { size, size });
 		auto* draw = GetWindowDrawList();
 		if (IsItemHovered()) { SetMouseCursor(ImGuiMouseCursor_Hand); draw->AddRectFilled(pos, pos + ImVec2(size, size), GetColorU32(F::Render.Background2.Value)); }
@@ -800,7 +812,7 @@ namespace ImGui
 			RenderBackground(F::Render.Background0, F::Render.Background2);
 		}
 
-		PushStyleVar(ImGuiStyleVar_ItemSpacing, { H::Draw.Scale(8), 0 });
+		PushStyleVar(ImGuiStyleVar_ItemSpacing, { H::Draw.Scale(8), MenuMode::DrawingMoonlit ? H::Draw.Scale(8) : 0.f });
 		if (sLabel[0] != '#')
 		{
 			ImVec2 vOriginalPos = GetCursorPos();
@@ -834,7 +846,7 @@ namespace ImGui
 			PopFont();
 
 			SetCursorPos(vOriginalPos);
-			DebugDummy({ 0, titleHeight + H::Draw.Scale(2 + flPaddingMod) });
+			DebugDummy({ 0, titleHeight + H::Draw.Scale((MenuMode::DrawingMoonlit ? 8 : 2) + flPaddingMod) });
 		}
 		else if (flPaddingMod)
 			SetCursorPosY(GetCursorPosY() + H::Draw.Scale(flPaddingMod));
@@ -855,7 +867,7 @@ namespace ImGui
 		PopStyleVar();
 	}
 
-	inline std::vector<WidgetWindow_t> WidgetTable(int iCount, float flHeight, std::vector<float> vWidths = {}, ImGuiChildFlags iWindowFlags = ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags iChildFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)
+	inline std::vector<WidgetWindow_t> WidgetTable(int iCount, float flHeight, std::vector<float> vWidths = {}, ImGuiChildFlags iWindowFlags = ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags iChildFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, bool comfortable = false)
 	{
 		std::vector<WidgetWindow_t> vReturn = {};
 
@@ -874,6 +886,25 @@ namespace ImGui
 		}
 
 		flHeight += H::Draw.Scale(8);
+		if (MenuMode::DrawingMoonlit && !comfortable)
+			flHeight += GetStyle().WindowPadding.y * 2 + H::Draw.Scale(16);
+		if (MenuMode::DrawingMoonlit && comfortable)
+		{
+			// Respect the containing section's inset instead of drawing over its header.
+			const ImVec2 origin = GetCursorPos();
+			const float available = GetContentRegionAvail().x, gap = H::Draw.Scale(14);
+			const bool stacked = available < H::Draw.Scale(820) && iCount > 1;
+			const float weight = std::reduce(vWidths.begin(), vWidths.end());
+			float x = origin.x;
+			for (int i = 0; i < iCount; ++i)
+			{
+				const float width = stacked ? available : (available - gap * (iCount - 1)) * vWidths[i] / weight;
+				vReturn.emplace_back(std::format("{}", i), ImVec2(stacked ? origin.x : x, origin.y + (stacked ? i * (flHeight + gap) : 0.f)),
+					ImVec2(width, flHeight), iWindowFlags, iChildFlags);
+				x += width + gap;
+			}
+			return vReturn;
+		}
 		float flTotalWidth = GetStyle().WindowPadding.x / 2;
 		for (int i = 0; i < iCount; i++)
 		{
@@ -891,12 +922,14 @@ namespace ImGui
 		return vReturn;
 	}
 
-	inline bool BeginWidgetTable(int iIndex, std::vector<WidgetWindow_t>& vTable)
+	inline bool BeginWidgetTable(int iIndex, std::vector<WidgetWindow_t>& vTable, bool comfortable = false)
 	{
 		SetCursorPos(vTable[iIndex].m_vPos);
+		if (MenuMode::DrawingMoonlit && comfortable) PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
 		bool bReturn = BeginChild(vTable[iIndex].m_sName.c_str(), vTable[iIndex].m_vSize, vTable[iIndex].m_iWindowFlags, vTable[iIndex].m_iChildFlags);
+		if (MenuMode::DrawingMoonlit && comfortable) PopStyleColor();
 
-		if (bReturn)
+		if (bReturn && !(MenuMode::DrawingMoonlit && comfortable))
 			SetCursorPosY(GetCursorPosY() - H::Draw.Scale(8));
 
 		return bReturn;
@@ -1175,7 +1208,9 @@ namespace ImGui
 				vSize.x = FCalcTextSize(sLabel).x + H::Draw.Scale(vSize.y - 12);
 			else
 				vSize.x -= GetStyle().WindowPadding.x * 2;
-			if (iFlags & FButtonEnum::SameLine)
+			if (MenuMode::DrawingMoonlit && (iFlags & FButtonEnum::Right))
+				SameLine(vSize.x + GetStyle().WindowPadding.x * 2);
+			else if (iFlags & FButtonEnum::SameLine)
 				SameLine();
 			else if (iFlags & FButtonEnum::Right)
 				SetCursorPosX(vSize.x + 20);
@@ -1239,6 +1274,7 @@ namespace ImGui
 		const int count = std::min(int(lines.size()), 2);
 		const float textHeight = GetTextLineHeight();
 		size.y = std::max(H::Draw.Scale(19), count * textHeight + H::Draw.Scale(4));
+		if (MenuMode::DrawingMoonlit) size.y = std::max(H::Draw.Scale(36), count * textHeight + H::Draw.Scale(12));
 		const bool clicked = InvisibleButton(std::format("##{}", sLabel).c_str(), size);
 		if (pHovered) *pHovered = IsItemHovered();
 		const bool changed = clicked && !Disabled;
@@ -1247,13 +1283,13 @@ namespace ImGui
 		if (IsItemHovered() && !Disabled) SetMouseCursor(ImGuiMouseCursor_Hand);
 		auto* draw = GetWindowDrawList();
 		const ImVec2 pos = GetDrawPos() + origin;
-		const float box = H::Draw.Scale(12);
+		const float box = H::Draw.Scale(MenuMode::DrawingMoonlit ? 16 : 12);
 		const ImVec2 boxPos = pos + ImVec2(size.x - box - H::Draw.Scale(2), (size.y - box) / 2);
 		draw->AddRect(boxPos, boxPos + ImVec2(box, box), GetColorU32(F::Render.Accent.Value));
 		if (checked) draw->AddRectFilled(boxPos + ImVec2(2, 2), boxPos + ImVec2(box - 2, box - 2), GetColorU32(F::Render.Accent.Value));
 		for (int i = 0; i < count; ++i)
 		{
-			SetCursorPos(origin + ImVec2(H::Draw.Scale(2), H::Draw.Scale(2) + i * textHeight));
+			SetCursorPos(origin + ImVec2(H::Draw.Scale(2), (MenuMode::DrawingMoonlit ? (size.y - count * textHeight) * .5f : H::Draw.Scale(2)) + i * textHeight));
 			PushStyleColor(ImGuiCol_Text, (checked ? F::Render.Active : F::Render.Inactive).Value);
 			TextUnformatted(lines[i].c_str());
 			PopStyleColor();
@@ -1326,6 +1362,7 @@ namespace ImGui
 		vSize.y = H::Draw.Scale(14 + 18 * iWraps);
 #endif
 
+		if (MenuMode::DrawingMoonlit) vSize.y = iWraps * GetTextLineHeight() + H::Draw.Scale(30);
 		for (size_t i = 0; i < iWraps; i++)
 		{
 #ifdef ALTERNATE_FULL_SLIDER
@@ -1333,6 +1370,8 @@ namespace ImGui
 #else
 			SetCursorPos(vOriginalPos + ImVec2(H::Draw.Scale(6), H::Draw.Scale(3 + 18 * i)));
 #endif
+			if (MenuMode::DrawingMoonlit)
+				SetCursorPos(vOriginalPos + ImVec2(H::Draw.Scale(6), H::Draw.Scale(3) + GetTextLineHeight() * i));
 			TextColored(MenuTitleColour(), "%s", vWrapped[i].c_str());
 		}
 
@@ -1341,6 +1380,7 @@ namespace ImGui
 #else
 		float flTextY = vOriginalPos.y + H::Draw.Scale(-15 + 18 * iWraps);
 #endif
+		if (MenuMode::DrawingMoonlit) flTextY = vOriginalPos.y + H::Draw.Scale(3);
 		{
 			auto uHash2 = FNV1A::Hash32Const(std::format("{}## Text", sLabel).c_str());
 
@@ -1424,6 +1464,11 @@ namespace ImGui
 		ImVec2 vMins = { H::Draw.Scale(6), vSize.y - H::Draw.Scale(8) }, vMaxs = { vSize.x - H::Draw.Scale(6), vSize.y - H::Draw.Scale(6) };
 #endif
 		ImColor tAccent = F::Render.Accent, tMuted = tAccent, tWashed = tAccent, tTransparent = tAccent;
+		if (MenuMode::DrawingMoonlit)
+		{
+			vMins.y = vSize.y - H::Draw.Scale(12);
+			vMaxs.y = vSize.y - H::Draw.Scale(8);
+		}
 		{
 			float flA = GetStyle().Alpha;
 			tAccent.Value.w *= flA, tMuted.Value.w *= 0.8f * flA, tWashed.Value.w *= 0.4f * flA, tTransparent.Value.w *= 0.1f * flA;
@@ -1507,7 +1552,7 @@ namespace ImGui
 		SetCursorPos(vOriginalPos + vMins - ImVec2(H::Draw.Scale(6), H::Draw.Scale(6)));
 		// Input only: a normal Button paints its hover/active fill over the track drawn above.
 		InvisibleButton("##", { vMaxs.x - vMins.x + H::Draw.Scale(12), H::Draw.Scale(14) });
-		GetWindowDrawList()->AddRect(GetItemRectMin(), GetItemRectMax(), GetColorU32(ImGuiCol_Border));
+		if (!MenuMode::DrawingMoonlit) GetWindowDrawList()->AddRect(GetItemRectMin(), GetItemRectMax(), GetColorU32(ImGuiCol_Border));
 		SetCursorPos(vOriginalPos);
 		AddRowSize(vOriginalPos, vSize);
 		DebugDummy({ vSize.x, GetRowSize(vSize.y) });
@@ -1619,6 +1664,8 @@ namespace ImGui
 		PushFont(F::Render.FontSmall);
 		const float labelHeight = GetTextLineHeight();
 		PopFont();
+		if (MenuMode::DrawingMoonlit)
+			return hasTitle ? labelHeight + valueHeight + H::Draw.Scale(20) : valueHeight + H::Draw.Scale(16);
 		return hasTitle ? std::max(H::Draw.Scale(32), labelHeight + valueHeight + H::Draw.Scale(8))
 			: std::max(H::Draw.Scale(20), valueHeight + H::Draw.Scale(6));
 	}
@@ -2207,9 +2254,9 @@ namespace ImGui
 		}
 		else
 		{
-			SetCursorPosX(GetContentRegionMax().x - H::Draw.Scale(30));
+			SetCursorPosX(GetContentRegionMax().x - H::Draw.Scale(MenuMode::DrawingMoonlit ? 36 : 30));
 			iFlags |= FColorPickerEnum::RetainPosition;
-			vIconOffset.y += H::Draw.Scale(3.5f);
+			vIconOffset.y += MenuMode::DrawingMoonlit ? (H::Draw.Scale(36) - vSize.y) * .5f : H::Draw.Scale(3.5f);
 		}
 		SetCursorPos(GetCursorPos() + vOffset);
 		ImVec2 vOriginalPos2 = GetCursorPos();
@@ -2530,6 +2577,30 @@ namespace ImGui
 		return bReturn;
 	}
 
+	inline void DrawConditionOptions(Bind_t& bind)
+	{
+		if (bind.m_iType != BindEnum::Behind && bind.m_iType != BindEnum::Threat) return;
+		auto& options=bind.m_tConditions;
+		PushStyleVar(ImGuiStyleVar_ItemSpacing, { H::Draw.Scale(8), H::Draw.Scale(5) });
+		if (bind.m_iType == BindEnum::Behind)
+		{
+			FDropdown("Enemy class", &options.enemyClass, { "Any enemy", "Scout", "Soldier", "Pyro", "Demoman", "Heavy", "Engineer", "Medic", "Sniper", "Spy" }, { 0, 1, 3, 7, 4, 6, 9, 5, 2, 8 });
+			FSlider("Detection range", &options.behindRange, 1.f, 10000.f, 1.f, "%.0f HU", FSliderEnum::Clamp);
+			FSlider("Rear arc", &options.behindArc, 1.f, 180.f, 1.f, "%.0f deg", FSliderEnum::Clamp);
+			FToggle("Require clear sightline", &options.behindVisible);
+			TextWrapped("Enemy class and position must match the same enemy. Behind follows your camera direction.");
+		}
+		else
+		{
+			FSlider("Aim tolerance", &options.aimTolerance, 0.f, 10.f, .1f, "%.1f deg", FSliderEnum::Clamp | FSliderEnum::Precision);
+			FSlider("Projectile window", &options.projectileWindow, .01f, 1.f, .01f, "%.2f s", FSliderEnum::Clamp | FSliderEnum::Precision);
+			FToggle("Any visible Sniper", &options.sniperAnyAim);
+			TextWrapped("Lethal attacks with a clear damage path; projectiles use the prediction window. Any visible Sniper also triggers when enabled, regardless of scope, weapon, aim or damage. Visibility means clear line of sight, including outside your camera view. Client-side estimates, not guaranteed hits.");
+		}
+		options=ConditionPolicy::Normalize(options);
+		PopStyleVar();
+	}
+
 	// convar wrappers
 	template <class T>
 	inline int GetBind(ConfigVar<T>& tVar, bool bForce = false)
@@ -2568,6 +2639,7 @@ namespace ImGui
 	template <class T>
 	inline T& FGet(ConfigVar<T>& tVar, bool bDisable = false)
 	{
+		auto& routed=AimModes::Resolve(tVar);if(&routed!=&tVar)return FGet(routed,bDisable);
 		int iBind = GetBind(tVar);
 		if (bDisable)
 		{
@@ -2603,6 +2675,7 @@ namespace ImGui
 	template <class T>
 	inline void FSet(ConfigVar<T>& tVar, T tVal)
 	{
+		auto& routed=AimModes::Resolve(tVar);if(&routed!=&tVar){FSet(routed,tVal);return;}
 		if (!Disabled)
 		{
 			int iBind = GetBind(tVar, true);
@@ -2643,11 +2716,15 @@ namespace ImGui
 			PopDisabled();
 		if (bPushedTransparent)
 			PopTransparent();
+		// A completed edit owns these pops only once. A subsequent plain FSet
+		// (e.g. a dependent colour/override update) must not reuse stale flags.
+		bPushedDisabled = false, bPushedTransparent = false;
 	}
 
 	template <class T>
 	inline void DrawBindInfo(ConfigVar<T>& tVar, T& tVal, const char* sType, const std::string& sBind, bool bNewPopup, bool& bLastHovered)
 	{
+		auto& routed=AimModes::Resolve(tVar);if(&routed!=&tVar){DrawBindInfo(routed,tVal,sType,sBind,bNewPopup,bLastHovered);return;}
 		TextUnformatted(std::format("Bind '{}'", sBind).c_str());
 
 		static int iBind = DEFAULT_BIND;
@@ -2754,7 +2831,7 @@ namespace ImGui
 
 		if (BeginWidgetTable(0, vTable))
 		{
-			FDropdown("Type", &tBind.m_iType, { "Key", "Class", "Weapon type", "Item slot", "Misc" }, {}, FDropdownEnum::None, 0, "None", &bHovered);
+			FDropdown("Type", &tBind.m_iType, { "Key", "Class", "Weapon type", "Item slot", "Misc", "Is behind", "On threat" }, {}, FDropdownEnum::None, 0, "None", &bHovered);
 			bLastHovered |= bHovered;
 		} EndChild();
 
@@ -2767,6 +2844,8 @@ namespace ImGui
 			case BindEnum::WeaponType: FDropdown("Weapon type", &tBind.m_iInfo, { "Hitscan", "Projectile", "Melee", "Throwable" }, {}, FDropdownEnum::None, 0, "None", &bHovered); break;
 			case BindEnum::ItemSlot: FDropdown("Item slot", &tBind.m_iInfo, { "1", "2", "3", "4", "5", "6", "7", "8", "9" }, {}, FDropdownEnum::None, 0, "None", &bHovered); break;
 			case BindEnum::Misc: FDropdown("Misc", &tBind.m_iInfo, { "Spectated", "Spectated 1st", "Spectated 3rd", "##Divider", "Zoomed", "Aiming" }, {}, FDropdownEnum::None, 0, "None", &bHovered); break;
+			case BindEnum::Behind: FText("Enemies only"); break;
+			case BindEnum::Threat: FText("Lethal attack"); break;
 			}
 			bLastHovered |= bHovered;
 		} EndChild();
@@ -2780,6 +2859,7 @@ namespace ImGui
 			} EndChild();
 		}
 
+		DrawConditionOptions(tBind);
 		if (!Disabled && iBind != DEFAULT_BIND && iBind < F::Binds.m_vBinds.size())
 		{
 			tVar[iBind] = tVal;
@@ -2792,6 +2872,7 @@ namespace ImGui
 			_tBind.m_bEnabled = tBind.m_bEnabled;
 			_tBind.m_iVisibility = tBind.m_iVisibility;
 			_tBind.m_bNot = tBind.m_bNot;
+			_tBind.m_tConditions = tBind.m_tConditions;
 		}
 
 		switch (FNV1A::Hash32(sType))

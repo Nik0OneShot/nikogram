@@ -127,6 +127,15 @@ static void ImGui_ImplDX9_SetupRenderState(ImDrawData* draw_data)
     device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
     device->SetRenderState(D3DRS_CLIPPING, TRUE);
     device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    // Overlay artwork is stored in display-space colour. Never inherit the
+    // game's sampler conversion or channel mask (these can change on alt-tab).
+    // RenderDrawData's state block restores every state below afterwards.
+    device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+    device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+    device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
     device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
     device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);

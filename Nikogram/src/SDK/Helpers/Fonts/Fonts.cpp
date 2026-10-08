@@ -16,6 +16,9 @@ void CFonts::Reload(float flDPI, bool bOutline)
 	m_mFonts[FONT_TICK_DETAIL] = { family, (std::max)(1, int(12.f * flDPI)), FONTFLAG_ANTIALIAS, 700, m_mFonts[FONT_TICK_DETAIL].m_dwFont };
 	m_mFonts[FONT_CRIT_LABEL] = { family, int(14.f * flDPI), FONTFLAG_ANTIALIAS, 700, m_mFonts[FONT_CRIT_LABEL].m_dwFont };
 	m_mFonts[FONT_CRIT_COUNT] = { family, int(16.f * flDPI), FONTFLAG_ANTIALIAS, 700, m_mFonts[FONT_CRIT_COUNT].m_dwFont };
+	m_mFonts[FONT_MOONLIT_LABEL] = { "Segoe UI", (std::max)(1, int(14.f * flDPI)), FONTFLAG_ANTIALIAS, 600, m_mFonts[FONT_MOONLIT_LABEL].m_dwFont };
+	m_mFonts[FONT_MOONLIT_DETAIL] = { "Segoe UI", (std::max)(1, int(12.f * flDPI)), FONTFLAG_ANTIALIAS, 400, m_mFonts[FONT_MOONLIT_DETAIL].m_dwFont };
+	m_mFonts[FONT_MOONLIT_COUNT] = { "Segoe UI", (std::max)(1, int(24.f * flDPI)), FONTFLAG_ANTIALIAS, 600, m_mFonts[FONT_MOONLIT_COUNT].m_dwFont };
 
 	for (auto& fFont : m_mFonts | std::views::values)
 	{

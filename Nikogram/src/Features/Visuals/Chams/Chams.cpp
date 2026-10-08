@@ -173,11 +173,12 @@ void CChams::Store(CTFPlayer* pLocal)
 
 void CChams::RenderMain()
 {
+	m_mEntities.clear();
+	if (!F::Groups.GroupsActive()) return;
 	auto pRenderContext = I::MaterialSystem->GetRenderContext();
 	if (!pRenderContext)
 		return;
 
-	m_mEntities.clear();
 	if (m_vEntities.empty())
 		return;
 
@@ -309,7 +310,6 @@ bool CChams::RenderViewmodel(void* rcx, int flags, int* iReturn)
 	if (!F::Groups.GetGroup(reinterpret_cast<CBaseAnimating*>(rcx)->IsValid() ? TargetsEnum::ViewmodelHands : TargetsEnum::ViewmodelWeapon, pGroup) || !pGroup->m_tChams(true))
 		return false;
 
-	SkinRender::ViewmodelDrawScope effectScope(m_bRendering,true);
 	Begin();
 	for (auto& [sName, tColor] : pGroup->m_tChams.Visible)
 	{
@@ -322,7 +322,12 @@ bool CChams::RenderViewmodel(void* rcx, int flags, int* iReturn)
 		pRenderContext->CullMode(bFlip ? MATERIAL_CULLMODE_CW : MATERIAL_CULLMODE_CCW);
 
 		static auto CBaseAnimating_InternalDrawModel = U::Hooks.m_mHooks["CBaseAnimating_InternalDrawModel"];
-		*iReturn = CBaseAnimating_InternalDrawModel->Call<int>(rcx, flags);
+		{
+			// Protect the selected material only while the engine draws. Enabling
+			// this guard before setup also blocks our own ForcedMaterialOverride.
+			SkinRender::ViewmodelDrawScope effectScope(m_bRendering, true);
+			*iReturn = CBaseAnimating_InternalDrawModel->Call<int>(rcx, flags);
+		}
 	}
 	pRenderContext->CullMode(G::FlipViewmodels ? MATERIAL_CULLMODE_CW : MATERIAL_CULLMODE_CCW);
 	End();
@@ -353,7 +358,10 @@ bool CChams::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderIn
 		bool bFlip = pMaterial && pMaterial->m_bInvertCull ? !G::FlipViewmodels : G::FlipViewmodels;
 		pRenderContext->CullMode(bFlip ? MATERIAL_CULLMODE_CW : MATERIAL_CULLMODE_CCW);
 
-		SkinChanger::DrawEffectGeometry(pState,pInfo,pBoneToWorld,localViewmodel,"viewmodel_chams_cosmetic_geometry");
+		{
+			SkinRender::ViewmodelDrawScope effectScope(m_bRendering, true);
+			SkinChanger::DrawEffectGeometry(pState,pInfo,pBoneToWorld,localViewmodel,"viewmodel_chams_cosmetic_geometry");
+		}
 	}
 	pRenderContext->CullMode(MATERIAL_CULLMODE_CCW);
 	End();

@@ -17,12 +17,12 @@ struct Target {
  bool ready=false,legacyAttempt=false;
  std::wstring status=L"waiting for tf2";
 };
-struct Result { bool success=false; std::wstring message; };
+struct Result { bool success=false; std::wstring message; bool startupWarning=false; };
 std::span<const unsigned char> Resource(int id);
 std::wstring Hash(std::span<const unsigned char> bytes);
 bool VerifyPayloads();
 Target Detect();
-Result Inject(Target expected, bool confirmLegacyNativeUnload=false);
+Result Inject(Target expected, bool confirmLegacyNativeUnload=false, int startupMenu=-1);
 void Export(int resource, const std::filesystem::path& path, bool overwrite);
 std::wstring Error(DWORD error);
 }

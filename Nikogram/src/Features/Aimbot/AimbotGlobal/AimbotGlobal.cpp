@@ -1,6 +1,7 @@
 #include "AimbotGlobal.h"
 #include "../TargetPolicy.h"
 #include "../CombatPriorityPolicy.h"
+#include "../SmoothAim.h"
 
 #include "../Aimbot.h"
 #include "../../Players/PlayerUtils.h"
@@ -105,7 +106,7 @@ int CAimbotGlobal::GetPlayerPriority(CTFPlayer* player,int base,EWeaponType type
 
 float CAimbotGlobal::GetAimFOV()
 {	// restrict now vs later
-	return GetConfiguredAimFOV()<=0.f?0.f:Vars::Aimbot::General::LeadAndRestrict.Value ? 180.f : GetConfiguredAimFOV();
+	return SmoothPolicy::SearchFOV(GetConfiguredAimFOV(),Vars::Aimbot::General::LeadAndRestrict.Value!=0,SmoothAim::VisibleGuidance());
 }
 
 bool CAimbotGlobal::EntityCenterInFOV(CBaseEntity* pTarget, const Vec3& vLocalPos, const Vec3& vLocalAngles, float& flFOVTo, Vec3& vPos, Vec3& vAngleTo)
@@ -238,6 +239,8 @@ bool CAimbotGlobal::ShouldMultipoint(CBaseEntity* pEntity, int nHitbox, int iHit
 
 bool CAimbotGlobal::ShouldAimAtAngle(Vec3 vAngles)
 {
+	if(SmoothAim::VisibleGuidance())
+		return SmoothPolicy::WithinFOV({G::OriginalCmd.viewangles.x,G::OriginalCmd.viewangles.y},{vAngles.x,vAngles.y},GetConfiguredAimFOV());
 	if (!Vars::Aimbot::General::LeadAndRestrict.Value)
 		return true;
 

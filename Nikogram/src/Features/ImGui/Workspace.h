@@ -1,5 +1,7 @@
 #pragma once
 #include "TextStyle.h"
+#include "MenuMode.h"
+#include "../../MenuStartup.h"
 #include <filesystem>
 #include <string>
 #include <algorithm>
@@ -36,6 +38,10 @@ namespace Workspace
             return int(GetPrivateProfileIntA("Workspace", key, fallback, PreferencesPath.c_str()));
         };
         CompactTaskbar = read("CompactTaskbar", 0) != 0;
+        MenuMode::Initialize(read("MenuStyle", 0), MenuStartup::Override);
+        MenuMode::Animations = read("MoonlitAnimations", 1) != 0;
+        MenuMode::SmoothSliders = read("MoonlitSmoothSliders", 1) != 0;
+        MenuMode::AnimationSpeed = std::clamp(read("MoonlitAnimationSpeed", 100), 50, 150) / 100.f;
         TextColourOverride = read("TextColourOverride", 0) != 0;
         TitleTextOverride = read("TitleTextOverride", 0) != 0;
         for (int i = 0; i < 3; ++i)
@@ -81,11 +87,16 @@ namespace Workspace
 
     inline bool Save()
     {
+        if (!Ready) return false;
         bool result = true;
         const auto write = [&](const char* key, int value) {
             if (!WritePrivateProfileStringA("Workspace", key, std::to_string(value).c_str(), PreferencesPath.c_str())) result = false;
         };
         write("CompactTaskbar", CompactTaskbar);
+        write("MenuStyle", MenuMode::Saved); // Startup override is deliberately not persisted.
+        write("MoonlitAnimations", MenuMode::Animations);
+        write("MoonlitSmoothSliders", MenuMode::SmoothSliders);
+        write("MoonlitAnimationSpeed", int(MenuMode::AnimationSpeed * 100 + .5f));
         write("TextColourOverride", TextColourOverride);
         write("TitleTextOverride", TitleTextOverride);
         for (int i = 0; i < 3; ++i)

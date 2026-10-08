@@ -1,4 +1,5 @@
 #include "CameraWindow.h"
+#include "../../ImGui/MoonlitHud.h"
 
 #include "../../Visuals/Materials/Materials.h"
 
@@ -20,6 +21,13 @@ void CCameraWindow::Draw()
 		nullptr, 1, 1
 	);
 	pRenderContext->Release();
+	if (MoonlitHud::Enabled())
+	{
+		// Keep the existing viewport and its aspect ratio; only add a frame.
+		const int left = tWindowBox.x - tWindowBox.w / 2;
+		H::Draw.LineRect(left, tWindowBox.y, tWindowBox.w, tWindowBox.h, MoonlitHud::Border);
+		MoonlitHud::Pill(tWindowBox.x, tWindowBox.y + MoonlitHud::S(6), "projectile camera", MoonlitHud::Muted, MoonlitHud::Detail(), true);
+	}
 }
 
 // Renders another view onto a texture

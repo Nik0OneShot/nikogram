@@ -10,6 +10,8 @@
 #include "../Features/Backtrack/Backtrack.h"
 #include "../Features/Triggerbot/Triggerbot.h"
 #include "../Features/Aimbot/AutoFlarePunch.h"
+#include "../Features/Aimbot/SplashWorker.h"
+#include "../Features/Aimbot/SmoothAim.h"
 
 MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 	void* rcx)
@@ -17,6 +19,8 @@ MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 	DEBUG_RETURN(CHLClient_LevelShutdown, rcx);
 
 	F::AnimInterp.Restore();
+	SplashWorker::Invalidate();
+    SmoothAim::controller.Reset();
     AutoViewmodelSwitch::Reset();
     F::Backtrack.Reset();
 	F::Triggerbot.Reset();

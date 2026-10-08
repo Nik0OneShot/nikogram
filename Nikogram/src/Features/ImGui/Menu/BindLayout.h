@@ -4,6 +4,15 @@
 
 namespace BindLayout
 {
+    inline float MoonlitEditorHeight(float dropdownHeight, float rowGap, float paddingY, float scale)
+    {
+        // Each of the two rows reserves the full control, its footer and spacing.
+        return 2.f * (dropdownHeight + 3.f * scale + rowGap) + 2.f * paddingY;
+    }
+    inline float MoonlitRowHeight(float textHeight, float scale)
+    {
+        return std::max(38.f * scale, textHeight + 16.f * scale);
+    }
     // Clamp the live window position, not the previous frame's saved drag position.
     inline float ClampAxis(float position, float extent, float minimum, float maximum)
     {

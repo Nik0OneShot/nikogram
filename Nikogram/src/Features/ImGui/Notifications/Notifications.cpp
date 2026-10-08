@@ -1,5 +1,7 @@
 #include "Notifications.h"
 #include "NotificationStyle.h"
+#include "../MenuMode.h"
+#include "../Workspace.h"
 
 #include "../Easings/Easings.h"
 #include "../Menu/Components.h"
@@ -76,6 +78,7 @@ static inline int Y()
 void CNotifications::Draw()
 {
 	using namespace ImGui;
+	const bool moonlit = MenuMode::Active == MenuMode::Moonlit;
 
 	std::lock_guard tLock(m_tMutex);
 	for (auto it = m_vNotifications.begin(); it != m_vNotifications.end();)
@@ -91,17 +94,18 @@ void CNotifications::Draw()
 	ImDrawList* pDrawList = GetForegroundDrawList();
 
 	const float scale = std::max(0.1f, H::Draw.Scale());
-	const float margin = H::Draw.Scale(8), padding = H::Draw.Scale(10);
-	const float barHeight = H::Draw.Scale(12), textGap = H::Draw.Scale(7);
+	const float margin = H::Draw.Scale(8), padding = H::Draw.Scale(moonlit ? 14 : 10);
+	const float barHeight = H::Draw.Scale(moonlit ? 3 : 12), textGap = H::Draw.Scale(moonlit ? 12 : 7);
+	const auto badge = moonlit && Workspace::PetEnabled ? F::Render.NikoLauncherIcon() : ImTextureID{};
+	const float badgeSpace = badge ? H::Draw.Scale(26) : 0.f;
 	const float maxWidth = GetIO().DisplaySize.x - margin * 2;
-	if (maxWidth <= padding * 2 || GetIO().DisplaySize.y <= margin * 2) return;
+	if (maxWidth <= padding * 2 + badgeSpace || GetIO().DisplaySize.y <= margin * 2) return;
 	float y = ShouldReverseY() ? GetIO().DisplaySize.y - margin : margin;
 	for (auto& tNotification : m_vNotifications)
 	{
-		// Text and countdown share the same inset. Long messages wrap rather
-		// than forcing the toast beyond the screen edge. Icons are intentionally omitted.
-		const float w = std::min(maxWidth, std::max(H::Draw.Scale(224), CalcTextSize(tNotification.m_sText.c_str()).x + padding * 2));
-		const float wrapWidth = w - padding * 2;
+		// Reserve a dedicated badge column before measuring/wrapping the text.
+		const float w = std::min(maxWidth, std::max(H::Draw.Scale(224), CalcTextSize(tNotification.m_sText.c_str()).x + padding * 2 + badgeSpace));
+		const float wrapWidth = w - padding * 2 - badgeSpace;
 		std::vector<std::string> textLines;
 		const char* cursor = tNotification.m_sText.c_str();
 		const char* end = cursor + tNotification.m_sText.size();
@@ -123,7 +127,7 @@ void CNotifications::Draw()
 			if (cursor == end) break;
 			++cursor;
 		} while (cursor <= end);
-		const float textHeight = GetFontSize() * textLines.size();
+		const float textHeight = std::max(GetFontSize() * textLines.size(), badge ? H::Draw.Scale(20) : 0.f);
 		const float h = padding * 2 + textHeight + textGap + barHeight;
 		float x = ShouldReverseX() ? GetIO().DisplaySize.x - margin - w : margin;
 
@@ -132,7 +136,7 @@ void CNotifications::Draw()
 		float flCreate = tNotification.m_flCreateTime;
 		float flPan = tNotification.m_flPanTime;
 		float flLife = tNotification.m_flLifeTime + flPan * 2;
-		if (flPan)
+		if (flPan && (!moonlit || MenuMode::Animations))
 		{
 			if (float flDelta = flTime - flCreate; flDelta < flPan)
 				flEaseX = EASE_IN(Math::RemapVal(flDelta, 0.f, flPan, 0.f, 1.f));
@@ -147,7 +151,9 @@ void CNotifications::Draw()
 
 		x -= (w + H::Draw.Scale(8)) * (1.f - flEaseX) * X();
 
-		const ImVec4 accent = F::Render.Accent.Value; // resolve every frame, including already-visible toasts
+		const ImVec4 accent = moonlit && !tNotification.m_bWorkspaceAccent
+			? ImVec4(tNotification.m_tColor.r / 255.f, tNotification.m_tColor.g / 255.f, tNotification.m_tColor.b / 255.f, 1.f)
+			: F::Render.Accent.Value; // resolve every frame, including already-visible toasts
 		auto tint = [&](float multiplier, float highlight = 0.f)
 		{
 			return ColorConvertFloat4ToU32(ImVec4(
@@ -158,19 +164,27 @@ void CNotifications::Draw()
 		const ImVec2 pos(x, ShouldReverseY() ? y - h : y);
 		const float stroke = std::max(1.f, scale);
 		pDrawList->PushClipRect(ImVec2(0, 0), GetIO().DisplaySize, true);
-		pDrawList->AddRectFilled(pos, pos + ImVec2(w, h), IM_COL32(0, 0, 0, 255));
-		pDrawList->AddRect(pos + ImVec2(stroke * .5f, stroke * .5f), pos + ImVec2(w - stroke * .5f, h - stroke * .5f), tint(1.f), 0.f, ImDrawFlags_None, stroke);
+		pDrawList->AddRectFilled(pos, pos + ImVec2(w, h), moonlit ? IM_COL32(33,27,48,245) : IM_COL32(0,0,0,255), moonlit ? H::Draw.Scale(12) : 0.f);
+		pDrawList->AddRect(pos + ImVec2(stroke * .5f, stroke * .5f), pos + ImVec2(w - stroke * .5f, h - stroke * .5f),
+			moonlit ? IM_COL32(72,59,92,255) : tint(1.f), moonlit ? H::Draw.Scale(12) : 0.f, ImDrawFlags_None, stroke);
 		float lineY = pos.y + padding;
+		if (badge) pDrawList->AddImage(badge, pos + ImVec2(padding,padding), pos + ImVec2(padding+H::Draw.Scale(20),padding+H::Draw.Scale(20)));
 		for (const auto& line : textLines)
 		{
 			const float lineWidth = CalcTextSize(line.c_str()).x;
-			pDrawList->AddText(GetFont(), GetFontSize(), ImVec2(pos.x + (w - lineWidth) * .5f, lineY), tint(1.f), line.c_str());
+			pDrawList->AddText(GetFont(), GetFontSize(), ImVec2(pos.x + (moonlit ? padding + badgeSpace : (w - lineWidth) * .5f), lineY),
+				moonlit ? IM_COL32(241,234,250,255) : tint(1.f), line.c_str());
 			lineY += GetFontSize();
 		}
 		const ImVec2 bar = pos + ImVec2(padding, padding + textHeight + textGap);
 		const auto layout = NotificationStyle::Layout(wrapWidth, scale);
 		const int filled = NotificationStyle::Filled(remaining, layout.count);
-		for (int i = 0; i < layout.count; ++i)
+		if (moonlit)
+		{
+			pDrawList->AddRectFilled(bar, bar + ImVec2(w - padding * 2,barHeight), IM_COL32(72,59,92,255), barHeight * .5f);
+			if (remaining > 0.f) pDrawList->AddRectFilled(bar, bar + ImVec2((w - padding * 2) * remaining,barHeight), tint(1.f), barHeight * .5f);
+		}
+		for (int i = 0; !moonlit && i < layout.count; ++i)
 		{
 			const ImVec2 lo = bar + ImVec2(layout.Left(i), 0), hi = bar + ImVec2(layout.Right(i), barHeight);
 			if (i < filled)

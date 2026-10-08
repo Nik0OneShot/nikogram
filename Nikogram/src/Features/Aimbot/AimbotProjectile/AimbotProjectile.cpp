@@ -1,5 +1,9 @@
 #include "AimbotProjectile.h"
+#include "../SmoothAim.h"
 #include "../SplashSearchPolicy.h"
+#include "../SplashWorker.h"
+#include "../TracePreparation.h"
+#include <random>
 #include "../TargetPolicy.h"
 #include "../SelfDamage.h"
 #include "../RocketSafetyGeometry.h"
@@ -532,18 +536,44 @@ Splashes_t CAimbotProjectile::GetSplashes()
 	return vSplashes;
 }
 
+namespace TracePreparation
+{
+    struct Rotate
+    {
+        Vec3 operator()(const Vec3& point,float x,float y) const
+        { return Math::RotatePoint(point,{}, {x,y}); }
+    };
+    static Pipeline<Vec3,Rotate> pipeline;
+}
+
 static inline std::vector<Vec3> ComputePoints(float flRadius, int iSamples)
 {
 	if (!SearchAllowed(SearchWork::Sampling)) return {};
 	// Bound allocation as well as tracing. Keep the sphere distributed over all
 	// directions when a large configured sample count exceeds this command's allowance.
-	if (auto* budget = ProjectilePerformancePolicy::currentSearchBudget)
-		iSamples = std::min(iSamples, int(budget->Remaining(SearchWork::Sampling)) - 1);
+	if (ProjectilePerformancePolicy::currentSearchBudget)
+		iSamples = std::min(iSamples, int(ProjectilePerformancePolicy::SearchRemaining(SearchWork::Sampling)) - 1);
 	std::vector<Vec3> vPoints = { { Vec3(0.f, 0.f, -1.f) * flRadius } };
     if (!std::isfinite(flRadius) || flRadius <= 0.f)
         return {};
 	if (iSamples <= 0)
 		return vPoints;
+
+    // Prepared offsets contain no target state. World placement and every
+    // collision query remain live below, even when many targets share a pattern.
+    bool submitted=false;
+    auto prepared=TracePreparation::pipeline.Get(
+        {0,iSamples,flRadius,TracePreparation::Key::Rotation(Vars::Aimbot::Projectile::SplashRotateX.Value),
+            TracePreparation::Key::Rotation(Vars::Aimbot::Projectile::SplashRotateY.Value)},
+        G::CurrentUserCmd ? G::CurrentUserCmd->command_number : 0,
+        []{return uint32_t(SDK::StdRandomInt(0,INT_MAX));},submitted);
+    if(ProjectileDiagnostics::current)
+    {
+        ProjectileDiagnostics::splash.traceWorkerSubmitted+=submitted;
+        if(prepared.empty()) ++ProjectileDiagnostics::splash.traceWorkerFallback;
+        else ++ProjectileDiagnostics::splash.traceWorkerReady;
+    }
+    if(!prepared.empty()) return prepared;
 
 	vPoints.reserve(iSamples + 1);
 
@@ -553,20 +583,36 @@ static inline std::vector<Vec3> ComputePoints(float flRadius, int iSamples)
     if (!std::isfinite(flRotateY)) flRotateY = 0.f;
 		
 	float a = Math::PI * (3.f - sqrtf(5.f));
-	for (int n = 0; n < iSamples; n++)
+	// Per-thread ownership needs no locks or background engine calls. Radius and
+	// random rotation stay live; only the sphere's unit directions are reused.
+	static thread_local SplashSearchPolicy::SphereDirectionCache<Vec3> directionCache;
+	auto* cached = directionCache.Find(iSamples);
+	const auto generate = [&](int n)
 	{
-		if (!SearchAllowed(SearchWork::Sampling)) break;
 		float t = a * n;
-        float y = SplashSearchPolicy::SphereY(n, iSamples);
-        float r = sqrtf(std::max(0.f, 1 - y * y));
+		float y = SplashSearchPolicy::SphereY(n, iSamples);
+		float r = sqrtf(std::max(0.f, 1 - y * y));
 		float x = cosf(t) * r;
 		float z = sinf(t) * r;
+		return Vec3(x, y, z);
+	};
+	const auto appendPoints = [&](auto direction)
+	{
+		for (int n = 0; n < iSamples; n++)
+		{
+			if (!SearchAllowed(SearchWork::Sampling)) break;
+			Vec3 vPoint = direction(n) * flRadius;
+			vPoint = Math::RotatePoint(vPoint, {}, { flRotateX, flRotateY });
 
-		Vec3 vPoint = Vec3(x, y, z) * flRadius;
-		vPoint = Math::RotatePoint(vPoint, {}, { flRotateX, flRotateY });
-
-		vPoints.push_back(vPoint);
-	}
+			vPoints.push_back(vPoint);
+		}
+	};
+	// Choose once, keeping oversized uncached requests free of a per-point
+	// cache branch as well as preserving their original point count.
+	if (cached)
+		appendPoints([&](int n) { return cached->Get(n, [&] { return generate(n); }); });
+	else
+		appendPoints(generate);
 
 	return vPoints;
 };
@@ -639,22 +685,35 @@ static inline void HandleTrace(const Vec3& vPoint, std::vector<Setup_t>& vPoints
 #endif
 }
 
-static float s_flTotal = 0.f;
-static inline void HandleFace(Face_t& tFace, std::vector<Setup_t>& vPoints, float flDensity, float flRadius, float flCutoff, const Vec3& vTargetEye, const Vec3& vTargetCenter, const Vec3& vTargetOrigin, Info_t& tInfo, CGameTrace& trace, ITraceFilter& filter)
+// No engine interfaces, entity pointers, Vars, or shared RNG are touched by
+// this sampler. Both synchronous fallback and worker use this same math.
+struct FaceRandom
 {
+    std::mt19937 generator;
+    explicit FaceRandom(uint32_t seed) : generator(seed) {}
+    float Float(float low=0.f, float high=1.f) { return std::uniform_real_distribution<float>(low,high)(generator); }
+    int Int(int low,int high) { return std::uniform_int_distribution<int>(low,high)(generator); }
+    bool Bool() { return Int(0,1)!=0; }
+};
+struct FaceSample { Vec3 point, normal; bool inside; };
+template<class Step, class Emit>
+static void SampleFace(Face_t& tFace, float flDensity, float flRadius, float flCutoff,
+    const Vec3& vTargetEye, const Vec3& vTargetCenter, const Vec3& vTargetOrigin,
+    const Vec3& hull, FaceRandom& random, float& total, Step step, Emit emit)
+{
+    if(tFace.m_vVertices.size()<3 || !std::isfinite(flRadius) || flRadius<=0.f) return;
 	float flRadiusSqr = powf(flRadius, 2);
 	float flRadius2Sqr = flRadiusSqr * 4;
-	int nMask = F::ProjSim.m_bPhysics ? MASK_SHOT | CONTENTS_DISPSOLID : MASK_SHOT;
 
 	std::vector<Vec3> vVertices, vEpsilon;
 	if (tFace.m_iType != FaceTypeEnum::Prop)
 		vVertices = tFace.m_vVertices;
 	else
-		Math::ExpandPolygon(vVertices, tFace.m_vVertices, tFace.m_vNormal, SDK::StdRandomFloat(0.f, DIST_EPSILON), &vTargetEye);
+		Math::ExpandPolygon(vVertices, tFace.m_vVertices, tFace.m_vNormal, random.Float(0.f, DIST_EPSILON), &vTargetEye);
 
-	for (int i = 0, n = int(tFace.m_vVertices.size()), o = SDK::StdRandomInt(0, n - 1); ++i < n - 1;)
+	for (int i = 0, n = int(tFace.m_vVertices.size()), o = random.Int(0, n - 1); ++i < n - 1;)
 	{
-		if (!SearchStep(SearchWork::Geometry)) return;
+		if (!step(SearchWork::Geometry)) return;
 		Vec3& vVertex1 = tFace.m_vVertices[o], &vVertex2 = tFace.m_vVertices[(o + i) % n], &vVertex3 = tFace.m_vVertices[(o + i + 1) % n];
 
 		Vec3 vDir21 = vVertex2 - vVertex1, vDir31 = vVertex3 - vVertex1;
@@ -662,64 +721,55 @@ static inline void HandleFace(Face_t& tFace, std::vector<Setup_t>& vPoints, floa
 		float flSamples = flDensity * flArea / flRadius2Sqr;
         if (!std::isfinite(flSamples) || flSamples <= 0.f)
             continue;
-        int iSamples = flCutoff <= 0.f || flSamples > flCutoff ? ceilf(flSamples) : fmodf(s_flTotal += flSamples, flCutoff) < flSamples;
+        int iSamples = flCutoff <= 0.f || flSamples > flCutoff ? int(std::min(ceilf(flSamples), 65536.f)) : fmodf(total += flSamples, flCutoff) < flSamples;
 		if (!iSamples)
 			continue;
 
 		// don't particularly like the hacky random epsilons
-		int iFaceClosest = SDK::StdRandomInt(iSamples < 2 ? 0 : iSamples < 4 ? 1 : 2, iSamples < 2 ? 1 : 2);
-		//int iEdgeClosest = SDK::StdRandomInt(iSamples < 8 ? 0 : iSamples < 16 ? 1 : 2, iSamples < 8 ? 1 : 2); // eats up a bit too much performance for my liking
-		int iEdgeRandom = SDK::StdRandomInt(iSamples < 8 ? 0 : iSamples < 16 ? 1 : 2, iSamples < 3 && iFaceClosest ? 0 : iSamples < 12 ? 1 : 2);
+		int iFaceClosest = random.Int(iSamples < 2 ? 0 : iSamples < 4 ? 1 : 2, iSamples < 2 ? 1 : 2);
+		//int iEdgeClosest = random.Int(iSamples < 8 ? 0 : iSamples < 16 ? 1 : 2, iSamples < 8 ? 1 : 2); // eats up a bit too much performance for my liking
+		int iEdgeRandom = random.Int(iSamples < 8 ? 0 : iSamples < 16 ? 1 : 2, iSamples < 3 && iFaceClosest ? 0 : iSamples < 12 ? 1 : 2);
 		iEdgeRandom += iFaceClosest; //iEdgeClosest += iFaceClosest, iEdgeRandom += iEdgeClosest; //, iSamples += iEdgeRandom;
-#ifdef SPLASH_DEBUG2
-		Color_t tColor = { byte(SDK::StdRandomInt(0, 255)), byte(SDK::StdRandomInt(0, 255)), byte(SDK::StdRandomInt(0, 255)) };
-#ifdef WORLD_DEBUG
-		F::World.DrawFace({ { vVertex1, vVertex2, vVertex3 }, tFace.m_vNormal, tFace.m_iType }, DrawTypeEnum::Edges | DrawTypeEnum::Faces, tColor);
-#endif
-#ifdef DEBUG_TEXT
-		F::Debug.AddText(std::format("{}:{}:{}"/*:{}"*/, iFaceClosest, /*iEdgeClosest,*/ iEdgeRandom, iSamples), (vVertex1 + vVertex2 + vVertex3) / 3, tColor);
-#endif
-#endif
 		for (int s = 0; s < iSamples; s++)
 		{
-			if (!SearchStep(SearchWork::Sampling)) return;
+			if (!step(SearchWork::Sampling)) return;
 			Vec3 vPoint, vNormal = tFace.m_vNormal; bool bInside = true;
 			if (s < iFaceClosest) // closest point
 			{
-				float flEpsilon = s == 0 && (tFace.m_iType == FaceTypeEnum::BoxBrush || iFaceClosest != 1 || SDK::StdRandomBool()) ? CALC_EPSILON : DIST_EPSILON;
+				float flEpsilon = s == 0 && (tFace.m_iType == FaceTypeEnum::BoxBrush || iFaceClosest != 1 || random.Bool()) ? CALC_EPSILON : DIST_EPSILON;
 				vPoint = Math::ClosestPointOnTriangle(vTargetOrigin, vVertex1, vVertex2, vVertex3, &bInside);
-				vPoint += { SDK::StdRandomFloat(-flEpsilon, flEpsilon), SDK::StdRandomFloat(-flEpsilon, flEpsilon), SDK::StdRandomFloat(-flEpsilon, flEpsilon) };
+				vPoint += { random.Float(-flEpsilon, flEpsilon), random.Float(-flEpsilon, flEpsilon), random.Float(-flEpsilon, flEpsilon) };
 			}
 			//else if (s < iEdgeClosest) // closest point on edge
 			//{
-			//	float flEpsilon = SDK::StdRandomBool() ? CALC_EPSILON : DIST_EPSILON; bInside = false;
-			//	switch (SDK::StdRandomInt(0, 2))
+			//	float flEpsilon = random.Bool() ? CALC_EPSILON : DIST_EPSILON; bInside = false;
+			//	switch (random.Int(0, 2))
 			//	{
 			//	case 0: vPoint = Math::ClosestPointOnLine(vTargetOrigin, vVertex1, vVertex2); break;
 			//	case 1: vPoint = Math::ClosestPointOnLine(vTargetOrigin, vVertex2, vVertex3); break;
 			//	case 2: vPoint = Math::ClosestPointOnLine(vTargetOrigin, vVertex3, vVertex1); break;
 			//	}
-			//	vPoint += { SDK::StdRandomFloat(-flEpsilon, flEpsilon), SDK::StdRandomFloat(-flEpsilon, flEpsilon), SDK::StdRandomFloat(-flEpsilon, flEpsilon) };
+			//	vPoint += { random.Float(-flEpsilon, flEpsilon), random.Float(-flEpsilon, flEpsilon), random.Float(-flEpsilon, flEpsilon) };
 			//}
 			else if (s < iEdgeRandom) // random point on edge
 			{
-				float flEpsilon = SDK::StdRandomBool() ? CALC_EPSILON : DIST_EPSILON; bInside = false;
-				switch (SDK::StdRandomInt(0, 2))
+				float flEpsilon = random.Bool() ? CALC_EPSILON : DIST_EPSILON; bInside = false;
+				switch (random.Int(0, 2))
 				{
-				case 0: vPoint = vVertex1.Lerp(vVertex2, SDK::StdRandomFloat()); break;
-				case 1: vPoint = vVertex2.Lerp(vVertex3, SDK::StdRandomFloat()); break;
-				case 2: vPoint = vVertex3.Lerp(vVertex1, SDK::StdRandomFloat()); break;
+				case 0: vPoint = vVertex1.Lerp(vVertex2, random.Float()); break;
+				case 1: vPoint = vVertex2.Lerp(vVertex3, random.Float()); break;
+				case 2: vPoint = vVertex3.Lerp(vVertex1, random.Float()); break;
 				}
-				vPoint += { SDK::StdRandomFloat(-flEpsilon, flEpsilon), SDK::StdRandomFloat(-flEpsilon, flEpsilon), SDK::StdRandomFloat(-flEpsilon, flEpsilon) };
+				vPoint += { random.Float(-flEpsilon, flEpsilon), random.Float(-flEpsilon, flEpsilon), random.Float(-flEpsilon, flEpsilon) };
 			}
 			else // random point on face
 			{
-				float flRandom1 = SDK::StdRandomFloat(), flRandom2 = SDK::StdRandomFloat();
+				float flRandom1 = random.Float(), flRandom2 = random.Float();
 				if (flRandom1 + flRandom2 > 1)
 					flRandom1 = 1 - flRandom1, flRandom2 = 1 - flRandom2;
 				vPoint = vVertex1 + vDir21 * flRandom1 + vDir31 * flRandom2;
 			}
-			vPoint += vNormal * (tInfo.m_vHull + CALC_EPSILON);
+			vPoint += vNormal * (hull + CALC_EPSILON);
 			if (vPoint.DistToSqr(vTargetCenter) > flRadiusSqr)
 				continue;
 
@@ -730,36 +780,92 @@ static inline void HandleFace(Face_t& tFace, std::vector<Setup_t>& vPoints, floa
 				Math::ClosestPointOnPolygon(vPoint, vEpsilon, vNormal, &bInside);
 
 				if (tFace.m_iType == FaceTypeEnum::Prop && !bInside)
-					vPoint += tFace.m_vNormal * SDK::StdRandomFloat(0.f, DIST_EPSILON);
+					vPoint += tFace.m_vNormal * random.Float(0.f, DIST_EPSILON);
 			}
 
-#ifdef SPLASH_DEBUG5
-			if (bInside) s_mTraceCount[__FUNCTION__": point contents"]++;
-#endif
-			if (bInside && I::EngineTrace->GetPointContents(vPoint) & MASK_SOLID)
-				continue;
 
-			int nSubMask = nMask;
-			if (!bInside)
-				vNormal = (vTargetEye - vPoint).Normalized(), nSubMask &= ~CONTENTS_MOVEABLE;
-
-			SDK::Trace(vPoint + vNormal * tInfo.m_flNormalOffset, vTargetEye, nSubMask, &filter, &trace);
-            if (ProjectileDiagnostics::current) ++ProjectileDiagnostics::splash.setupTraces;
-#ifdef SPLASH_DEBUG5
-			s_mTraceCount[__FUNCTION__": vispos"]++;
-#endif
-#ifdef SPLASH_DEBUG2
-			DrawTrace(trace.fraction == 1.f, Vars::Colors::IndicatorMisc.Value, trace);
-#endif
-			if (trace.fraction != 1.f)
-				continue;
-
-			vPoints.emplace_back(vPoint);
-		}
-	}
+            if(std::isfinite(vPoint.x) && std::isfinite(vPoint.y) && std::isfinite(vPoint.z))
+                emit(FaceSample{vPoint,vNormal,bInside});
+        }
+    }
 }
 
-void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& vSplashPoints, uint8_t iFlags)
+struct FaceSnapshotKey
+{
+    uint64_t epoch=0;
+    int command=0, target=0, weapon=0;
+    uint8_t flags=0;
+    Vec3 origin, eye, center, localEye, hull;
+    float radius=0, density=0, cutoffSetting=0;
+    std::chrono::steady_clock::time_point created;
+    bool Matches(const FaceSnapshotKey& now) const
+    {
+        // Candidates are hints only. Reject old sessions, weapons, targets,
+        // settings, and meaningful movement before doing live validation.
+        return epoch==now.epoch && target==now.target && weapon==now.weapon && flags==now.flags
+            && int64_t(now.command)-command>=0 && int64_t(now.command)-command<=2
+            && now.created-created<std::chrono::milliseconds(50)
+            && radius==now.radius && density==now.density && cutoffSetting==now.cutoffSetting
+            && hull==now.hull && origin.DistToSqr(now.origin)<=16.f
+            && eye.DistToSqr(now.eye)<=16.f && center.DistToSqr(now.center)<=16.f
+            && localEye.DistToSqr(now.localEye)<=16.f;
+    }
+};
+struct FaceResult { FaceSnapshotKey key; std::vector<FaceSample> points; };
+struct FaceJob
+{
+    FaceSnapshotKey key;
+    std::vector<Face_t> faces;
+    uint32_t seed=0;
+    FaceResult Run(const std::atomic<bool>& stopping)
+    {
+        FaceResult result{key,{}};
+        result.points.reserve(512);
+        FaceRandom random(seed);
+        float total=random.Float();
+        const float cutoff=key.cutoffSetting*float(faces.size())*float(faces.size());
+        unsigned geometry=0, samples=0;
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(2);
+        const auto step=[&](SearchWork work)
+        {
+            if(stopping.load(std::memory_order_relaxed) || std::chrono::steady_clock::now()>=deadline) return false;
+            return work==SearchWork::Geometry ? ++geometry<=2048 : ++samples<=512;
+        };
+        for(auto& face:faces)
+        {
+            if(geometry>=2048 || samples>=512 || stopping.load(std::memory_order_relaxed)
+                || std::chrono::steady_clock::now()>=deadline) break;
+            SampleFace(face,key.density,key.radius,cutoff,key.eye,key.center,key.origin,key.hull,
+                random,total,step,[&](const FaceSample& sample){ result.points.push_back(sample); });
+        }
+        return result;
+    }
+};
+namespace SplashWorker
+{
+    static Mailbox<FaceJob,FaceResult> worker;
+    static std::atomic<uint64_t> epoch{0};
+    void Start() { worker.Start(); TracePreparation::pipeline.Start(); }
+    void Stop() { worker.Stop(); TracePreparation::pipeline.Stop(); }
+    void Invalidate() { epoch.fetch_add(1,std::memory_order_relaxed); TracePreparation::pipeline.Invalidate(); }
+}
+static void CheckFaceSample(const FaceSample& sample, std::vector<Setup_t>& points,
+    const Vec3& targetEye, const Vec3& targetCenter, float radius, Info_t& info,
+    CGameTrace& trace, ITraceFilter& filter)
+{
+    // This function runs only on the game thread, including for worker results.
+    const Vec3 point=sample.point;
+    if(point.DistToSqr(targetCenter)>radius*radius) return;
+    if(sample.inside && (I::EngineTrace->GetPointContents(point)&MASK_SOLID)) return;
+    Vec3 normal=sample.normal;
+    int mask=F::ProjSim.m_bPhysics ? MASK_SHOT|CONTENTS_DISPSOLID : MASK_SHOT;
+    if(!sample.inside) { normal=(targetEye-point).Normalized(); mask&=~CONTENTS_MOVEABLE; }
+    SDK::Trace(point+normal*info.m_flNormalOffset,targetEye,mask,&filter,&trace);
+    if(ProjectileDiagnostics::current) ++ProjectileDiagnostics::splash.setupTraces;
+    if(trace.fraction==1.f) points.emplace_back(point);
+}
+
+void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& vSplashPoints, uint8_t iFlags, int searchMode)
 {
     ProjectileDiagnostics::Profile profile(ProjectileDiagnostics::SplashSetup);
 	vSplashPoints.clear();
@@ -790,7 +896,7 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 	};
 
 	// Trace
-	int iPoints = Vars::Aimbot::Projectile::SplashMode.Value == Vars::Aimbot::Projectile::SplashModeEnum::Face && !bAirSplash ? 0
+	int iPoints = searchMode == Vars::Aimbot::Projectile::SplashModeEnum::Face && !bAirSplash ? 0
 		: !m_tInfo.m_flGravity ? Vars::Aimbot::Projectile::SplashPointsDirect.Value : Vars::Aimbot::Projectile::SplashPointsArc.Value;
 	{
         ProjectileDiagnostics::Profile sampling(ProjectileDiagnostics::SplashSampling);
@@ -828,7 +934,7 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 					else for (float r = 0; r < Vars::Aimbot::Projectile::SplashAirCount.Value; r++)
 						vSplashPoints.emplace_back(vPoints[i] * r / Vars::Aimbot::Projectile::SplashAirCount.Value + vTargetCenter, PointTypeEnum::Air);
 				}
-				return Vars::Aimbot::Projectile::SplashMode.Value == Vars::Aimbot::Projectile::SplashModeEnum::Face && i || !trace.DidHit();
+				return searchMode == Vars::Aimbot::Projectile::SplashModeEnum::Face && i || !trace.DidHit();
 			};
 
 			Vec3 vPoint = vPoints[i] + vTargetCenter;
@@ -843,7 +949,7 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 
 	// Face
 	if (float flDensity = !m_tInfo.m_flGravity ? Vars::Aimbot::Projectile::SplashDensityDirect.Value : Vars::Aimbot::Projectile::SplashDensityArc.Value;
-		Vars::Aimbot::Projectile::SplashMode.Value == Vars::Aimbot::Projectile::SplashModeEnum::Face && flDensity && SearchAllowed(SearchWork::Sampling))
+		searchMode == Vars::Aimbot::Projectile::SplashModeEnum::Face && flDensity && SearchAllowed(SearchWork::Sampling))
 	{
 		Vec3 vMins = vTargetCenter - flRadius, vMaxs = vTargetCenter + flRadius;
 
@@ -876,12 +982,58 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 		SDK::Output("Faces", std::format("{}", vFaces.size()).c_str(), {}, OUTPUT_CONSOLE);
 #endif
 
-		float flCutoff = Vars::Aimbot::Projectile::SplashSamplesCutoff.Value * powf(vFaces.size(), 2); s_flTotal = SDK::StdRandomFloat();
+        FaceSnapshotKey key;
+        key.epoch=SplashWorker::epoch.load(std::memory_order_relaxed);
+        key.command=G::CurrentUserCmd->command_number;
+        key.target=m_tInfo.m_pTarget->m_pEntity->GetRefEHandle().ToInt();
+        key.weapon=m_tInfo.m_pWeapon->GetRefEHandle().ToInt();
+        key.flags=iFlags; key.origin=vOrigin; key.eye=vTargetEye; key.center=vTargetCenter;
+        key.localEye=m_tInfo.m_vLocalEye; key.hull=m_tInfo.m_vHull;
+        key.radius=flRadius; key.density=flDensity;
+        key.cutoffSetting=Vars::Aimbot::Projectile::SplashSamplesCutoff.Value;
+        key.created=std::chrono::steady_clock::now();
+        std::unique_ptr<FaceResult> prepared;
+        // The first rollout covers the already-budgeted ordinary rocket path.
+        // Charged, physics and reflected projectiles keep synchronous sampling.
+        const bool threaded=ProjectilePerformancePolicy::currentSearchBudget && !m_tInfo.m_pProjectile && !m_tInfo.m_flGravity
+            && (m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER || m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT)
+            && m_tInfo.m_pWeapon->m_iItemDefinitionIndex()!=Soldier_m_TheBeggarsBazooka;
+        if(threaded)
+        {
+            prepared=SplashWorker::worker.Take([&](const FaceResult& result){return result.key.Matches(key);});
+            size_t vertices=0;
+            for(const auto& face:vFaces) vertices+=face.m_vVertices.size();
+            if(vFaces.size()<=2048 && vertices<=16384 && SearchAllowed(SearchWork::Sampling) && SplashWorker::worker.Available())
+            {
+                auto job=std::make_unique<FaceJob>();
+                job->key=key; job->faces=vFaces; job->seed=uint32_t(SDK::StdRandomInt(0,INT_MAX));
+                if(SplashWorker::worker.Submit(std::move(job)) && ProjectileDiagnostics::current)
+                    ++ProjectileDiagnostics::splash.workerSubmitted;
+            }
+        }
+        const size_t before=vSplashPoints.size();
         ProjectileDiagnostics::Profile sampling(ProjectileDiagnostics::SplashSampling);
-		for (auto& tFace : vFaces)
+        if(prepared)
+        {
+            if(ProjectileDiagnostics::current) ++ProjectileDiagnostics::splash.workerReady;
+            for(const auto& sample:prepared->points)
+            {
+                if(!SearchStep(SearchWork::Sampling)) break;
+                CheckFaceSample(sample,vSplashPoints,vTargetEye,vTargetCenter,flRadius,m_tInfo,trace,filter);
+            }
+        }
+		float flCutoff = key.cutoffSetting * powf(vFaces.size(), 2);
+        FaceRandom random(uint32_t(SDK::StdRandomInt(0,INT_MAX)));
+        float total=random.Float();
+        // Never hold a shot waiting for a background result. If it is missing
+        // or yielded no live-visible candidates, use the remaining normal budget.
+        if(vSplashPoints.size()==before) for (auto& tFace : vFaces)
 		{
 			if (!SearchAllowed(SearchWork::Sampling)) break;
-			HandleFace(tFace, vSplashPoints, flDensity, flRadius, flCutoff, vTargetEye, vTargetCenter, vOrigin, m_tInfo, trace, filter);
+            if(threaded && ProjectileDiagnostics::current) ++ProjectileDiagnostics::splash.workerFallbackFaces;
+            SampleFace(tFace,flDensity,flRadius,flCutoff,vTargetEye,vTargetCenter,vOrigin,m_tInfo.m_vHull,
+                random,total,[](SearchWork work){return SearchStep(work);},
+                [&](const FaceSample& sample){CheckFaceSample(sample,vSplashPoints,vTargetEye,vTargetCenter,flRadius,m_tInfo,trace,filter);});
 //#if defined(SPLASH_DEBUG2) && defined(WORLD_DEBUG)
 //			F::World.DrawFace(tFace, DrawTypeEnum::Edges | DrawTypeEnum::Faces);
 //#endif
@@ -2110,6 +2262,7 @@ bool CAimbotProjectile::CandidateAngleAllowed(const Vec3& angle,const Vec3& poin
     if(m_tInfo.m_pProjectile) return true; // Do not change auto-airblast behavior.
     if(!std::isfinite(angle.x)||!std::isfinite(angle.y)||!std::isfinite(angle.z)) return false;
     if(F::AimbotGlobal.ShouldAimAtAngle(angle)) return true;
+    if(SmoothAim::VisibleGuidance())return false; // no adaptive exception to the visible guidance cone
     if(!m_bAdaptivePass || m_tInfo.m_pProjectile) return false;
     const Vec3 relative=point-origin;
     const Vec3 nearest={std::clamp(relative.x,m_vAdaptiveMins.x,m_vAdaptiveMaxs.x),std::clamp(relative.y,m_vAdaptiveMins.y,m_vAdaptiveMaxs.y),std::clamp(relative.z,m_vAdaptiveMins.z,m_vAdaptiveMaxs.z)};
@@ -2128,6 +2281,8 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
     const bool arcLog=iFlags==PointFlagsEnum::Lob && arcCapture && arcCapture->arcCandidates++<6;
     if (arcLog) ProjectileDiagnostics::Ledge("arc_candidate",std::format("target={} weapon={} type={} flight={} target_ticks={} target_time={} latency={} pitch={} yaw={} underpredict=0",m_tInfo.m_pTarget->m_pEntity->entindex(),m_tInfo.m_pWeapon->GetWeaponID(),iType,flTime,iSimTime,TICKS_TO_TIME(iSimTime),m_tInfo.m_flLatency,flPitch,flYaw));
 
+	if(!m_tInfo.m_pProjectile&&SmoothAim::VisibleGuidance()
+		&&!CandidateAngleAllowed({flPitch,flYaw,0.f},vPoint,vOrigin))return false;
 	Vec3 vAngles; Aim(G::CurrentUserCmd->viewangles, { flPitch, flYaw, 0.f }, vAngles);
     if(auto* capture=ProjectileDiagnostics::current;capture && !m_tInfo.m_pProjectile && m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER && capture->points[m_bPreviewOnly?1:0]++<(m_bPreviewOnly?2:6))
         ProjectileDiagnostics::Ledge("grenade_candidate",std::format("entity={} type={} flags={} flight={} sim_ticks={} latency={} calculated_angle={},{} applied_angle={},{},{} point={},{},{} predicted_target={},{},{}",m_tInfo.m_pTarget->m_pEntity->entindex(),iType,iFlags,flTime,iSimTime,m_tInfo.m_flLatency,flPitch,flYaw,vAngles.x,vAngles.y,vAngles.z,vPoint.x,vPoint.y,vPoint.z,vOrigin.x,vOrigin.y,vOrigin.z));
@@ -2165,7 +2320,7 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
 		switch (Vars::Aimbot::General::AimType.Value)
 		{
 		case Vars::Aimbot::General::AimTypeEnum::Smooth:
-			if (Vars::Aimbot::General::AssistStrength.Value == 100.f)
+			if (!SmoothAim::Combined() && Vars::Aimbot::General::SmoothFormula.Value == Vars::Aimbot::General::SmoothFormulaEnum::Default && Vars::Aimbot::General::AssistStrength.Value == 100.f)
 				break;
 			[[fallthrough]];
 		case Vars::Aimbot::General::AimTypeEnum::Assistive:
@@ -2369,9 +2524,8 @@ bool CAimbotProjectile::HandleDirect(DirectHistory_t& mDirectHistory, size_t* di
 bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
 {
     ProjectileDiagnostics::Profile profile(ProjectileDiagnostics::SplashSearch);
-	bool bReturn = false;
 	if (mSplashHistory.empty())
-		return bReturn;
+		return false;
 
 	auto it = mSplashHistory.begin();
     if (auto regular=mSplashHistory.find(PointFlagsEnum::Regular);regular!=mSplashHistory.end()) it=regular;
@@ -2382,10 +2536,21 @@ bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
 	{
 		return a.m_flTimeTo < b.m_flTimeTo;
 	});
+
+    const int selected=SplashSearchPolicy::NormalizeMode(Vars::Aimbot::Projectile::SplashMode.Value);
+    const bool dynamic=selected==SplashSearchPolicy::Dynamic && !m_tInfo.m_pProjectile;
+    // Rockets already have a whole-command budget. Other fired projectiles get
+    // one shared splash-only budget; never reset it between modes or targets.
+    std::optional<ProjectilePerformancePolicy::SearchScope> splashScope;
+    if(dynamic && !ProjectilePerformancePolicy::currentSearchBudget)
+        splashScope.emplace(m_DynamicSplashBudget,G::CurrentUserCmd->command_number,true);
+    const auto search=[&](int mode)
+    {
+        bool bReturn=false;
 	uint8_t iFlags = CalculateFlagsEnum::None;
 	if (iType == PointFlagsEnum::Lob)
 		iFlags |= CalculateFlagsEnum::LobAngle;
-	SetupSplashPoints(vSplashHistory.front().m_vOrigin, m_vSplashPoints, iFlags);
+	SetupSplashPoints(vSplashHistory.front().m_vOrigin, m_vSplashPoints, iFlags, mode);
 	if (!m_vSplashPoints.empty())
 	{
 		iFlags |= CalculateFlagsEnum::Accuracy;
@@ -2423,24 +2588,42 @@ bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
                 if (ProjectileDiagnostics::current) ++ProjectileDiagnostics::splash.validations;
 				if (HandlePoint(tHistory.m_vOrigin, tHistory.m_iSimtime, tPoint.m_tSolution.m_flPitch, tPoint.m_tSolution.m_flYaw, tPoint.m_tSolution.m_flTime, tPoint.m_vPoint, tPoint.m_iType, iType))
 				{
-					bReturn = true;
-					flLowestDistance = flDistance;
+					bReturn = !dynamic || m_iResult==1;
+					if(!dynamic || m_iResult==1) flLowestDistance = flDistance;
 #ifdef NIKOGRAM_PRIVATE_LEARNING
                     SnapshotSelectedPath(tHistory,tPoint.m_tSolution.m_flTime,tPoint.m_iType,iType,tPoint.m_vPoint);
 #endif
+                    if(dynamic && m_iResult==1) return true;
 				}
 			}
 			if (m_tInfo.m_bIgnoreTiming && iType == PointFlagsEnum::Lob)
 				break;
 		}
 	}
-	
-	mSplashHistory.erase(it);
-	return bReturn;
+        return bReturn;
+    };
+    bool result=false;
+    if(dynamic)
+    {
+        result=SplashSearchPolicy::TryDynamic([&]
+        {
+            ProjectilePerformancePolicy::TracePhaseScope tracePhase;
+            if(ProjectileDiagnostics::current) ++ProjectileDiagnostics::splash.dynamicTrace;
+            return search(SplashSearchPolicy::Trace);
+        },[&]
+        {
+            if(ProjectileDiagnostics::current) ++ProjectileDiagnostics::splash.dynamicFace;
+            return search(SplashSearchPolicy::Face);
+        },[]{return SearchAllowed(SearchWork::Sampling) && SearchAllowed();});
+    }
+    else result=search(selected==SplashSearchPolicy::Dynamic ? SplashSearchPolicy::Trace : selected);
+    mSplashHistory.erase(it);
+    return result;
 }
 
 int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate)
 {
+    SmoothAim::CandidateScope smoothing(tTarget.m_pEntity,true);
     if (!SearchAllowed(SearchWork::Prediction)) return 0;
     if(!m_bPreviewOnly) m_bSearchedThisCommand = true;
     const auto original=tTarget;
@@ -2763,7 +2946,8 @@ bool CAimbotProjectile::Aim(const Vec3& vCurAngle, const Vec3& vToAngle, Vec3& v
 		vOut = vToAngle;
 		break;
 	case Vars::Aimbot::General::AimTypeEnum::Smooth:
-		vOut = vCurAngle.LerpAngle(vToAngle, Vars::Aimbot::General::AssistStrength.Value / 100.f);
+		if (!SmoothAim::Preview(vToAngle,vOut))
+			vOut = vCurAngle.LerpAngle(vToAngle, Vars::Aimbot::General::AssistStrength.Value / 100.f);
 		bReturn = true;
 		break;
 	case Vars::Aimbot::General::AimTypeEnum::Assistive:
@@ -2795,6 +2979,7 @@ void CAimbotProjectile::Aim(CUserCmd* pCmd, Vec3& vAngles, int iMethod)
 	case Vars::Aimbot::General::AimTypeEnum::Assistive:
 		pCmd->viewangles = vAngles;
 		I::EngineClient->SetViewAngles(vAngles);
+        if(iMethod==Vars::Aimbot::General::AimTypeEnum::Smooth)SmoothAim::Select(vAngles);
 		break;
 	case Vars::Aimbot::General::AimTypeEnum::Silent:
 		if (auto pWeapon = H::Entities.GetWeapon();
@@ -2963,6 +3148,7 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 	{
 		if (!SearchAllowed(SearchWork::Prediction) || !SearchAllowed()) break;
 		auto& tTarget=vTargets[targetIndex];
+        SmoothAim::CandidateScope smoothing(tTarget.m_pEntity);
 		const bool replay=targetIndex>=originalCount;
         bool reuseMovement=AutoViewmodelSwitch::Enabled() && AutoViewmodelSwitch::Supported(pWeapon)
             && G::CanPrimaryAttack && Vars::Aimbot::General::AutoShoot.Value && !(G::OriginalCmd.buttons&IN_ATTACK)
@@ -3559,6 +3745,7 @@ bool CAimbotProjectile::TestAngle(CBaseEntity* pProjectile, const Vec3& vPoint, 
 
 bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CBaseEntity* pProjectile)
 {
+    SmoothAim::CandidateScope smoothing(tTarget.m_pEntity,true);
 	m_tMoveStorage = {};
 	if (!F::MoveSim.Initialize(tTarget.m_pEntity, m_tMoveStorage) && tTarget.m_iTargetType == TargetEnum::Player)
 	{

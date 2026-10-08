@@ -1,4 +1,6 @@
 #include "PlayerConditions.h"
+#include "../../ImGui/MoonlitHud.h"
+#include "../../ImGui/Menu/Menu.h"
 
 std::vector<std::string> CPlayerConditions::Get(CTFPlayer* pEntity)
 {
@@ -387,6 +389,44 @@ void CPlayerConditions::Draw(CTFPlayer* pLocal)
 	}
 	if (!pTarget || !pTarget->IsPlayer() || !pTarget->IsAlive())
 		return;
+	if (MoonlitHud::Enabled())
+	{
+		using namespace MoonlitHud;
+		const auto conditions = Get(pTarget);
+		const bool editing = F::Menu.m_bIsOpen;
+		const int heading = editing ? MoonlitHud::S(38) : 0;
+		const int pad = MoonlitHud::S(8), gap = MoonlitHud::S(6), row = Label().m_nTall + pad * 2;
+		const int limit = std::max(1, std::min(MoonlitHud::S(340), H::Draw.m_nScreenW));
+		std::vector<Box> chips;
+		int x = 0, y = heading, width = editing ? MoonlitHud::S(250) : 0;
+		for (size_t i = 0; i < conditions.size(); ++i)
+		{
+			const int iconSpace = !editing && i == 0 ? BadgeSpace() : 0;
+			const int w = std::min(limit, Measure(conditions[i], Label()) + pad * 2 + iconSpace);
+			if (x && x + w > limit) { x = 0; y += row + gap; }
+			chips.push_back({x,y,w,row}); width = std::max(width, x + w); x += w + gap;
+		}
+		const auto pos = Vars::Menu::ConditionsDisplay.Value;
+		const auto bounds = Bounds(pos.x, pos.y, std::max(width, MoonlitHud::S(100)), conditions.empty() ? std::max(heading, MoonlitHud::S(32)) : y + row);
+		m_vIndicatorSize = {float(bounds.w), float(bounds.h)};
+		H::Draw.StartClipping(bounds.x, bounds.y, bounds.w, bounds.h);
+		if (editing)
+		{
+			const Box header{bounds.x,bounds.y,bounds.w,heading-gap}; Frame(header);
+			Badge(header.x + pad, header.y + MoonlitHud::S(6), MoonlitHud::S(20));
+			Text(header.x + pad + BadgeSpace(), header.y + pad, "conditions", Ink, Label(), header.w / 2 - BadgeSpace());
+			Text(header.x + header.w - pad, header.y + pad, "drag to move", Muted, Detail(), header.w / 2 - pad, ALIGN_TOPRIGHT);
+		}
+		for (size_t i = 0; i < chips.size(); ++i)
+		{
+			auto chip = chips[i]; chip.x += bounds.x; chip.y += bounds.y; Frame(chip);
+			const int iconSpace = !editing && i == 0 ? BadgeSpace() : 0;
+			if (iconSpace) Badge(chip.x + pad, chip.y + (row-MoonlitHud::S(20))/2, MoonlitHud::S(20));
+			Text(chip.x + pad + iconSpace, chip.y + pad, conditions[i], Lavender, Label(), chip.w - pad * 2 - iconSpace);
+		}
+		H::Draw.EndClipping();
+		return;
+	}
 
 	int x = Vars::Menu::ConditionsDisplay.Value.x;
 	int y = Vars::Menu::ConditionsDisplay.Value.y + 8;

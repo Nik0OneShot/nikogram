@@ -1,4 +1,5 @@
 #include "SpectatorList.h"
+#include "../../ImGui/MoonlitHud.h"
 #include "../../Players/PlayerUtils.h"
 #include "../../Spectate/Spectate.h"
 #include "../../ImGui/Workspace.h"
@@ -55,6 +56,85 @@ void CSpectatorList::GetSpectators(CTFPlayer* local)
     });
 }
 
+void CSpectatorList::DrawMoonlit(CTFPlayer* local)
+{
+    using namespace MoonlitHud;
+    const int pad = MoonlitHud::S(14), gap = MoonlitHud::S(8), line = Detail().m_nTall + gap;
+    const bool targets = Vars::Menu::SpectatorTargets.Value, labels = Vars::Menu::SpectatorLabels.Value;
+    const bool grouped = Vars::Menu::SpectatorGroup.Value && targets;
+    const bool horizontal = Vars::Menu::SpectatorLayout.Value == 1;
+    const bool respawn = Vars::Menu::SpectatorRespawn.Value;
+    const int screenW = H::Draw.m_nScreenW, screenH = H::Draw.m_nScreenH;
+    if (screenW < MoonlitHud::S(200) || screenH < MoonlitHud::S(120)) return;
+    const int minW = std::min(MoonlitHud::S(260), screenW);
+    int entriesAcross = std::max(1, int(m_vSpectators.size()));
+    if (grouped)
+    {
+        int run = 0, previous = -1; entriesAcross = 1;
+        for (const auto& entry : m_vSpectators)
+        {
+            run = entry.targetIndex == previous ? run + 1 : 1; previous = entry.targetIndex;
+            entriesAcross = std::max(entriesAcross, run);
+        }
+    }
+    const auto autoSize = SpectatorStyle::SizeHorizontal(std::min(screenW, MoonlitHud::S(650)) - pad * 2,
+        MoonlitHud::S(280), gap, entriesAcross, minW - pad * 2);
+    const int width = std::clamp(Vars::Menu::SpectatorWidth.Value > 0 ? Vars::Menu::SpectatorWidth.Value
+        : (horizontal ? autoSize.width + pad * 2 : MoonlitHud::S(310)), minW, screenW);
+    const int inner = width - pad * 2;
+    const int columns = horizontal ? std::min(entriesAcross, SpectatorStyle::Columns(inner, MoonlitHud::S(280), gap)) : 1;
+    const int card = (inner - (columns - 1) * gap) / columns;
+    const int rowHeight = pad * 2 + Label().m_nTall + (targets && !grouped ? line : 0) + (labels || respawn ? line : 0);
+    const int startY = pad + Label().m_nTall + gap * 2;
+    const int minH = startY + (grouped ? line : 0) + rowHeight + line + pad;
+    m_vMinimumSize = {float(minW), float(std::min(minH, screenH))};
+    if (screenH < minH) return;
+    const int maxH = std::clamp(Vars::Menu::SpectatorHeight.Value > 0 ? Vars::Menu::SpectatorHeight.Value : MoonlitHud::S(600), minH, screenH);
+    std::vector<int> targetIndices;
+    for (const auto& entry : m_vSpectators) targetIndices.push_back(entry.targetIndex);
+    const auto pages = SpectatorStyle::Paginate(targetIndices, grouped, columns, card, gap, pad, line, rowHeight, startY, maxH);
+    m_iPageCount = int(pages.size());
+    m_iCurrentPage = std::clamp(Vars::Menu::SpectatorPage.Value, 1, m_iPageCount);
+    const auto& placements = pages[m_iCurrentPage - 1];
+    int bottom = startY + line;
+    for (const auto& place : placements) bottom = std::max(bottom, place.y + (place.header ? line : rowHeight));
+    const int height = Vars::Menu::SpectatorHeight.Value > 0 ? maxH : std::max(minH, bottom + line + pad);
+    const auto position = Vars::Menu::SpectatorsDisplay.Value;
+    const auto box = Bounds(position.x, position.y, width, height);
+    m_vIndicatorSize = {float(box.w), float(box.h)};
+    Frame(box);
+    H::Draw.StartClipping(box.x, box.y, box.w, box.h);
+    Badge(box.x + pad, box.y + pad - MoonlitHud::S(3), MoonlitHud::S(20));
+    Text(box.x + pad + BadgeSpace(), box.y + pad, "spectators", Ink, Label(), inner / 2 - BadgeSpace());
+    Text(box.x + width - pad, box.y + pad + MoonlitHud::S(1), Vars::Menu::SpectatorScope.Value == 1 ? "watching me" : "all players",
+        Muted, Detail(), inner / 2, ALIGN_TOPRIGHT);
+    if (m_vSpectators.empty()) Text(box.x + pad, box.y + startY, "no matching spectators", Muted, Detail(), inner);
+    for (const auto& place : placements)
+    {
+        const auto& entry = m_vSpectators[place.index];
+        const auto accent = SpectatorStyle::WatchingLocal(entry.targetIndex, local->entindex()) ? Gold : Lavender;
+        const int x = box.x + place.x, y = box.y + place.y;
+        if (place.header) { Text(x, y, "watching " + entry.target, accent, Detail(), inner); continue; }
+        H::Draw.FillRoundRect(x, y, card, rowHeight, MoonlitHud::S(8), Raised);
+        Text(x + pad, y + pad, entry.name, Ink, Label(), card - pad * 2);
+        int detailY = y + pad + Label().m_nTall + gap;
+        if (targets && !grouped)
+        {
+            Text(x + pad, detailY, "watching " + entry.target, accent, Detail(), card - pad * 2);
+            detailY += line;
+        }
+        std::string state = labels ? std::string(SpectatorStyle::Label(entry.state)) + " / " +
+            (entry.view == SpectatorStyle::DeathCamera ? (entry.state == SpectatorStyle::Freeze ? "FREEZE CAM" : "DEATH CAM") : SpectatorStyle::Label(entry.view)) : "";
+        const std::string timer = respawn && entry.respawn >= 0 ? std::format("{}s", entry.respawn) : "";
+        const int timerW = Measure(timer, Detail());
+        Text(x + pad, detailY, state, Muted, Detail(), card - pad * 2 - timerW - (timer.empty() ? 0 : gap));
+        if (!timer.empty()) Text(x + card - pad, detailY, timer, Gold, Detail(), timerW, ALIGN_TOPRIGHT);
+    }
+    Row(box, box.y + height - pad - Detail().m_nTall, std::format("{} observers", m_iEntries),
+        std::format("page {} / {}", m_iCurrentPage, m_iPageCount));
+    H::Draw.EndClipping();
+}
+
 void CSpectatorList::Draw(CTFPlayer* local)
 {
     if (!(Vars::Menu::Indicators.Value & Vars::Menu::IndicatorsEnum::Spectators) || !local) return;
@@ -62,6 +142,7 @@ void CSpectatorList::Draw(CTFPlayer* local)
     m_iEntries = int(m_vSpectators.size());
     if (m_vSpectators.empty()) m_iCurrentPage = m_iPageCount = 1;
     if (m_vSpectators.empty() && !F::Menu.m_bIsOpen) return;
+    if (MoonlitHud::Enabled()) { DrawMoonlit(local); return; }
     const auto& font = H::Fonts.GetFont(FONT_CRIT_LABEL);
     const int pad = std::max(3, int(H::Draw.Scale(6, Scale_Round)));
     const int gap = std::max(2, int(H::Draw.Scale(4, Scale_Round)));

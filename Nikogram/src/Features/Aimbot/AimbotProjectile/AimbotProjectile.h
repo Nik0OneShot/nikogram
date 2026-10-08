@@ -100,7 +100,7 @@ class CAimbotProjectile
 private:
 	Directs_t GetDirects();
 	Splashes_t GetSplashes();
-	void SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& vSplashPoints, uint8_t iFlags = CalculateFlagsEnum::None);
+	void SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& vSplashPoints, uint8_t iFlags, int searchMode);
     void GetSplashPoints(Vec3 vOrigin, std::vector<Setup_t>& vSplashPoints, std::vector<Point_t>& vPoints, int iSimTime, uint8_t iFlags = CalculateFlagsEnum::Accuracy, bool bFirst = false, int* batchSize = nullptr);
 
 	void CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& tOut, uint8_t iFlags = CalculateFlagsEnum::Accuracy, int iTolerance = -1);
@@ -144,6 +144,7 @@ private:
 
 	Info_t m_tInfo = {};
     ProjectilePerformancePolicy::SearchBudget m_SearchBudget;
+    ProjectilePerformancePolicy::SearchBudget m_DynamicSplashBudget;
 	MoveStorage m_tMoveStorage = {};
 	ProjectileInfo m_tProjInfo = {};
 	std::vector<Setup_t> m_vSplashPoints = {};

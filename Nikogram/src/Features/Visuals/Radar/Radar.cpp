@@ -5,8 +5,10 @@
 #include "../../Ticks/Ticks.h"
 #include "../../PacketManip/AntiAim/AntiAim.h"
 #include "../../Binds/Binds.h"
+#include "../../Binds/BindPresentation.h"
 #include "../../Players/PlayerUtils.h"
 #include "../../ImGui/Workspace.h"
+#include "../../ImGui/MoonlitHud.h"
 
 namespace
 {
@@ -53,11 +55,13 @@ void CRadar::Draw(CTFPlayer* local)
     if ((R::Position.Value==0 || R::Position.Value==3) && RadarPolicy::Indicators(true,R::Mode.Value))
         x=std::min(w-radius,std::max(x,radius+(R::Binds.Value?210:40)));
     const bool square=R::Shape.Value==1, body=R::Mode.Value!=2;
+    const bool moonlit=MoonlitHud::Enabled(), themed=moonlit && R::InterfaceColors.Value;
+    Workspace::ScopedTextColour preserveText(moonlit);
     // Honor previously saved custom colors as well as newly edited swatches.
-    const auto border=RadarPolicy::InterfaceOutline(R::InterfaceColors.Value,R::InterfaceBorder.Value,R::Border.Value!=R::Border.Default)?Theme(Workspace::BorderChannel):R::Border.Value;
-    const auto text=R::InterfaceColors.Value?Theme(Workspace::TextChannel):R::Text.Value;
-    const auto& font=H::Fonts.GetFont(FONT_CRIT_LABEL);
-    const int baseIcon=std::clamp(int(H::Draw.Scale(16,Scale_Round)),10,24),line=font.m_nTall+4;
+    const auto border=RadarPolicy::InterfaceOutline(R::InterfaceColors.Value,R::InterfaceBorder.Value,R::Border.Value!=R::Border.Default)?(themed?MoonlitHud::Border:Theme(Workspace::BorderChannel)):R::Border.Value;
+    const auto text=R::InterfaceColors.Value?(themed?MoonlitHud::Ink:Theme(Workspace::TextChannel)):R::Text.Value;
+    const auto& font=H::Fonts.GetFont(moonlit?FONT_MOONLIT_DETAIL:FONT_CRIT_LABEL);
+    const int baseIcon=std::clamp(int(H::Draw.Scale(16,Scale_Round)),10,24),line=moonlit?MoonlitHud::Label().m_nTall+MoonlitHud::S(18):font.m_nTall+4;
     const int icon=RadarPolicy::DetailSize(size,baseIcon,4,std::min(64,radius/2),R::IconScale.Value);
     const auto& nameFont=H::Fonts.GetRadarFont(RadarPolicy::DetailSize(size,font.m_nTall,6,48,R::NameScale.Value));
     const auto& distanceFont=H::Fonts.GetRadarFont(RadarPolicy::DetailSize(size,font.m_nTall,6,48,R::DistanceScale.Value));
@@ -66,7 +70,8 @@ void CRadar::Draw(CTFPlayer* local)
     auto label=[&](int lx,int ly,Color_t color,const std::string& value,EAlign align=ALIGN_CENTER) {H::Draw.String(font,lx,ly,color,align,value.c_str());};
     if (body)
     {
-        const auto bg=R::Background.Value.Alpha(byte(R::Background.Value.a*std::clamp(R::Opacity.Value,0,100)/100));
+        const auto background=themed && R::Background.Value==R::Background.Default?MoonlitHud::Panel:R::Background.Value;
+        const auto bg=background.Alpha(byte(background.a*std::clamp(R::Opacity.Value,0,100)/100));
         if (bg.a) {if(square) H::Draw.FillRect(x-radius,y-radius,size,size,bg);else H::Draw.FillCircle(x,y,float(radius),96,bg);}
         if (R::Outline.Value) {if(square) H::Draw.LineRect(x-radius,y-radius,size,size,border);else H::Draw.LineCircle(x,y,float(radius),96,border);}
         if (R::Rings.Value) for (int n=1;n<=2;++n) {const int r=radius*n/3;if(square) H::Draw.LineRect(x-r,y-r,r*2,r*2,border.Alpha(60));else H::Draw.LineCircle(x,y,float(r),64,border.Alpha(60));}
@@ -128,26 +133,34 @@ void CRadar::Draw(CTFPlayer* local)
         if(curved) {Arc(x,y,r,thickness,1,dim);Arc(x,y,r,thickness,charge,color);}
         else {const int bx=x-radius-7-attached*(thickness+gap);H::Draw.FillRect(bx,y-radius,thickness,size,dim);const int fill=int(size*charge);H::Draw.FillRect(bx,y+radius-fill,thickness,fill,color);}
     };
-    gauge(R::Ticks.Value,R::TickColor.Value,RadarPolicy::Fraction(ticks,maximum));
-    gauge(R::Crit.Value,R::CritColor.Value,streaming?1.:RadarPolicy::Fraction(crits,potential));
+    const auto tickColour=themed && R::TickColor.Value==R::TickColor.Default?MoonlitHud::Lavender:R::TickColor.Value;
+    const auto critColour=themed && R::CritColor.Value==R::CritColor.Default?MoonlitHud::Gold:R::CritColor.Value;
+    gauge(R::Ticks.Value,tickColour,RadarPolicy::Fraction(ticks,maximum));
+    gauge(R::Crit.Value,critColour,streaming?1.:RadarPolicy::Fraction(crits,potential));
     // Both captions belong to one compact cluster above the gauge ends.
     const int labelX=x-int((radius+7+attached*(thickness+gap))*(curved?.50:1.));
     int labelY=std::max(4,y-radius-2*line-6);
-    if(R::Crit.Value) {label(labelX,labelY,R::CritColor.Value,streaming?"STREAMING":std::format("CRIT {} / {}",crits,potential),ALIGN_TOP);labelY+=line;}
-    if(R::Ticks.Value) {label(labelX,labelY,R::TickColor.Value,std::format("TICKS {} / {}",ticks,maximum),ALIGN_TOP);labelY+=line;}
+    auto caption=[&](const std::string& name,const std::string& value,Color_t colour) {
+        if(moonlit) MoonlitHud::RadarCaption(labelX,labelY,name,value,colour);
+        else label(labelX,labelY,colour,value=="STREAMING"?value:name+" "+value,ALIGN_TOP);
+        labelY+=line;
+    };
+    if(R::Crit.Value) caption("CRIT",streaming?"STREAMING":std::format("{} / {}",crits,potential),critColour);
+    if(R::Ticks.Value) caption("TICKS",std::format("{} / {}",ticks,maximum),tickColour);
     if (R::Binds.Value)
     {
         const int right=std::max(100,x-radius-16-attached*(thickness+gap)),top=std::max({8,y-radius+12,labelY+8});
         int row=0;
         const auto active=R::InterfaceColors.Value?(Vars::Menu::BindTextGlowCustom.Value?Vars::Menu::BindTextGlowColour.Value:text.Lerp({255,255,255,255},.35f)):R::BindActive.Value;
-        const auto inactive=R::InterfaceColors.Value?Theme(Workspace::InactiveTextChannel):R::BindInactive.Value;
+        const auto inactive=R::InterfaceColors.Value?(themed?MoonlitHud::Muted:Theme(Workspace::InactiveTextChannel)):R::BindInactive.Value;
         // Walk visibility/parent state without recursion or trusting corrupt parent graphs.
         for (int n=0;n<int(F::Binds.m_vBinds.size()) && top+(row+1)*line<h-8;++n)
         {
             auto& bind=F::Binds.m_vBinds[n];
             if (!bind.m_bEnabled || bind.m_iVisibility==BindVisibilityEnum::Hidden) continue;
-            bool effective=bind.m_bActive,visible=true;int parent=bind.m_iParent,depth=0;
+            bool visible=true;int parent=bind.m_iParent,depth=0;
             while(parent!=DEFAULT_BIND) {if(parent<0||parent>=int(F::Binds.m_vBinds.size())||++depth>int(F::Binds.m_vBinds.size())) {visible=false;break;}const auto& b=F::Binds.m_vBinds[parent];if(!b.m_bEnabled||!b.m_bActive) {visible=false;break;}parent=b.m_iParent;}
+            const bool effective=BindPresentation::Get(bind,n,visible,MenuMode::Active==MenuMode::Moonlit).active;
             if (!visible || (bind.m_iVisibility==BindVisibilityEnum::WhileActive && !effective)) continue;
             const auto name=ShortName(bind.m_sName,24);
             const std::string info=R::ShowBindKey.Value && bind.m_iType==BindEnum::Key?U::KeyHandler.String(byte(std::clamp(bind.m_iKey,0,255))):"";
@@ -160,6 +173,11 @@ void CRadar::Draw(CTFPlayer* local)
                 bx=x+int(p->x)-4;by=y+int(p->y)-font.m_nTall/2;
             }
             ++row;
+            if (moonlit && R::BindBackground.Value)
+            {
+                MoonlitHud::Pill(bx-MoonlitHud::Measure(value,font)/2,by-MoonlitHud::S(6),value,effective?active:inactive,font);
+                continue;
+            }
             if (R::BindBackground.Value) {auto extent=H::Draw.GetTextSize(value.c_str(),font);H::Draw.FillRect(bx-int(extent.x)-3,by-2,int(extent.x)+6,line,R::Background.Value);}
             if(effective) for(int oy=-1;oy<=1;++oy) for(int ox=-1;ox<=1;++ox) if(ox||oy) label(bx+ox,by+oy,active.Alpha(byte(active.a/12)),value,ALIGN_TOPRIGHT);
             label(bx,by,effective?active:inactive,value,ALIGN_TOPRIGHT);

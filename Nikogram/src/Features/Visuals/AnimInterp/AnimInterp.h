@@ -10,7 +10,8 @@
 //  - sequence transitions are skipped entirely (CBaseAnimating_MaintainSequenceTransitions).
 // These remain client-side simulations, not a guarantee of identical server hitboxes.
 //
-// This feature preserves that simulation. It records completed local batches and individual remote ticks,
+// This feature preserves that simulation. It records one display frame per completed local batch
+// (the last actual real-command pose for anti-aim, otherwise the final pose) and individual remote ticks,
 // plays those states back smoothly (with a small delay) while the frame is drawn, lets the game blend between
 // sequences only while drawing, and puts the real state back as soon as drawing ends.
 
@@ -36,6 +37,7 @@ struct AnimFrame_t
 	bool m_bSequenceLoops = false;
 	std::array<float, 24> m_aPoseParameters = {};
 	Vec3 m_vRenderAngles = {};
+	Vec3 m_vRecordedEyeAngles = {}; // Diagnostic metadata; Apply never changes native eye state.
 	std::array<Layer_t, GESTURE_SLOT_COUNT> m_aLayers = {};
 };
 
@@ -77,10 +79,16 @@ private:
 	matrix3x4 m_aOriginalFakeBones[MAXSTUDIOBONES] = {};
 	bool m_bFakeApplied = false;
 
+	// Latest local real-command pose also serves the non-interpolated renderer.
+	CTFPlayer* m_pLocalPose = nullptr;
+	AnimFrame_t m_tLocalPose = {};
+	float m_flLocalPoseArrival = 0.f;
+
 	void Advance(AnimTimeline_t& tTimeline, float flDeltaTicks);
 	bool Sample(const AnimTimeline_t& tTimeline, AnimFrame_t& tOut);
 	void RebuildFakeAngle(CTFPlayer* pLocal, const AnimFrame_t& tFrame);
 	void InvalidateAllBones();
+	bool ApplyLocalPose();
 
 public:
 	class FakeBuildScope
@@ -98,9 +106,11 @@ public:
 	void BonesRebuilt(CBaseEntity* pEntity);
 	bool Enabled();
 
-	// Remote simulation records per tick. Local simulation records its completed batch only,
-	// with elapsed ticks preserved so keyframe count never becomes the animation clock.
-	void Record(CTFPlayer* pPlayer, int iElapsedTicks = 1, bool bBatchEndpoint = false);
+	// A local batch may supply its last real-command display pose separately from
+	// the untouched final simulation state. Elapsed batch ticks remain preserved.
+	bool CaptureFrame(CTFPlayer* pPlayer, AnimFrame_t& tFrame);
+	const AnimFrame_t* LocalRealFrame(CTFPlayer* pPlayer) const;
+	void Record(CTFPlayer* pPlayer, int iElapsedTicks = 1, bool bBatchEndpoint = false, const AnimFrame_t* pDisplayFrame = nullptr);
 	void EndBurst(CTFPlayer* pPlayer);
 
 	// render side

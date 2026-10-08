@@ -1,4 +1,5 @@
 #include "NoSpreadHitscan.h"
+#include "../../ImGui/MoonlitHud.h"
 
 #include "../../Ticks/Ticks.h"
 #include "../../AntiCheatCompatibility/AntiCheatCompatibility.h"
@@ -203,6 +204,15 @@ void CNoSpreadHitscan::Draw(CTFPlayer* pLocal)
 {
 	if (!(Vars::Menu::Indicators.Value & Vars::Menu::IndicatorsEnum::SeedPrediction) || !ShouldRun() || !pLocal->IsAlive())
 		return;
+	if (MoonlitHud::Enabled())
+	{
+		const auto pos = Vars::Menu::SeedPredictionDisplay.Value;
+		MoonlitHud::Rows rows{{"uptime", GetFormat(m_flServerTime)}, {"mantissa step", std::format("{}", m_flMantissaStep)}};
+		if (Vars::Debug::Info.Value) rows.emplace_back("delta", std::format("{:.3f}", m_dTimeDelta));
+		m_vIndicatorSize = MoonlitHud::Info(pos.x, pos.y, "seed prediction", m_bSynced ? "synced" : "not synced", rows,
+			m_bSynced ? MoonlitHud::Green : MoonlitHud::Muted);
+		return;
+	}
 
 	int x = Vars::Menu::SeedPredictionDisplay.Value.x;
 	int y = Vars::Menu::SeedPredictionDisplay.Value.y + 8;

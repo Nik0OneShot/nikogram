@@ -16,6 +16,7 @@ public:
 	void LoadStyle();
 	ImTextureID LauncherAvatar(bool privacy);
 	ImTextureID NikoLauncherIcon();
+	ImTextureID NikogramLogo();
 	ImTextureID PetTexture(int frame, const unsigned int* pixels, unsigned int width, unsigned int height);
 	void ReleaseLauncherTextures();
 
@@ -23,6 +24,7 @@ private:
 	IDirect3DDevice9* m_pLauncherDevice = nullptr; // borrowed; owned by the game
 	IDirect3DTexture9* m_pDefaultAvatar = nullptr;
 	IDirect3DTexture9* m_pNikoIcon = nullptr;
+	IDirect3DTexture9* m_pNikogramLogo = nullptr;
 	IDirect3DTexture9* m_pPetTextures[184] = {};
 	IDirect3DTexture9* m_pLocalAvatar = nullptr;
 	uint64_t m_uAvatarOwner = 0;
@@ -51,6 +53,8 @@ public:
 	ImFont* FontBold = nullptr;
 	ImFont* FontLarge = nullptr;
 	ImFont* FontMono = nullptr;
+	ImFont* FontMoonlit = nullptr;
+	ImFont* FontMoonlitHeading = nullptr;
 
 	ImFont* IconFont = nullptr;
 

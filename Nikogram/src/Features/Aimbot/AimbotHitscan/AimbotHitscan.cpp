@@ -1,4 +1,21 @@
 #include "AimbotHitscan.h"
+#include "../SmoothAim.h"
+#include "../AimRegionPolicy.h"
+
+static bool RegionPoint(const Vec3& eye,const Vec3& view,const Vec3& mins,const Vec3& maxs,const matrix3x4& transform,Vec3& local,bool& inside,float& heightMiss)
+{
+    AimRegionPolicy::Box box;
+    box.origin={transform[0][3],transform[1][3],transform[2][3]};
+    box.mins={mins.x,mins.y,mins.z};box.maxs={maxs.x,maxs.y,maxs.z};
+    for(int i=0;i<3;++i)box.axis[i]={transform[0][i],transform[1][i],transform[2][i]};
+    Vec3 forward;Math::AngleVectors(view,&forward);
+    AimRegionPolicy::Result result;
+    if(!AimRegionPolicy::Nearest({eye.x,eye.y,eye.z},{forward.x,forward.y,forward.z},box,result,true))return false;
+    std::array<AimRegionPolicy::V,3> rows;
+    if(!AimRegionPolicy::Inverse(box,rows))return false;
+    const auto point=AimRegionPolicy::Local(rows,AimRegionPolicy::Sub(result.point,box.origin));
+    local={float(point[0]),float(point[1]),float(point[2])};inside=result.inside;heightMiss=float(result.heightMiss);return true;
+}
 #include "ServerEstimate.h"
 #include "../AimbotAuditPolicy.h"
 
@@ -359,7 +376,7 @@ void CAimbotHitscan::GetHitboxPoints(std::vector<Vec3>& vPoints, CBaseEntity* pT
 	{
 	case Vars::Aimbot::General::AimTypeEnum::Smooth:
 	case Vars::Aimbot::General::AimTypeEnum::Assistive:
-		if (!Vars::Aimbot::General::AssistStrength.Value)
+		if (!Vars::Aimbot::General::AssistStrength.Value && !SmoothAim::Combined() && (Vars::Aimbot::General::AimType.Value != Vars::Aimbot::General::AimTypeEnum::Smooth || Vars::Aimbot::General::SmoothFormula.Value == Vars::Aimbot::General::SmoothFormulaEnum::Default))
 			return; // triggerbot
 	}
 
@@ -429,6 +446,7 @@ bool CAimbotHitscan::BuildServerEstimate(CBaseEntity* pTarget, const std::vector
 
 int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 {
+    SmoothAim::CandidateScope smoothing(tTarget.m_pEntity,true);
 	if (Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Unsimulated && H::Entities.GetChoke(tTarget.m_pEntity->entindex()) > Vars::Aimbot::General::TickTolerance.Value)
 		return false;
 
@@ -462,6 +480,16 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 		return false;
 
 	int iReturn = false;
+	// Region is opt-in, Legit-only, and does not change held-shot angles or
+	// Wrangler's remote sentry destination. Every candidate still runs the
+	// original range, visibility, hull, hitbox and firing checks below.
+	const bool bRegion=SmoothAim::Region()&&!F::Ticks.GetShootAngle()&&!bWrangler;
+	const bool bAssist=bRegion&&bPlayer&&SmoothAim::HitboxAssistance()&&SmoothAim::controller.WantsAssist()
+		&&pWeapon->GetWeaponID()!=TF_WEAPON_MEDIGUN;
+	const Vec3 vRegionView=G::OriginalCmd.viewangles+pLocal->m_vecPunchAngle();
+	float flBestAimOnly=std::numeric_limits<float>::max();
+	float flBestAimOnlyHeight=std::numeric_limits<float>::max();
+	Vec3 vAimOnly;
 
 	std::optional<Vec3> vPeekPos = std::nullopt;
 	if (Vars::Aimbot::Hitscan::PeekAmount.Value && pWeapon->GetWeaponSpread())
@@ -502,10 +530,40 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 	std::vector<Vec3> vPoints = {};
 	for (auto pRecord : vRecords)
 	{
+		std::optional<Target_t> regionHit;
+		float flBestRegionHit=std::numeric_limits<float>::max();
+		float flBestRegionHeight=std::numeric_limits<float>::max();
+		bool bRecordAimOnly=false;
+		if(bRegion){flBestAimOnly=flBestAimOnlyHeight=std::numeric_limits<float>::max();iReturn=false;}
+		int iRegionBone=0;
 		bool bRunPeekCheck = vPeekPos.has_value();
 		auto aBones = pRecord->m_aBones;
 
 		GetHullInfo(tTarget.m_pEntity, bPlayer && !bWrangler ? pRecord : nullptr, &pHullTransform);
+		SmoothPolicy::AssistChoice assist;
+		if(bAssist)
+		{
+			// Only already-enabled hitboxes enter this pass. Smooth keeps its
+			// original region destination; Assistive has its own visible region.
+			for(auto& hitbox:vHitboxes)
+			{
+				Vec3 mins,maxs,nearest;const matrix3x4* transform=nullptr;bool inside=false;float height=0.f;
+				GetHitboxInfo(hitbox,tTarget.m_pEntity,aBones,&transform,&mins,&maxs);
+				if(!transform||!RegionPoint(m_vEyePos,vRegionView,(mins+flBoneSubtract/flModelScale)*flBoneScale,
+					(maxs-flBoneSubtract/flModelScale)*flBoneScale,*transform,nearest,inside,height))continue;
+				Vec3 point;Math::VectorTransform(nearest,*transform,point);
+				if(m_vEyePos.DistToSqr(point)>flMaxRangeSqr
+					||!SDK::VisPos(pLocal,tTarget.m_pEntity,m_vEyePos,point)
+					||(bServerEstimate&&!SDK::VisPosWorld(pLocal,nullptr,m_vEyePos,point)))continue;
+				const Vec3 goal=inside?vRegionView:Math::CalcAngle(m_vEyePos,point);
+				const float score=goal.DeltaAngle(vRegionView).Length2DSqr();
+				const Vec3 cameraGoal=goal-pLocal->m_vecPunchAngle();
+				if(!F::AimbotGlobal.ShouldAimAtAngle(cameraGoal))continue;
+				assist.Consider({cameraGoal.x,cameraGoal.y},score,hitbox.m_iHitbox==HITBOX_HEAD,
+					Vars::Aimbot::General::AssistHitbox.Value==Vars::Aimbot::General::AssistHitboxEnum::Head,height);
+			}
+		}
+		SmoothAim::GuideScope guide(assist); // restored for every record/target/secondary path
 		for (auto& tHitbox : vHitboxes)
 		{
 			GetHitboxInfo(tHitbox, tTarget.m_pEntity, aBones, &pTransform, &vMins, &vMaxs);
@@ -516,6 +574,18 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 			Vec3 vOffset = vCenter - vOrigin;
 
 			GetHitboxPoints(vPoints, tTarget.m_pEntity, pWeapon, vMins, vMaxs, tHitbox.m_iHitbox);
+			bool bRegionInside=false;
+			float flHeightMiss=std::numeric_limits<float>::max();
+			if(bRegion)
+			{
+				Vec3 nearest;
+				if(RegionPoint(m_vEyePos,vRegionView,vCheckMins,vCheckMaxs,*pTransform,nearest,bRegionInside,flHeightMiss))
+				{
+					// Points in this list are offsets from the hitbox's centre.
+					const Vec3 local=nearest-(vMins+vMaxs)*.5f;
+					vPoints.insert(vPoints.begin(),local);
+				}
+			}
 			for (auto& vPoint : vPoints)
 			{
 				Math::VectorTransform(vPoint, *pTransform, vOrigin); vOrigin += vOffset;
@@ -532,16 +602,27 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 						goto skip; // if we can't hit our primary hitbox, don't bother
 				}
 
-				Vec3 vAngles; bool bChanged = Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(m_vEyePos, vOrigin), vAngles);
+				const bool bPreserve=bRegionInside && &vPoint==vPoints.data();
+				const Vec3 vGoal=bPreserve?vRegionView:Math::CalcAngle(m_vEyePos,vOrigin);
+				const float flRegionScore=vGoal.DeltaAngle(vRegionView).Length2DSqr();
+				// Restrict the unsmoothed destination, not the tiny per-command step.
+				if(SmoothAim::VisibleGuidance()&&!F::AimbotGlobal.ShouldAimAtAngle(vGoal-pLocal->m_vecPunchAngle()))continue;
+				// Region destination is first in the list; fallback multipoints are
+				// ranked by their own projected vertical distance, not its row score.
+				const float height=bRegion && &vPoint==vPoints.data() && flHeightMiss!=std::numeric_limits<float>::max()
+					?flHeightMiss:std::abs(std::tan(Math::Deg2Rad(vGoal.x-vRegionView.x)));
+				Vec3 vAngles; bool bChanged = Aim(G::CurrentUserCmd->viewangles, vGoal, vAngles);
+				if(bPreserve&&!assist.valid)vAngles=G::CurrentUserCmd->viewangles; // Assistive may refine a different hitbox
 				if (pHoldAngle) vAngles -= F::NoSpread.GetOffset(); // hold angle recorded with nospread, correct it
 				if (!F::AimbotGlobal.ShouldAimAtAngle(vAngles) || !bChanged && !SDK::VisPos(pLocal, tTarget.m_pEntity, m_vEyePos, vOrigin))
 					continue;
 
 				// for the time being, no vischecks against other hitboxes
-				Vec3 vForward; Math::AngleVectors(vAngles, &vForward);
+				Vec3 vForward; Math::AngleVectors(bRegion?vAngles+pLocal->m_vecPunchAngle():vAngles, &vForward);
 				if ((!bChanged || Math::RayToOBB(m_vEyePos, vForward, vCheckMins, vCheckMaxs, *pTransform, flModelScale) && SDK::VisPos(pLocal, tTarget.m_pEntity, m_vEyePos, m_vEyePos + vForward * m_vEyePos.DistTo(vOrigin)))
 					&& (!pHullTransform || Math::RayToOBB(m_vEyePos, vForward, vHullMins, vHullMaxs, *pHullTransform)))
 				{
+					if(bRegion&&!SmoothPolicy::PlacementBetter(height,flRegionScore,flBestRegionHeight,flBestRegionHit))continue;
 					tTarget.m_vAngleTo = vAngles;
 					tTarget.m_pRecord = pRecord;
 					tTarget.m_vPos = vOrigin;
@@ -554,20 +635,39 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 						tTarget.m_nAimedHitbox = tHitbox.m_iHitbox;
 						iTargetBone = tHitbox.m_pBox->bone;
 					}
-					return true;
+					if(!bRegion||flRegionScore<.00000001f)return true;
+					// Compare across eligible hitboxes: an already valid body aim
+					// must not be recentered toward an earlier head candidate.
+					regionHit=tTarget;flBestRegionHit=flRegionScore;flBestRegionHeight=height;
+					if(tHitbox.m_pBox)iRegionBone=tHitbox.m_pBox->bone;
 				}
 				else if (bChanged && SDK::VisPos(pLocal, tTarget.m_pEntity, m_vEyePos, vOrigin))
 				{
-					if (iReturn != 2 || vAngles.DeltaAngle(G::CurrentUserCmd->viewangles).Length2DSqr() < tTarget.m_vAngleTo.DeltaAngle(G::CurrentUserCmd->viewangles).Length2DSqr())
+					if(bRegion)
+					{
+						if(SmoothPolicy::PlacementBetter(height,flRegionScore,flBestAimOnlyHeight,flBestAimOnly))
+						{flBestAimOnly=flRegionScore;flBestAimOnlyHeight=height;vAimOnly=vAngles;bRecordAimOnly=true;}
+					}
+					else if (iReturn != 2 || vAngles.DeltaAngle(G::CurrentUserCmd->viewangles).Length2DSqr() < tTarget.m_vAngleTo.DeltaAngle(G::CurrentUserCmd->viewangles).Length2DSqr())
 						tTarget.m_vAngleTo = vAngles;
 					iReturn = 2;
 				}
 			}
 		}
+		// An incidental body hit must not outrank a better head-level destination
+		// just because smoothing has not reached that destination yet.
+		if(bRegion&&bRecordAimOnly&&(!regionHit||SmoothPolicy::PlacementBetter(flBestAimOnlyHeight,flBestAimOnly,flBestRegionHeight,flBestRegionHit)))
+		{tTarget.m_vAngleTo=vAimOnly;return 2;}
+		if(regionHit)
+		{
+			tTarget=*regionHit;iTargetBone=iRegionBone;
+			return true; // keep the existing preferred-record order
+		}
 
-		skip: continue;
+		skip: if(bRegion)iReturn=false;continue;
 	}
 
+	if(bRegion&&iReturn==2)tTarget.m_vAngleTo=vAimOnly;
 	return iReturn;
 }
 
@@ -663,7 +763,8 @@ bool CAimbotHitscan::Aim(const Vec3& vCurAngle, Vec3 vToAngle, Vec3& vOut, int i
 		vOut = vToAngle;
 		break;
 	case Vars::Aimbot::General::AimTypeEnum::Smooth:
-		vOut = vCurAngle.LerpAngle(vToAngle, Vars::Aimbot::General::AssistStrength.Value / 100.f);
+		if (!SmoothAim::Preview(vToAngle,vOut))
+			vOut = vCurAngle.LerpAngle(vToAngle, Vars::Aimbot::General::AssistStrength.Value / 100.f);
 		bReturn = true;
 		break;
 	case Vars::Aimbot::General::AimTypeEnum::Assistive:
@@ -695,6 +796,7 @@ void CAimbotHitscan::Aim(CUserCmd* pCmd, Vec3& vAngles, int iMethod)
 	case Vars::Aimbot::General::AimTypeEnum::Assistive:
 		pCmd->viewangles = vAngles;
 		I::EngineClient->SetViewAngles(vAngles);
+        if(iMethod==Vars::Aimbot::General::AimTypeEnum::Smooth)SmoothAim::Select(vAngles);
 		break;
 	case Vars::Aimbot::General::AimTypeEnum::Silent:
 		if (G::Attacking == 1 || bUnsure)
@@ -876,6 +978,7 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 
 	for (auto& tTarget : vTargets)
 	{
+        SmoothAim::CandidateScope smoothing(tTarget.m_pEntity);
 		if (nWeaponID == TF_WEAPON_MEDIGUN && pWeapon->As<CWeaponMedigun>()->m_hHealingTarget().Get() == tTarget.m_pEntity)
 		{
 			if (G::LastUserCmd->buttons & IN_ATTACK)

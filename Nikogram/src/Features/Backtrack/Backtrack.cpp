@@ -1,4 +1,5 @@
 #include "Backtrack.h"
+#include "../ImGui/MoonlitHud.h"
 #include "BacktrackPolicy.h"
 #include "CursorBacktrackPolicy.h"
 #include "../Aimbot/Aimbot.h"
@@ -593,6 +594,15 @@ void CBacktrack::Draw(CTFPlayer* pLocal)
 	float flFake = std::min(flFakeLatency + flFakeLerp, m_flMaxUnlag) * 1000;
 	float flLatency = std::max(pNetChan->GetLatency(FLOW_INCOMING) + pNetChan->GetLatency(FLOW_OUTGOING) - flFakeLatency, 0.f) * 1000;
 	int iLatencyScoreboard = pResource->m_iPing(I::EngineClient->GetLocalPlayer());
+	if (MoonlitHud::Enabled())
+	{
+		const auto pos = Vars::Menu::PingDisplay.Value;
+		MoonlitHud::Rows rows{{"scoreboard", std::format("{} ms", iLatencyScoreboard)}};
+		if (flFake || Vars::Backtrack::Interp.Value > G::Lerp * 1000)
+			rows.insert(rows.begin(), {"added latency", std::format("+{:.0f} ms", flFake)});
+		m_vIndicatorSize = MoonlitHud::Info(pos.x, pos.y, "ping", std::format("{:.0f} ms", flLatency), rows);
+		return;
+	}
 
 	int x = Vars::Menu::PingDisplay.Value.x;
 	int y = Vars::Menu::PingDisplay.Value.y + 8;

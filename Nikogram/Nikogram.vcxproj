@@ -927,6 +927,7 @@
     <ClCompile Include="src\Features\CheatDetection\CheatDetection.cpp" />
     <ClCompile Include="src\Features\Commands\Commands.cpp" />
     <ClCompile Include="src\Features\Binds\Binds.cpp" />
+    <ClCompile Include="src\Features\Binds\ConditionSensor.cpp" />
     <ClCompile Include="src\Features\Configs\Configs.cpp" />
     <ClCompile Include="src\Features\CritHack\CritHack.cpp" />
     <ClCompile Include="src\Features\EnginePrediction\EnginePrediction.cpp" />
@@ -951,6 +952,7 @@
     <ClCompile Include="src\Features\Ticks\Ticks.cpp" />
     <ClCompile Include="src\Features\Visuals\Chams\Chams.cpp" />
     <ClCompile Include="src\Features\Visuals\ESP\ESP.cpp" />
+    <ClCompile Include="src\Features\Visuals\Dapper\Dapper.cpp" />
     <ClCompile Include="src\Features\Visuals\FakeAngle\FakeAngle.cpp" />
     <ClCompile Include="src\Features\Visuals\AnimInterp\AnimInterp.cpp" />
     <ClCompile Include="src\Features\Visuals\Glow\Glow.cpp" />
@@ -1417,6 +1419,25 @@
     <ClInclude Include="src\Features\Configs\Configs.h" />
     <ClInclude Include="src\Features\ImGui\Render.h" />
     <ClInclude Include="src\Features\ImGui\Workspace.h" />
+    <ClInclude Include="src\MenuStartup.h" />
+    <ClInclude Include="src\Features\ImGui\MenuMode.h" />
+    <ClInclude Include="src\Features\ImGui\MoonlitHud.h" />
+    <ClInclude Include="src\Features\ImGui\NikogramLogo.h" />
+    <ClInclude Include="src\Features\ImGui\Menu\Moonlit.inl" />
+    <ClInclude Include="src\Features\ImGui\Menu\MoonlitMisc.inl" />
+    <ClInclude Include="src\Features\ImGui\Menu\MoonlitVisuals.inl" />
+    <ClInclude Include="src\Features\ImGui\Menu\MoonlitGroups.h" />
+    <ClInclude Include="src\Features\ImGui\Menu\MoonlitGroups.inl" />
+    <ClInclude Include="src\Features\ImGui\Menu\MoonlitCompact.inl" />
+    <ClInclude Include="src\Features\Aimbot\AimModes.h" />
+    <ClInclude Include="src\Features\Aimbot\SmoothPolicy.h" />
+    <ClInclude Include="src\Features\Aimbot\SmoothAim.h" />
+    <ClInclude Include="src\Features\Aimbot\AimRegionPolicy.h" />
+    <ClInclude Include="src\Features\Binds\BindPresentation.h" />
+    <ClInclude Include="src\Features\Binds\ConditionPolicy.h" />
+    <ClInclude Include="src\Features\Binds\ConditionSensor.h" />
+    <ClInclude Include="src\Features\ImGui\Menu\MoonlitControls.inl" />
+    <ClInclude Include="src\Features\ImGui\Menu\MoonlitBinding.h" />
     <ClInclude Include="src\Features\ImGui\SteamDefaultAvatar.h" />
     <ClInclude Include="src\Features\ImGui\MaterialDesign\IconDefinitions.h" />
     <ClInclude Include="src\Features\ImGui\MaterialDesign\MaterialIcons.h" />
@@ -1573,6 +1594,11 @@
   <Target Name="ValidateNikogramFlavor" BeforeTargets="PrepareForBuild">
     <Error Condition="'$(NikogramFlavor)'!='Public' And '$(NikogramFlavor)'!='Private'" Text="NikogramFlavor must be Public or Private." />
   </Target>
+  <ItemGroup>
+    <ResourceCompile Include="DapperAssets.rc" />
+    <ClInclude Include="src\Features\Visuals\Dapper\Dapper.h" />
+    <None Include="assets\dapper\*" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="..\packages\boost.1.87.0\build\boost.targets" Condition="Exists('..\packages\boost.1.87.0\build\boost.targets')" />

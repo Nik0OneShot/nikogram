@@ -381,3 +381,8 @@ PRIVATE-LEARNING.md
 *.ps1
 *.bat
 *.cmd
+*.py
+*.cjs
+*.mjs
+/build/
+/output/

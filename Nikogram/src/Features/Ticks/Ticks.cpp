@@ -1,4 +1,5 @@
 #include "Ticks.h"
+#include "../ImGui/MoonlitHud.h"
 #include "TickIndicatorStyle.h"
 #include "../ImGui/Workspace.h"
 #include "../ImGui/Menu/Menu.h"
@@ -429,6 +430,14 @@ void CTicks::Draw(CTFPlayer* pLocal)
 		&& !F::AutoRocketJump.IsRunning() && GetTicks(weapon) > 0
 		&& (G::CanPrimaryAttack || G::Reloading);
 	const char* dtStatus = dtReady ? "DT READY" : "DT NOT READY";
+	if (MoonlitHud::Enabled())
+	{
+		const auto pos = Vars::Menu::TicksDisplay.Value;
+		m_vIndicatorSize = MoonlitHud::Meter(pos.x, pos.y, "ticks", status, count,
+			m_bSpeedhack ? "scale" : "stored", TickIndicatorStyle::Charge(ticks, maximum, m_bSpeedhack),
+			MoonlitHud::Lavender, {{"doubletap", dtReady ? "ready" : "not ready"}});
+		return;
+	}
 	const auto& labelFont = H::Fonts.GetFont(FONT_CRIT_LABEL);
 	const auto& detailFont = labelFont;
 	const auto& countFont = H::Fonts.GetFont(FONT_CRIT_COUNT);

@@ -9,6 +9,7 @@
 #include "../Features/Statistics/Statistics.h"
 #include "../Features/SkinChanger/SkinChanger.h"
 #include "../Features/Aimbot/AutoViewmodelSwitch.h"
+#include "../Features/Aimbot/SplashWorker.h"
 #include "../Features/EnginePrediction/EnginePrediction.h"
 #include "../Features/Visuals/Materials/Materials.h"
 #include "../Features/Visuals/Visuals.h"
@@ -154,6 +155,7 @@ void CCore::ServiceStartup()
 		if(!U::BytePatches.Initialize()||!H::Events.Initialize())
 		{StartupPolicy::gate.Complete(false);CrashLog::Stage("startup_failed");return;}
 		PetClock::Start();
+		SplashWorker::Start();
 		StartupPolicy::gate.Complete(true);CrashLog::Stage("startup_ready");
 		SDK::Output("Nikogram", "Loaded", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG, ICON_MD_INFO);
 	}
@@ -199,6 +201,7 @@ void CCore::Unload()
 		return;
 	}
 	G::Unload = true;
+	SplashWorker::Stop();
 	RealLag::Shutdown();
 	Statistics::Shutdown();
 	PrivateLearning::Shutdown();

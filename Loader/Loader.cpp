@@ -1,5 +1,6 @@
 #include "Loader.h"
 #include "resource.h"
+#include "MenuStartup.h"
 #include <BlackBone/Process/Process.h>
 #include <bcrypt.h>
 #include <shlobj.h>
@@ -122,8 +123,8 @@ std::wstring Hash(std::span<const unsigned char> bytes){
  for(auto byte:digest){result+=hex[byte>>4];result+=hex[byte&15];}return result;
 }
 bool VerifyPayloads(){
- return Hash(Resource(ID_PAYLOAD))==L"AFA034142FAD8EFC1A416DFCEE2A670EF5A4F2055D45321BF71B62559B66396A"
-  &&Hash(Resource(ID_SOURCE))==L"CBEB952D38F159B2AE469F90296925316FD256140CBF0E1FBCD77A16798C9A52";
+    return Hash(Resource(ID_PAYLOAD))==L"1F0417A6A75F2A1EB11DB8E723FB9B12DEB813B11EBF5E2E2D887189AFFA3826"
+        &&Hash(Resource(ID_SOURCE))==L"B8D6A367C01056F6AD76C853CDB5956C1FBB87274CD789F2DFDB3A1B3BC2AE3B";
 }
 std::wstring Error(DWORD error){
  wchar_t* message=nullptr;FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,nullptr,error,0,reinterpret_cast<PWSTR>(&message),0,nullptr);
@@ -162,11 +163,12 @@ void Export(int resource,const std::filesystem::path& path,bool overwrite){
  if(!file.valid())throw std::runtime_error("create export");
  Write(file.h,Resource(resource));
 }
-Result Inject(Target expected,bool confirmLegacyNativeUnload){
+Result Inject(Target expected,bool confirmLegacyNativeUnload,int startupMenu){
  try{
   AttemptGuard attemptGuard(expected);
   if(!attemptGuard.held)return {false,L"Another loader operation is already in progress. No injection attempted."};
   if(!VerifyPayloads())return {false,L"Embedded payload verification failed. No injection attempted."};
+  if(startupMenu < -1 || startupMenu > 1)return {false,L"Invalid startup menu choice. Nothing was injected."};
   auto current=Detect();
   if(!current.ready||current.pid!=expected.pid||current.born!=expected.born)return {false,L"TF2 changed or is not ready. No injection attempted."};
   if(current.legacyAttempt&&!confirmLegacyNativeUnload)return {false,L"Confirm that the old loader used native inject and that Nikogram has fully unloaded before retrying."};
@@ -191,12 +193,15 @@ Result Inject(Target expected,bool confirmLegacyNativeUnload){
   const auto attempt=ReadAttempt(expected);
   if(attempt==Attempt::Blocked||(attempt==Attempt::Legacy&&!confirmLegacyNativeUnload))
    return {false,L"An uncertain or manually mapped attempt exists. Restart TF2 before retrying."};
+  MenuStartup::Request menuChoice(expected.pid,expected.born,startupMenu);
+  if(startupMenu>=0 && !menuChoice.Ready())return {false,L"Could not prepare the startup menu choice. Nothing was injected."};
   Handle marker(CreateFileW(Marker(expected).c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr));
   if(!marker.valid())return {false,L"Could not update the local attempt record. Nothing was injected."};
   WriteAttempt(marker.h,"native_pending\n");
   auto result=process.modules().Inject(filePath.wstring());
   if(!result||!result.result())return {false,L"Native injection failed ("+StatusHex(result.status)+L"). Restart TF2 before another attempt."};
   WriteAttempt(marker.h,"native_complete\n");
+  if(startupMenu>=0 && !menuChoice.Wait())return {true,L"The DLL loaded, but did not acknowledge the startup menu choice. Do not inject again. Check the game; you can select the menu under Interface.",true};
   return {true,L"DLL loaded. Check Nikogram in-game; its own startup checks may still be running."};
  }catch(...){return {false,L"Loading could not complete. If an attempt started, restart TF2 before retrying. No automatic retry was made."};}
 }

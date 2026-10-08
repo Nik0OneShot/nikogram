@@ -1,6 +1,7 @@
 #include "../SDK/SDK.h"
 
 #include "../Features/World/World.h"
+#include "../Features/Aimbot/SplashWorker.h"
 
 MAKE_SIGNATURE(CModelLoader_Map_LoadModel, "engine.dll", "48 8B C4 48 89 58 ? 48 89 50 ? 48 89 48 ? 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 ? ? ? ? 48 81 EC ? ? ? ? FF 05", 0x0);
 MAKE_SIGNATURE(R_LevelInit, "engine.dll", "48 83 EC ? 48 8D 0D ? ? ? ? FF 15 ? ? ? ? 48 8D 0D ? ? ? ? FF 15", 0x0);
@@ -10,6 +11,7 @@ MAKE_HOOK(CModelLoader_Map_LoadModel, S::CModelLoader_Map_LoadModel(), void,
 	void* rcx, model_t* mod)
 {
 	DEBUG_RETURN(CModelLoader_Map_LoadModel, rcx, mod);
+	SplashWorker::Invalidate();
 
 	CALL_ORIGINAL(rcx, mod);
 
@@ -32,6 +34,7 @@ MAKE_HOOK(CM_FreeMap, S::CM_FreeMap(), void,
 	)
 {
 	DEBUG_RETURN(CM_FreeMap);
+	SplashWorker::Invalidate();
 
 	CALL_ORIGINAL();
 

@@ -1,4 +1,4 @@
-Nikogram Loader 0.1.4
+Nikogram Loader 0.2.8
 
 Injection library: Blackbone by DarthTon.
 Upstream revision: 5ede6ce50cd8ad34178bfa6cae05768ff6b3859b
@@ -8,7 +8,7 @@ ReWolf WOW64Ext: Copyright (c) 2014 ReWolf, LGPL-3.0-or-later.
 Its source and complete license texts are included in the embedded source bundle
 (extract source -> Loader/vendor/Blackbone/src/3rd_party/rewolf-wow64ext).
 Modification/relinking is supported by the complete loader and dependency sources.
-Nikogram DLL and matching source: sphere-cache batch 5, October 7, 2026.
+Nikogram DLL and matching source: Saved splash search and Dynamic mode, October 8, 2026.
 The loader is offline. Loading does not establish anti-cheat safety or successful in-game initialization.
 
 The MIT License (MIT)

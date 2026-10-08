@@ -181,7 +181,7 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 		F::Misc.RunPost(pLocal, pCmd);
 		F::PacketManip.Run(pLocal, pWeapon, pCmd, pSendPacket);
 		F::Ticks.CreateMove(pLocal, pWeapon, pCmd, pSendPacket);
-		F::AntiAim.Run(pLocal, pWeapon, pCmd, *pSendPacket);
+		F::AntiAim.Run(pLocal, pWeapon, pCmd, *pSendPacket, s_iVerified == 1);
 		F::AntiCheatCompatibility.CreateMove(pCmd, pSendPacket);
 		// Spread correction counter-rotates the command, not the intended cursor
 		// direction. Keep later angle changes, but undo that rotation for matching.

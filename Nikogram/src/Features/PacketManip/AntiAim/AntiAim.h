@@ -1,29 +1,37 @@
 #pragma once
 #include "../../../SDK/SDK.h"
+#include "BodyYawPolicy.h"
+#include "LegitAAPolicy.h"
 
 class CAntiAim
 {
 private:
+	bool UsingLegitAA() const;
+	LegitAAPolicy::Preset LegitPreset() const;
+	bool UseMinWalk() const;
 	void FakeShotAngles(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
 	float GetYawOffset(CTFPlayer* pEntity, bool bFake);
 	float GetBaseYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake);
 	float GetYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake);
 	float GetPitch(float flCurPitch);
 	void MinWalk(CTFPlayer* pLocal, CUserCmd* pCmd);
-	float GetCompensatedYaw(float flTarget, float flFakeYaw, bool bMoving);
-
-	// the server's feet (body) yaw, predicted per usercmd, see SimulateFeet in AntiAim.cpp
-	float m_flSimFeetYaw = 0.f;
-	float m_flSimGoalFeetYaw = 0.f;
+	BodyYawPolicy::State m_tBody = {};
+	BodyYawPolicy::State m_tBodyBeforeCommand = {};
+	BodyYawPolicy::RealPose m_tPreviousReal = {}, m_tBatchReal = {};
+	BodyYawPolicy::RealPose m_tPreviousRealBeforeCommand = {}, m_tBatchRealBeforeCommand = {};
+	CTFPlayer* m_pBodyLocal = nullptr;
+	const void* m_pBodyModel = nullptr;
+	int m_iBodyCommand = 0, m_iBodyChoke = 0, m_iBatchTicks = 0;
+	bool m_bBodyValid = false;
 
 public:
 	bool AntiAimOn();
 	bool YawOn();
 	bool ShouldRun(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
-	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool bSendPacket);
+	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool bSendPacket, bool bPacketControl);
 	void Draw(CTFPlayer* pLocal);
 
-	inline int AntiAimTicks() { return 2; }
+	int AntiAimTicks();
 
 	Vec2 vFakeAngles = {};
 	Vec2 vRealAngles = {};

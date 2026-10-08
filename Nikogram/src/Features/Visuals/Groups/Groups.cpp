@@ -1,4 +1,5 @@
 #include "Groups.h"
+#include "../../ImGui/MenuMode.h"
 
 #include "../../Players/PlayerUtils.h"
 #include "../../Simulation/ProjectileSimulation/ProjectileSimulation.h"
@@ -402,6 +403,8 @@ bool CGroups::GetGroup(CBaseEntity* pEntity, Group_t*& pGroup, bool bModels)
 
 const std::unordered_map<CBaseEntity*, Group_t*>& CGroups::GetGroup(bool bModels)
 {
+	static const std::unordered_map<CBaseEntity*, Group_t*> empty;
+	if (!GroupsActive()) return empty;
 	return !bModels ? m_mEntities : m_mModels;
 }
 
@@ -493,7 +496,8 @@ Color_t CGroups::GetColor(CBaseEntity* pEntity, Group_t* pGroup)
 
 bool CGroups::GroupsActive()
 {
-	return Vars::ESP::ActiveGroups.Value && !m_vGroups.empty();
+	return (MenuMode::Active != MenuMode::Moonlit || Vars::ESP::MoonlitEnabled.Value)
+		&& Vars::ESP::ActiveGroups.Value && !m_vGroups.empty();
 }
 
 void CGroups::Move(int i1, int i2)

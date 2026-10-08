@@ -19,6 +19,7 @@ private:
 	std::deque<double> m_vTimeDeltas = {};
 
 public:
+	Vec2 m_vIndicatorSize = {100, 40};
 	void Reset();
 
 	void AskForPlayerPerf();

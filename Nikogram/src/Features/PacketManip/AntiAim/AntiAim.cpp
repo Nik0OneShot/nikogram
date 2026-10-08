@@ -5,9 +5,51 @@
 #include "../../Misc/Misc.h"
 #include "../../Aimbot/AutoRocketJump/AutoRocketJump.h"
 #include "../../AntiCheatCompatibility/AntiCheatCompatibility.h"
+#include "../../Visuals/AnimInterp/AnimInterp.h"
+#include "../../ImGui/MenuMode.h"
+
+bool CAntiAim::UsingLegitAA() const
+{
+	return MenuMode::Active == MenuMode::Moonlit && Vars::AntiAim::LegitEnabled.Value;
+}
+
+LegitAAPolicy::Preset CAntiAim::LegitPreset() const
+{
+	static_assert(TF_CLASS_SCOUT == LegitAAPolicy::Scout && TF_CLASS_SNIPER == LegitAAPolicy::Sniper
+		&& TF_CLASS_SOLDIER == LegitAAPolicy::Soldier && TF_CLASS_DEMOMAN == LegitAAPolicy::Demoman
+		&& TF_CLASS_MEDIC == LegitAAPolicy::Medic && TF_CLASS_HEAVY == LegitAAPolicy::Heavy
+		&& TF_CLASS_PYRO == LegitAAPolicy::Pyro && TF_CLASS_SPY == LegitAAPolicy::Spy
+		&& TF_CLASS_ENGINEER == LegitAAPolicy::Engineer);
+	auto pLocal = H::Entities.GetLocal();
+	auto pWeapon = H::Entities.GetWeapon();
+	if (!pLocal || !pWeapon)
+		return {};
+	using Weapon = LegitAAPolicy::Weapon;
+	Weapon held = Weapon::Other;
+	switch (pWeapon->GetWeaponID())
+	{
+	case TF_WEAPON_MEDIGUN: held = Weapon::Medigun; break;
+	case TF_WEAPON_SNIPERRIFLE: case TF_WEAPON_SNIPERRIFLE_DECAP: case TF_WEAPON_SNIPERRIFLE_CLASSIC:
+		held = Weapon::SniperRifle; break;
+	case TF_WEAPON_SMG: case TF_WEAPON_CHARGED_SMG: held = Weapon::SMG; break;
+	case TF_WEAPON_REVOLVER: held = Weapon::Revolver; break;
+	case TF_WEAPON_BUILDER: case TF_WEAPON_PDA_SPY_BUILD: held = Weapon::Sapper; break;
+	case TF_WEAPON_KNIFE: held = Weapon::Knife; break;
+	case TF_WEAPON_PDA_SPY: held = Weapon::DisguiseKit; break;
+	default: if (pWeapon->GetSlot() == 2) held = Weapon::Melee; break;
+	}
+	return LegitAAPolicy::Select(pLocal->m_iClass(), held);
+}
+
+bool CAntiAim::UseMinWalk() const
+{
+	return !UsingLegitAA() && Vars::AntiAim::MinWalk.Value;
+}
 
 bool CAntiAim::AntiAimOn()
 {
+	if (UsingLegitAA())
+		return LegitPreset().enabled;
 	return Vars::AntiAim::Enabled.Value
 		&& (Vars::AntiAim::PitchReal.Value
 		|| Vars::AntiAim::PitchFake.Value
@@ -21,6 +63,8 @@ bool CAntiAim::AntiAimOn()
 
 bool CAntiAim::YawOn()
 {
+	if (UsingLegitAA())
+		return LegitPreset().enabled;
 	return Vars::AntiAim::Enabled.Value
 		&& (Vars::AntiAim::YawReal.Value
 		|| Vars::AntiAim::YawFake.Value
@@ -47,7 +91,7 @@ bool CAntiAim::ShouldRun(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 
 void CAntiAim::FakeShotAngles(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
-	if (!Vars::AntiAim::HidePitchOnShot.Value || G::Attacking != 1 || G::PrimaryWeaponType != EWeaponType::HITSCAN || pLocal->m_MoveType() != MOVETYPE_WALK)
+	if (UsingLegitAA() || !Vars::AntiAim::HidePitchOnShot.Value || G::Attacking != 1 || G::PrimaryWeaponType != EWeaponType::HITSCAN || pLocal->m_MoveType() != MOVETYPE_WALK)
 		return;
 
 	switch (pWeapon ? pWeapon->GetWeaponID() : 0)
@@ -93,11 +137,12 @@ static inline int GetEdge(CTFPlayer* pEntity, const float flYaw)
 
 static inline int GetJitter(uint32_t uHash)
 {
-	static std::unordered_map<uint32_t, bool> mJitter = {};
-
-	if (!I::ClientState->chokedcommands)
-		mJitter[uHash] = !mJitter[uHash];
-	return mJitter[uHash] ? 1 : -1;
+	struct Entry { int command=-1;bool side=false; };
+	static std::unordered_map<uint32_t, Entry> mJitter;
+	auto& entry=mJitter[uHash];
+	if(!I::ClientState->chokedcommands&&entry.command!=G::OriginalCmd.command_number)
+		entry.side=!entry.side,entry.command=G::OriginalCmd.command_number;
+	return entry.side?1:-1;
 }
 
 float CAntiAim::GetYawOffset(CTFPlayer* pEntity, bool bFake)
@@ -124,7 +169,7 @@ float CAntiAim::GetBaseYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake)
 	const float flOffset = bFake ? Vars::AntiAim::FakeYawOffset.Value : Vars::AntiAim::RealYawOffset.Value;
 	switch (iMode) // 0 offset, 1 at player
 	{
-	case Vars::AntiAim::YawModeEnum::View: return pCmd->viewangles.y + flOffset;
+	case Vars::AntiAim::YawModeEnum::View: return G::OriginalCmd.viewangles.y + flOffset;
 	case Vars::AntiAim::YawModeEnum::Target:
 	{
 		float flSmallestAngleTo = 0.f; float flSmallestFovTo = 360.f;
@@ -143,20 +188,27 @@ float CAntiAim::GetBaseYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake)
 				flSmallestFovTo = flFOVTo;
 			}
 		}
-		return (flSmallestFovTo == 360.f ? pCmd->viewangles.y + flOffset : flSmallestAngleTo + flOffset);
+		return (flSmallestFovTo == 360.f ? G::OriginalCmd.viewangles.y + flOffset : flSmallestAngleTo + flOffset);
 	}
 	}
-	return pCmd->viewangles.y;
+	return G::OriginalCmd.viewangles.y;
 }
 
 float CAntiAim::GetYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake)
 {
+	if (UsingLegitAA())
+	{
+		const auto preset = LegitPreset();
+		return BodyYawPolicy::Normalize(G::OriginalCmd.viewangles.y + (bFake ? preset.fake : preset.real));
+	}
 	float flYaw = GetBaseYaw(pLocal, pCmd, bFake) + GetYawOffset(pLocal, bFake);
-	return flYaw;
+	return BodyYawPolicy::Normalize(flYaw);
 }
 
 float CAntiAim::GetPitch(float flCurPitch)
 {
+	if (UsingLegitAA())
+		return flCurPitch; // Neither real nor fake pitch is modified by this preset.
 	float flRealPitch = 0.f, flFakePitch = 0.f;
 	int iJitter = GetJitter(FNV1A::Hash32Const("Pitch"));
 
@@ -189,7 +241,7 @@ float CAntiAim::GetPitch(float flCurPitch)
 
 void CAntiAim::MinWalk(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
-	if (!Vars::AntiAim::MinWalk.Value || !YawOn() || !pLocal->m_hGroundEntity() || pLocal->InCond(TF_COND_HALLOWEEN_KART))
+	if (!UseMinWalk() || !YawOn() || !pLocal->m_hGroundEntity() || pLocal->InCond(TF_COND_HALLOWEEN_KART))
 		return;
 
 	if (!pCmd->forwardmove && !pCmd->sidemove && pLocal->m_vecVelocity().Length2D() < 2.f)
@@ -208,67 +260,19 @@ void CAntiAim::MinWalk(CTFPlayer* pLocal, CUserCmd* pCmd)
 
 
 
-/*
-	The server turns the body (feet yaw) once per usercmd in CMultiPlayerAnimState::ComputePoseParam_AimYaw
-	(verified against the x64 server.dll):
-	- moving (speed > 1): goal feet = eye yaw
-	- standing: goal feet only moves, by 45 degrees, when the eye is more than 45 degrees away from it
-	- then ConvergeYawAngles(goal, 720 deg/s, tick interval, feet), scaled down within 60 degrees of the goal
-	With 2 real commands and 1 fake per packet, the fake pulls the body back each packet, so it never reaches
-	the real yaw. Real compensation picks the yaw sent in each real (choked) command so the predicted body lands
-	on the real yaw. Only the last command's angles are networked, so these steering angles aren't seen directly.
-*/
-static void SimulateFeet(float& flFeet, float& flGoal, float flEyeYaw, bool bMoving)
+int CAntiAim::AntiAimTicks()
 {
-	flEyeYaw = Math::NormalizeAngle(flEyeYaw);
-	if (bMoving)
-		flGoal = flEyeYaw;
-	else
-	{
-		float flDelta = Math::NormalizeAngle(flGoal - flEyeYaw);
-		if (fabsf(flDelta) > 45.f)
-			flGoal += flDelta > 0.f ? -45.f : 45.f;
-	}
-	flGoal = Math::NormalizeAngle(flGoal);
-	if (flGoal == flFeet)
-		return;
-
-	// ConvergeYawAngles, including the game taking the absolute delta before normalizing it
-	float flDelta = flGoal - flFeet;
-	const float flDeltaAbs = fabsf(flDelta);
-	flDelta = Math::NormalizeAngle(flDelta);
-	const float flStep = 720.f * TICK_INTERVAL * std::clamp(flDeltaAbs / 60.f, 0.01f, 1.f);
-	if (flDeltaAbs < flStep)
-		flFeet = flGoal;
-	else
-		flFeet += flDelta < 0.f ? -flStep : flStep;
-	flFeet = Math::NormalizeAngle(flFeet);
+    auto local=H::Entities.GetLocal();
+    if(!local||!local->m_PlayerAnimState()||F::AntiCheatCompatibility.Active())return 2;
+    if(I::ClientState->chokedcommands&&m_bBodyValid&&m_pBodyLocal==local&&m_iBatchTicks)return m_iBatchTicks;
+    const bool moving=local->m_vecVelocity().Length()>1.f
+        || (UseMinWalk()&&local->m_hGroundEntity());
+    return BodyYawPolicy::Budget(moving);
 }
 
-float CAntiAim::GetCompensatedYaw(float flTarget, float flFakeYaw, bool bMoving)
+void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool bSendPacket, bool bPacketControl)
 {
-	// with the fake (nearly) opposite the real, a body sitting exactly on the real is about as close to the fake
-	// going either way round, so the fake command pulls it left one packet and right the next (visible shake).
-	// aim slightly to the side the body is already on so the fake always pulls it the same way.
-	if (fabsf(Math::NormalizeAngle(flTarget - (flFakeYaw + 180.f))) < 20.f)
-		flTarget += Math::NormalizeAngle(m_flSimFeetYaw - flTarget) < 0.f ? -2.5f : 2.5f;
-
-	// stay within 45 degrees of the target so the standing rule never pushes the body past it
-	float flBestYaw = flTarget, flBestError = FLT_MAX, flBestOffset = 0.f;
-	for (float flOffset = -45.f; flOffset <= 45.f; flOffset += 0.5f)
-	{
-		float flFeet = m_flSimFeetYaw, flGoal = m_flSimGoalFeetYaw;
-		SimulateFeet(flFeet, flGoal, flTarget + flOffset, bMoving);
-		const float flError = fabsf(Math::NormalizeAngle(flFeet - flTarget));
-		if (flError < flBestError - 0.01f || fabsf(flError - flBestError) <= 0.01f && fabsf(flOffset) < fabsf(flBestOffset))
-			flBestYaw = flTarget + flOffset, flBestError = flError, flBestOffset = flOffset;
-	}
-	return Math::NormalizeAngle(flBestYaw);
-}
-
-void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool bSendPacket)
-{
-	G::AntiAim = AntiAimOn() && ShouldRun(pLocal, pWeapon, pCmd);
+	G::AntiAim = bPacketControl && AntiAimOn() && ShouldRun(pLocal, pWeapon, pCmd);
 
 	int iAntiBackstab = F::Misc.AntiBackstab(pLocal, pCmd, bSendPacket);
 	if (!iAntiBackstab)
@@ -276,6 +280,9 @@ void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bo
 
 	if (!G::AntiAim)
 	{
+		m_bBodyValid = false;
+		m_iBatchTicks = 0;
+		m_tPreviousReal = m_tBatchReal = {};
 		vRealAngles = { pCmd->viewangles.x, pCmd->viewangles.y };
 		vFakeAngles = { pCmd->viewangles.x, pCmd->viewangles.y };
 		return;
@@ -283,27 +290,71 @@ void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bo
 
 	vEdgeTrace.clear();
 
-	Vec2& vAngles = bSendPacket ? vFakeAngles : vRealAngles;
-	vAngles.x = iAntiBackstab != 2 ? GetPitch(pCmd->viewangles.x) : pCmd->viewangles.x;
-	vAngles.y = !iAntiBackstab ? GetYaw(pLocal, pCmd, bSendPacket) : pCmd->viewangles.y;
+	const float flPitch = iAntiBackstab != 2 ? GetPitch(pCmd->viewangles.x) : pCmd->viewangles.x;
+	// Refresh both intents from the same unmodified view, including camera turns.
+	vRealAngles = { flPitch, !iAntiBackstab ? GetYaw(pLocal, pCmd, false) : pCmd->viewangles.y };
+	vFakeAngles = { flPitch, !iAntiBackstab ? GetYaw(pLocal, pCmd, true) : pCmd->viewangles.y };
 
 	if (F::AntiCheatCompatibility.Active())
-		Math::ClampAngles(vAngles);
-
-	// the yaw actually sent, vAngles keeps the intended real/fake for visuals
-	Vec2 vSend = vAngles;
-	auto pAnimState = pLocal->m_PlayerAnimState();
-	const bool bCompensate = Vars::AntiAim::RealCompensation.Value && !F::AntiCheatCompatibility.Active() && !iAntiBackstab && pAnimState;
-	if (bCompensate)
 	{
-		if (!I::ClientState->chokedcommands) // first command of a packet, local animations are up to date with the server here
-			m_flSimFeetYaw = pAnimState->m_flCurrentFeetYaw, m_flSimGoalFeetYaw = pAnimState->m_flGoalFeetYaw;
+		Math::ClampAngles(vRealAngles);
+		Math::ClampAngles(vFakeAngles);
+	}
 
-		// minwalk keeps us counted as moving on the server when there's no other input
-		const bool bMoving = pLocal->m_vecVelocity().Length() > 1.f || Vars::AntiAim::MinWalk.Value && pLocal->m_hGroundEntity();
-		if (!bSendPacket)
-			vSend.y = GetCompensatedYaw(vAngles.y, vFakeAngles.y, bMoving);
-		SimulateFeet(m_flSimFeetYaw, m_flSimGoalFeetYaw, vSend.y, bMoving);
+	// Intents are desired directions; steering commands remain internal.
+	Vec2 vSend = bSendPacket ? vFakeAngles : vRealAngles;
+	auto pAnimState = pLocal->m_PlayerAnimState();
+	const bool bControl = YawOn() && !F::AntiCheatCompatibility.Active() && !iAntiBackstab && pAnimState;
+	if (bControl)
+	{
+		const bool bMoving = pLocal->m_vecVelocity().Length() > 1.f || UseMinWalk() && pLocal->m_hGroundEntity();
+		const bool bRepeat = m_bBodyValid && m_pBodyLocal == pLocal && m_pBodyModel == pLocal->GetModel()
+			&& pCmd->command_number == m_iBodyCommand && I::ClientState->chokedcommands == m_iBodyChoke;
+		const bool bRestart = !m_bBodyValid || !bRepeat && (!I::ClientState->chokedcommands
+			|| m_pBodyLocal != pLocal || m_pBodyModel != pLocal->GetModel()
+			|| pCmd->command_number != m_iBodyCommand + 1);
+		if (bRepeat)
+		{
+			m_tBody = m_tBodyBeforeCommand;
+			m_tPreviousReal = m_tPreviousRealBeforeCommand;
+			m_tBatchReal = m_tBatchRealBeforeCommand;
+		}
+		if (bRestart)
+		{
+			// A normal packet boundary preserves the previous real pose; a new
+			// entity/model, disabled controller or command gap must not reuse it.
+			if (!m_bBodyValid || m_pBodyLocal != pLocal || m_pBodyModel != pLocal->GetModel()
+				|| pCmd->command_number != m_iBodyCommand + 1)
+				m_tPreviousReal = {};
+			m_tBatchReal = {};
+			// AnimInterp restores the native state before CreateMove prediction.
+			m_tBody = { pAnimState->m_flCurrentFeetYaw, pAnimState->m_flGoalFeetYaw };
+			m_pBodyLocal = pLocal;
+			m_pBodyModel = pLocal->GetModel();
+			m_iBatchTicks = BodyYawPolicy::Budget(bMoving);
+			m_bBodyValid = BodyYawPolicy::Valid(m_tBody);
+		}
+		if (m_bBodyValid)
+		{
+			m_tBodyBeforeCommand = m_tBody;
+			m_tPreviousRealBeforeCommand = m_tPreviousReal;
+			m_tBatchRealBeforeCommand = m_tBatchReal;
+			if (!bSendPacket)
+				vSend.y = BodyYawPolicy::Choose(m_tBody, vRealAngles.y, vFakeAngles.y, bMoving,
+					std::max(1, m_iBatchTicks - I::ClientState->chokedcommands), TICK_INTERVAL, m_tPreviousReal).yaw;
+			BodyYawPolicy::Step(m_tBody, vSend.y, bMoving, TICK_INTERVAL);
+			if (!bSendPacket)
+				m_tBatchReal = { m_tBody.feet, vRealAngles.y, true };
+			else
+				m_tPreviousReal = m_tBatchReal;
+			m_iBodyCommand = pCmd->command_number;
+			m_iBodyChoke = I::ClientState->chokedcommands;
+		}
+	}
+	else
+	{
+		m_bBodyValid = false, m_iBatchTicks = 0;
+		m_tPreviousReal = m_tBatchReal = {};
 	}
 
 	SDK::FixMovement(pCmd, vSend);
@@ -329,6 +380,26 @@ void CAntiAim::Draw(CTFPlayer* pLocal)
 				H::Draw.Line(vScreen1.x, vScreen1.y, vScreen2.x, vScreen2.y, { 0, 255, 0, 255 });
 			if (SDK::W2S(vOrigin + Math::RotatePoint({ 50, 0, 0 }, {}, { 0, vFakeAngles.y, 0 }), vScreen2))
 				H::Draw.Line(vScreen1.x, vScreen1.y, vScreen2.x, vScreen2.y, { 255, 0, 0, 255 });
+			if (auto pAnimState = pLocal->m_PlayerAnimState())
+			{
+				const auto& font = H::Fonts.GetFont(FONT_INDICATORS);
+				const Color_t bodyColour = { 100, 190, 255, 255 };
+				if (SDK::W2S(vOrigin + Math::RotatePoint({ 65, 0, 0 }, {}, { 0, pAnimState->m_flCurrentFeetYaw, 0 }), vScreen2))
+					H::Draw.Line(vScreen1.x, vScreen1.y, vScreen2.x, vScreen2.y, bodyColour);
+				H::Draw.StringOutlined(font, vScreen1.x, vScreen1.y + font.m_nTall, bodyColour,
+					Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT,
+					std::format("AA target {:.1f} | completed body {:.1f} | error {:.1f}", vRealAngles.y,
+						pAnimState->m_flCurrentFeetYaw, BodyYawPolicy::Distance(vRealAngles.y, pAnimState->m_flCurrentFeetYaw)).c_str());
+				H::Draw.StringOutlined(font, vScreen1.x, vScreen1.y + font.m_nTall * 2, bodyColour,
+					Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT,
+					std::format("Fake {:.1f} | completed eye {:.1f} | render body {:.1f}", vFakeAngles.y,
+						pAnimState->m_flEyeYaw, pAnimState->m_angRender.y).c_str());
+				if (const auto* real = F::AnimInterp.LocalRealFrame(pLocal))
+					H::Draw.StringOutlined(font, vScreen1.x, vScreen1.y + font.m_nTall * 3, bodyColour,
+						Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT,
+						std::format("Real command pose: eye {:.1f} | body {:.1f}", real->m_vRecordedEyeAngles.y,
+							real->m_vRenderAngles.y).c_str());
+			}
 		}
 
 		for (auto& vPair : vEdgeTrace)

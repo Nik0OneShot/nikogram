@@ -24,11 +24,12 @@ MAKE_HOOK(Direct3DDevice9_Reset, U::Memory.GetVirtual(I::DirectXDevice, 16), HRE
 {
 	DEBUG_RETURN(Direct3DDevice9_Reset, pDevice, pPresentationParameters);
 	if(G::Unload)return CALL_ORIGINAL(pDevice,pPresentationParameters);
+	if (!F::Render.m_bInitialized) return CALL_ORIGINAL(pDevice,pPresentationParameters);
 
 	F::Render.ReleaseLauncherTextures();
 	ImGui_ImplDX9_InvalidateDeviceObjects();
 	const HRESULT Original = CALL_ORIGINAL(pDevice, pPresentationParameters);
-	ImGui_ImplDX9_CreateDeviceObjects();
+	if (SUCCEEDED(Original)) ImGui_ImplDX9_CreateDeviceObjects();
 	return Original;
 }
 

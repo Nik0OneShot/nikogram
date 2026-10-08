@@ -2,6 +2,7 @@
 
 #include "../Features/Visuals/Chams/Chams.h"
 #include "../Features/Visuals/Glow/Glow.h"
+#include "../Features/Visuals/Groups/Groups.h"
 #include "../Features/Visuals/Materials/Materials.h"
 #include "../Features/Visuals/CameraWindow/CameraWindow.h"
 #include "../Features/SkinChanger/SkinChanger.h"
@@ -75,7 +76,7 @@ MAKE_HOOK(IVModelRender_DrawModelExecute, U::Memory.GetVirtual(I::ModelRender, 1
 		return F::Glow.RenderHandler(pState, pInfo, pBoneToWorld, s_bDrawingLocalViewmodel);
 	}
 
-	if (!gameUI && F::Chams.m_mEntities.contains(pInfo.entity_index))
+	if (!gameUI && F::Groups.GroupsActive() && F::Chams.m_mEntities.contains(pInfo.entity_index))
 	{
 		SkinChanger::ObserveDraw(pInfo, pBoneToWorld, "chams_entity_suppressed");
 		return;

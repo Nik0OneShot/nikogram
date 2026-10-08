@@ -12,6 +12,7 @@ void CTriggerbot::Run(CTFPlayer* local,CTFWeaponBase* weapon,CUserCmd* cmd)
     m_lastCommand=cmd->command_number;
     if (!local || !weapon || !local->IsAlive() || !local->CanAttack()
         || I::EngineVGui->IsGameUIVisible() || F::Menu.m_bIsOpen
+        || !Vars::Triggerbot::Enabled.Value || !Vars::Triggerbot::Activation.Value
         || !(Vars::Triggerbot::Hitboxes.Value&31) || G::PrimaryWeaponType!=EWeaponType::HITSCAN
         || F::Aimbot.m_bHitscanAssisted || cmd->weaponselect || (cmd->buttons&(IN_ATTACK|IN_USE))
         || (G::OriginalCmd.buttons&(IN_ATTACK|IN_USE)))

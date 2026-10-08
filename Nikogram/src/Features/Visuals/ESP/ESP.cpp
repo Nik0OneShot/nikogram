@@ -1,6 +1,8 @@
 #include "ESP.h"
+#include "../../ImGui/MenuMode.h"
 
 #include "../Groups/Groups.h"
+#include "../Dapper/Dapper.h"
 #include "../../Players/PlayerUtils.h"
 #include "../../Spectate/Spectate.h"
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
@@ -26,6 +28,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 	tCache.m_tColor = F::Groups.GetColor(pPlayer, pGroup).Alpha(255);
 	tCache.m_bBox = pGroup->m_iESP & ESPEnum::Box;
 	tCache.m_bBones = pGroup->m_iESP & ESPEnum::Bones;
+	tCache.m_iDapperESP = std::clamp(pGroup->m_iDapperESP,0,3);
 
 	if (pGroup->m_iESP & ESPEnum::Distance && !bLocal)
 	{
@@ -720,7 +723,7 @@ void CESP::Store(CTFPlayer* pLocal)
 
 	for (auto& [pEntity, pGroup] : F::Groups.GetGroup(false))
 	{
-		if (!pGroup->m_iESP)
+		if ((!pGroup->m_iESP && !(pEntity->IsPlayer() && pGroup->m_iDapperESP > 0 && pGroup->m_iDapperESP <= 3)) || (MenuMode::Active == MenuMode::Moonlit && !pGroup->m_bMoonlitInformation))
 			continue;
 
 		if (pEntity->IsPlayer())
@@ -741,6 +744,7 @@ static matrix3x4 s_mTransform = {};
 
 void CESP::Draw()
 {
+	if (!F::Groups.GroupsActive()) return;
 	Math::AngleMatrix({ 0.f, I::EngineClient->GetViewAngles().y, 0.f }, s_mTransform, false);
 
 	DrawWorld();
@@ -766,6 +770,8 @@ void CESP::DrawPlayers()
 		int lOffset = 0, rOffset = 0, bOffset = 0, tOffset = 0;
 		I::MatSystemSurface->DrawSetAlphaMultiplier(tCache.m_flAlpha);
 		
+		Dapper::Draw(tCache.m_iDapperESP,x,y,w,h);
+
 		if (tCache.m_bBox)
 			H::Draw.LineRectOutline(x, y, w, h, tCache.m_tColor, { 0, 0, 0, 255 });
 

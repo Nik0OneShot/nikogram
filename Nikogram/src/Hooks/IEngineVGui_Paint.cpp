@@ -15,6 +15,7 @@
 #include "../Features/PacketManip/AntiAim/AntiAim.h"
 #include "../Features/Aimbot/AutoHeal/AutoHeal.h"
 #include "../Features/Debug/Debug.h"
+#include "../Features/ImGui/MoonlitHud.h"
 
 MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 	void* rcx, int iMode)
@@ -23,6 +24,7 @@ MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 
 	if (G::Unload)
 		return CALL_ORIGINAL(rcx, iMode);
+	if (SDK::CleanScreenshot()) MoonlitHud::InvalidateBadge();
 
 	if (iMode & PAINT_UIPANELS)
 	{
@@ -30,6 +32,7 @@ MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 	}
 	else if (iMode & PAINT_INGAMEPANELS && !SDK::CleanScreenshot())
 	{
+		MoonlitHud::BeginBadges();
 		H::Draw.UpdateScreenSize();
 		H::Draw.UpdateW2SMatrix();
 
@@ -61,6 +64,7 @@ MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 #endif
 		}
 		H::Draw.End();
+		MoonlitHud::EndBadges();
 	}
 
 	CALL_ORIGINAL(rcx, iMode);
