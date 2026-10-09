@@ -2,6 +2,8 @@
   <img src=".github/assets/nikogram.png" alt="Nikogram" height="220">
 </p>
 
+https://discord.gg/nYS32D5XzV
+
 amalgam except nullcore plus niko oneshot plus cool features
 
 ill write more laterw
