@@ -6,8 +6,6 @@ Enum(Model, Visible, Occluded);
 class CChams
 {
 private:
-	void Begin();
-	void End();
 
 	void DrawModel(CBaseEntity* pEntity, const Chams_t& tChams, IMatRenderContext* pRenderContext, int iModel = ModelEnum::Visible, bool bTwoModel = false);
 
@@ -22,10 +20,6 @@ private:
 	};
 	std::vector<ChamsInfo_t> m_vEntities = {};
 
-	Color_t m_tOriginalColor = {};
-	float m_flOriginalBlend = 1.f;
-	IMaterial* m_pOriginalMaterial = nullptr;
-	OverrideType_t m_iOriginalOverride = OVERRIDE_NORMAL;
 
 	int m_iFlags = false;
 

@@ -1596,6 +1596,7 @@
   </Target>
   <ItemGroup>
     <ResourceCompile Include="DapperAssets.rc" />
+    <ClInclude Include="src\Features\Visuals\RenderState.h" />
     <ClInclude Include="src\Features\Visuals\Dapper\Dapper.h" />
     <None Include="assets\dapper\*" />
   </ItemGroup>

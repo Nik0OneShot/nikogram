@@ -18,6 +18,7 @@ MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 {
 	DEBUG_RETURN(CHLClient_LevelShutdown, rcx);
 
+	F::Visuals.RestoreWorldModulation();
 	F::AnimInterp.Restore();
 	SplashWorker::Invalidate();
     SmoothAim::controller.Reset();

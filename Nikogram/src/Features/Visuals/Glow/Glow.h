@@ -7,8 +7,6 @@ class CGlow
 {
 private:
 	bool CheckMaterials();
-	void Begin();
-	void End();
 	void FirstBegin(IMatRenderContext* pRenderContext);
 	void FirstEnd(IMatRenderContext* pRenderContext);
 	void SecondBegin(IMatRenderContext* pRenderContext, int w, int h);
@@ -49,10 +47,6 @@ private:
 	};
 	std::unordered_map<Glow_t, std::vector<GlowInfo_t>, GlowHasher_t> m_mEntities = {};
 
-	Color_t m_tOriginalColor = {};
-	float m_flOriginalBlend = 1.f;
-	IMaterial* m_pOriginalMaterial = nullptr;
-	OverrideType_t m_iOriginalOverride = OVERRIDE_NORMAL;
 
 	int m_iFlags = false;
 

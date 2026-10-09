@@ -1,4 +1,7 @@
 #include "Glow.h"
+#include "../RenderState.h"
+
+using ModelStateScope = RenderState::ModelScope<IVRenderView, IVModelRender, IMaterial, OverrideType_t>;
 
 #include "../Groups/Groups.h"
 #include "../Materials/Materials.h"
@@ -6,23 +9,6 @@
 #include "../../Backtrack/Backtrack.h"
 #include "../../SkinChanger/SkinChanger.h"
 #include "../../SkinChanger/RenderPolicy.h"
-
-void CGlow::Begin()
-{
-	m_tOriginalColor = I::RenderView->GetColorModulation();
-	m_flOriginalBlend = I::RenderView->GetBlend();
-	I::ModelRender->GetMaterialOverride(&m_pOriginalMaterial, &m_iOriginalOverride);
-
-	I::RenderView->SetBlend(0.f);
-	I::RenderView->SetColorModulation(1.f, 1.f, 1.f);
-	I::ModelRender->ForcedMaterialOverride(m_pMatGlowColor);
-}
-void CGlow::End()
-{
-	I::RenderView->SetColorModulation(m_tOriginalColor);
-	I::RenderView->SetBlend(m_flOriginalBlend);
-	I::ModelRender->ForcedMaterialOverride(m_pOriginalMaterial, m_iOriginalOverride);
-}
 
 bool CGlow::CheckMaterials()
 {
@@ -42,7 +28,9 @@ bool CGlow::CheckMaterials()
 
 void CGlow::FirstBegin(IMatRenderContext* pRenderContext)
 {
-	Begin();
+	I::RenderView->SetBlend(0.f);
+	I::RenderView->SetColorModulation(1.f, 1.f, 1.f);
+	I::ModelRender->ForcedMaterialOverride(m_pMatGlowColor);
 
 	pRenderContext->SetStencilEnable(true);
 	pRenderContext->SetStencilCompareFunction(STENCILCOMPARISONFUNCTION_ALWAYS);
@@ -57,12 +45,13 @@ void CGlow::FirstEnd(IMatRenderContext* pRenderContext)
 {
 	pRenderContext->SetStencilEnable(false);
 
-	End();
 }
 
 void CGlow::SecondBegin(IMatRenderContext* pRenderContext, int w, int h)
 {
-	Begin();
+	I::RenderView->SetBlend(0.f);
+	I::RenderView->SetColorModulation(1.f, 1.f, 1.f);
+	I::ModelRender->ForcedMaterialOverride(m_pMatGlowColor);
 
 	pRenderContext->PushRenderTargetAndViewport();
 	pRenderContext->SetRenderTarget(m_pRenderBuffer1);
@@ -72,6 +61,12 @@ void CGlow::SecondBegin(IMatRenderContext* pRenderContext, int w, int h)
 }
 void CGlow::SecondEnd(Glow_t tGlow, IMatRenderContext* pRenderContext, int w, int h)
 {
+	{
+		RenderState::OverrideWriteScope reset;
+		I::ModelRender->ForcedMaterialOverride(nullptr);
+	}
+	I::RenderView->SetColorModulation(1.f, 1.f, 1.f);
+	I::RenderView->SetBlend(1.f);
 	pRenderContext->PopRenderTargetAndViewport();
 
 	if (tGlow.Blur)
@@ -119,12 +114,11 @@ void CGlow::SecondEnd(Glow_t tGlow, IMatRenderContext* pRenderContext, int w, in
 
 	pRenderContext->SetStencilEnable(false);
 
-	End();
 }
 
 void CGlow::DrawModel(CBaseEntity* pEntity)
 {
-	m_bRendering = true;
+	SkinRender::ViewmodelDrawScope drawScope(m_bRendering, true);
 
 	if (pEntity->IsPlayer())
 	{
@@ -137,7 +131,6 @@ void CGlow::DrawModel(CBaseEntity* pEntity)
 	else
 		pEntity->DrawModel(STUDIO_RENDER | STUDIO_NOSHADOWS);
 
-	m_bRendering = false;
 }
 
 
@@ -187,10 +180,12 @@ void CGlow::Store(CTFPlayer* pLocal)
 void CGlow::RenderFirst()
 {
 	if (!F::Groups.GroupsActive()) return;
-	auto pRenderContext = I::MaterialSystem->GetRenderContext();
+	RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
+	auto pRenderContext = context.Get();
 	if (!pRenderContext || !CheckMaterials())
 		return;
 
+	ModelStateScope renderState(I::RenderView, I::ModelRender);
 	FirstBegin(pRenderContext);
 	for (auto& [tGlow, vInfo] : m_mEntities)
 	{
@@ -207,10 +202,12 @@ void CGlow::RenderFirst()
 void CGlow::RenderSecond()
 {
 	if (!F::Groups.GroupsActive()) return;
-	auto pRenderContext = I::MaterialSystem->GetRenderContext();
+	RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
+	auto pRenderContext = context.Get();
 	if (!pRenderContext || !CheckMaterials())
 		return;
 
+	ModelStateScope renderState(I::RenderView, I::ModelRender);
 	const int w = H::Draw.m_nScreenW, h = H::Draw.m_nScreenH;
 	for (auto& [tGlow, vInfo] : m_mEntities)
 	{
@@ -304,7 +301,8 @@ void CGlow::RenderViewmodel(void* rcx, int flags)
 	if (!F::Groups.GroupsActive())
 		return;
 
-	auto pRenderContext = I::MaterialSystem->GetRenderContext();
+	RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
+	auto pRenderContext = context.Get();
 	if (!pRenderContext || !CheckMaterials())
 		return;
 
@@ -317,13 +315,20 @@ void CGlow::RenderViewmodel(void* rcx, int flags)
 	const int w = H::Draw.m_nScreenW, h = H::Draw.m_nScreenH;
 
 	pRenderContext->CullMode(MATERIAL_CULLMODE_CCW); // glow won't work properly with MATERIAL_CULLMODE_CW
+	ModelStateScope renderState(I::RenderView, I::ModelRender);
 	FirstBegin(pRenderContext);
-	CBaseAnimating_InternalDrawModel->Call<int>(rcx, flags);
+	{
+		SkinRender::ViewmodelDrawScope drawScope(m_bRendering, true);
+		CBaseAnimating_InternalDrawModel->Call<int>(rcx, flags);
+	}
 	FirstEnd(pRenderContext);
 	SecondBegin(pRenderContext, w, h);
 	I::RenderView->SetColorModulation(pGroup->m_tColor);
 	I::RenderView->SetBlend(pGroup->m_tColor.a / 255.f);
-	CBaseAnimating_InternalDrawModel->Call<int>(rcx, flags);
+	{
+		SkinRender::ViewmodelDrawScope drawScope(m_bRendering, true);
+		CBaseAnimating_InternalDrawModel->Call<int>(rcx, flags);
+	}
 	SecondEnd(pGroup->m_tGlow, pRenderContext, w, h);
 	pRenderContext->CullMode(G::FlipViewmodels ? MATERIAL_CULLMODE_CW : MATERIAL_CULLMODE_CCW);
 }
@@ -332,7 +337,8 @@ void CGlow::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInf
 	if (!F::Groups.GroupsActive())
 		return;
 
-	auto pRenderContext = I::MaterialSystem->GetRenderContext();
+	RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
+	auto pRenderContext = context.Get();
 	if (!pRenderContext || !CheckMaterials())
 		return;
 
@@ -359,10 +365,12 @@ void CGlow::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderInf
 	{auto& a=accessories[index];a.ready=SkinChanger::Prepare(pState,pInfo,pBoneToWorld,a.state,a.info,a.bones,a.drawBones,localViewmodel,true,true,index,&accessoryCount);}
 	auto draw=[&]
 	{
+		SkinRender::ViewmodelDrawScope drawScope(m_bRendering, true);
 		if(cosmetic)IVModelRender_DrawModelExecute->Call<void>(I::ModelRender,cosmeticState,cosmeticInfo,cosmeticDrawBones);
 		else IVModelRender_DrawModelExecute->Call<void>(I::ModelRender,pState,pInfo,pBoneToWorld);
 		for(const auto& a:accessories)if(a.ready)IVModelRender_DrawModelExecute->Call<void>(I::ModelRender,a.state,a.info,a.drawBones);
 	};
+	ModelStateScope renderState(I::RenderView, I::ModelRender);
 	FirstBegin(pRenderContext);
 	draw();
 	FirstEnd(pRenderContext);

@@ -1,4 +1,5 @@
 #include "Visuals.h"
+#include "RenderState.h"
 #include "../ImGui/MoonlitHud.h"
 
 #include "../Simulation/ProjectileSimulation/ProjectileSimulation.h"
@@ -1047,6 +1048,11 @@ void CVisuals::OverrideWorldTextures()
 	kv->DeleteThis(); // SetShaderAndParams copies the keyvalues
 }
 
+namespace
+{
+	RenderState::MaterialModulation<IMaterial> worldModulation, skyModulation;
+}
+
 static inline void ApplyModulation(Color_t tColor, bool bSky = false)
 {
 	for (auto h = I::MaterialSystem->FirstMaterial(); h != I::MaterialSystem->InvalidMaterial(); h = I::MaterialSystem->NextMaterial(h))
@@ -1060,17 +1066,17 @@ static inline void ApplyModulation(Color_t tColor, bool bSky = false)
 		if (!bSky)
 		{
 			if (!sGroup.starts_with(TEXTURE_GROUP_WORLD)
-				|| sName.find("sky") != std::string_view::npos)
+				|| sName.starts_with("skybox/"))
 				continue;
 		}
 		else
 		{
 			if (!sGroup.starts_with(TEXTURE_GROUP_SKYBOX)
-				&& sName.find("sky") == std::string_view::npos)
+				&& !sName.starts_with("skybox/"))
 				continue;
 		}
 
-		pMaterial->ColorModulate(tColor.r / 255.f, tColor.g / 255.f, tColor.b / 255.f);
+		(bSky ? skyModulation : worldModulation).Apply(pMaterial, tColor.r / 255.f, tColor.g / 255.f, tColor.b / 255.f);
 	}
 }
 
@@ -1106,17 +1112,20 @@ void CVisuals::Modulate()
 		bConnection = bCurrConnected == bLastConnected;
 	}
 
-	if (bSetChanged || bColorChanged || bSkyChanged || !bConnection)
+	if (!bWorldModulation) worldModulation.Restore();
+	if (!bSkyModulation) skyModulation.Restore();
+	if (bSetChanged || bColorChanged || bSkyChanged || !bConnection
+		|| (bWorldModulation && worldModulation.Empty()) || (bSkyModulation && skyModulation.Empty()))
 	{
-		bWorldModulation ? ApplyModulation(Vars::Colors::WorldModulation.Value) : ApplyModulation({ 255, 255, 255, 255 });
-		bSkyModulation ? ApplyModulation(Vars::Colors::SkyModulation.Value, true) : ApplyModulation({ 255, 255, 255, 255 }, true);
+		if (bWorldModulation) ApplyModulation(Vars::Colors::WorldModulation.Value);
+		if (bSkyModulation) ApplyModulation(Vars::Colors::SkyModulation.Value, true);
 	}
 }
 
 void CVisuals::RestoreWorldModulation()
 {
-	ApplyModulation({ 255, 255, 255, 255 });
-	ApplyModulation({ 255, 255, 255, 255 }, true);
+	worldModulation.Restore();
+	skyModulation.Restore();
 }
 
 #ifdef WORLD_DEBUG

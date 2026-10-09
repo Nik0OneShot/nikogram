@@ -1,23 +1,13 @@
 #include "Chams.h"
+#include "../RenderState.h"
+
+using ModelStateScope = RenderState::ModelScope<IVRenderView, IVModelRender, IMaterial, OverrideType_t>;
 
 #include "../Groups/Groups.h"
 #include "../Materials/Materials.h"
 #include "../FakeAngle/FakeAngle.h"
 #include "../../Backtrack/Backtrack.h"
 #include "../../SkinChanger/SkinChanger.h"
-
-void CChams::Begin()
-{
-	m_tOriginalColor = I::RenderView->GetColorModulation();
-	m_flOriginalBlend = I::RenderView->GetBlend();
-	I::ModelRender->GetMaterialOverride(&m_pOriginalMaterial, &m_iOriginalOverride);
-}
-void CChams::End()
-{
-	I::RenderView->SetColorModulation(m_tOriginalColor);
-	I::RenderView->SetBlend(m_flOriginalBlend);
-	I::ModelRender->ForcedMaterialOverride(m_pOriginalMaterial, m_iOriginalOverride);
-}
 
 void CChams::DrawModel(CBaseEntity* pEntity, const Chams_t& tChams, IMatRenderContext* pRenderContext, int iModel, bool bTwoModel)
 {
@@ -28,7 +18,7 @@ void CChams::DrawModel(CBaseEntity* pEntity, const Chams_t& tChams, IMatRenderCo
 	bool bSame = tChams.Visible == tChams.Occluded;
 	bTwoModel &= bOccluded && !bSame;
 
-	Begin();
+	ModelStateScope renderState(I::RenderView, I::ModelRender);
 	switch (iModel)
 	{
 	case ModelEnum::Visible:
@@ -65,9 +55,10 @@ void CChams::DrawModel(CBaseEntity* pEntity, const Chams_t& tChams, IMatRenderCo
 					pRenderContext->SetStencilZFailOperation(STENCILOPERATION_REPLACE);
 			}
 
-			m_bRendering = true;
-			pEntity->DrawModel(STUDIO_RENDER);
-			m_bRendering = false;
+			{
+				SkinRender::ViewmodelDrawScope drawScope(m_bRendering, true);
+				pEntity->DrawModel(STUDIO_RENDER);
+			}
 
 			if (pMaterial)
 			{
@@ -112,9 +103,10 @@ void CChams::DrawModel(CBaseEntity* pEntity, const Chams_t& tChams, IMatRenderCo
 			if (pMaterial && pMaterial->m_bInvertCull)
 				pRenderContext->CullMode(MATERIAL_CULLMODE_CW);
 
-			m_bRendering = true;
-			pEntity->DrawModel(STUDIO_RENDER);
-			m_bRendering = false;
+			{
+				SkinRender::ViewmodelDrawScope drawScope(m_bRendering, true);
+				pEntity->DrawModel(STUDIO_RENDER);
+			}
 
 			if (pMaterial && pMaterial->m_bInvertCull)
 				pRenderContext->CullMode(MATERIAL_CULLMODE_CCW);
@@ -125,7 +117,6 @@ void CChams::DrawModel(CBaseEntity* pEntity, const Chams_t& tChams, IMatRenderCo
 		pRenderContext->DepthRange(0.f, 1.f);
 	}
 	}
-	End();
 }
 
 
@@ -175,7 +166,8 @@ void CChams::RenderMain()
 {
 	m_mEntities.clear();
 	if (!F::Groups.GroupsActive()) return;
-	auto pRenderContext = I::MaterialSystem->GetRenderContext();
+	RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
+	auto pRenderContext = context.Get();
 	if (!pRenderContext)
 		return;
 
@@ -224,7 +216,8 @@ void CChams::RenderMain()
 
 void CChams::RenderBacktrack(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo)
 {
-	auto pRenderContext = I::MaterialSystem->GetRenderContext();
+	RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
+	auto pRenderContext = context.Get();
 	if (!pRenderContext)
 		return;
 
@@ -302,7 +295,8 @@ bool CChams::RenderViewmodel(void* rcx, int flags, int* iReturn)
 	if (!F::Groups.GroupsActive())
 		return false;
 
-	auto pRenderContext = I::MaterialSystem->GetRenderContext();
+	RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
+	auto pRenderContext = context.Get();
 	if (!pRenderContext)
 		return false;
 
@@ -310,7 +304,7 @@ bool CChams::RenderViewmodel(void* rcx, int flags, int* iReturn)
 	if (!F::Groups.GetGroup(reinterpret_cast<CBaseAnimating*>(rcx)->IsValid() ? TargetsEnum::ViewmodelHands : TargetsEnum::ViewmodelWeapon, pGroup) || !pGroup->m_tChams(true))
 		return false;
 
-	Begin();
+	ModelStateScope renderState(I::RenderView, I::ModelRender);
 	for (auto& [sName, tColor] : pGroup->m_tChams.Visible)
 	{
 		auto pMaterial = F::Materials.GetMaterial(FNV1A::Hash32(sName.c_str()));
@@ -330,7 +324,6 @@ bool CChams::RenderViewmodel(void* rcx, int flags, int* iReturn)
 		}
 	}
 	pRenderContext->CullMode(G::FlipViewmodels ? MATERIAL_CULLMODE_CW : MATERIAL_CULLMODE_CCW);
-	End();
 
 	return true;
 }
@@ -339,7 +332,8 @@ bool CChams::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderIn
 	if (!F::Groups.GroupsActive())
 		return false;
 
-	auto pRenderContext = I::MaterialSystem->GetRenderContext();
+	RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
+	auto pRenderContext = context.Get();
 	if (!pRenderContext)
 		return false;
 
@@ -347,7 +341,7 @@ bool CChams::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderIn
 	if (!F::Groups.GetGroup(TargetsEnum::ViewmodelWeapon, pGroup) || !pGroup->m_tChams(true))
 		return false;
 
-	Begin();
+	ModelStateScope renderState(I::RenderView, I::ModelRender);
 	for (auto& [sName, tColor] : pGroup->m_tChams.Visible)
 	{
 		auto pMaterial = F::Materials.GetMaterial(FNV1A::Hash32(sName.c_str()));
@@ -364,7 +358,6 @@ bool CChams::RenderViewmodel(const DrawModelState_t& pState, const ModelRenderIn
 		}
 	}
 	pRenderContext->CullMode(MATERIAL_CULLMODE_CCW);
-	End();
 
 	return true;
 }
