@@ -74,6 +74,9 @@ public:
 	byte pad0[256];
 	CUserCmd* m_pCommands;
 	CVerifiedUserCmd* m_pVerifiedCommands;
+
+	void CommitUserCmd(int sequence);
+	CUserCmd* CommandSlot(int sequence);
 };
 
 MAKE_INTERFACE_SIGNATURE(IInput, Input, "client.dll", "48 8B 0D ? ? ? ? 48 8B 01 FF 90 ? ? ? ? 85 C0 0F 84 ? ? ? ? F3 0F 10 05", 0x0, 1);

@@ -1,5 +1,21 @@
 #include "SDK.h"
 
+CUserCmd* IInput::CommandSlot(int sequence)
+{
+	// Initial backup commands can precede sequence zero. Never form a negative
+	// ring-buffer index. Keep rewritten command numbers supported for nospread.
+	return sequence < 0 || !m_pCommands ? nullptr : &m_pCommands[sequence % MULTIPLAYER_BACKUP];
+}
+
+void IInput::CommitUserCmd(int sequence)
+{
+	const auto command = CommandSlot(sequence);
+	if (!command || !m_pVerifiedCommands) return;
+	auto& verified = m_pVerifiedCommands[sequence % MULTIPLAYER_BACKUP];
+	verified.m_cmd = *command;
+	verified.m_crc = command->GetChecksum();
+}
+
 #include "../Features/ImGui/Notifications/Notifications.h"
 #include "../Features/ImGui/Menu/Menu.h"
 #include "../Features/EnginePrediction/EnginePrediction.h"

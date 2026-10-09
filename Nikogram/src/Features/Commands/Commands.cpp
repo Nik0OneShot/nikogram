@@ -2,6 +2,7 @@
 
 #include "../../Core/Core.h"
 #include "../ImGui/Menu/Menu.h"
+#include "../Visuals/FakeAngle/FakeAngle.h"
 #include <utility>
 #include <boost/algorithm/string/replace.hpp>
 
@@ -21,6 +22,11 @@
 //static std::unordered_map<ConVar*, ConVarValues_t> s_mConVarValues = {};
 
 static std::unordered_map<uint32_t, CommandCallback> s_mCommands = {
+	AddCommand("aa_preview",
+	{
+		if (vArgs.size() != 1) { SDK::Output("AA Lab", "Usage: aa_preview <session token from !aamode preview> OR aa_preview off"); return; }
+		F::FakeAngle.PreviewFeedCommand(vArgs[0]);
+	})
 	AddCommand("setcvar",
 	{
 		if (vArgs.size() < 2)

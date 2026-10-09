@@ -3,18 +3,24 @@
 #include "../Backtrack/Backtrack.h"
 #include "../Misc/Misc.h"
 
-void CAntiCheatCompatibility::CreateMove(CUserCmd* pCmd, bool* pSendPacket)
+bool CAntiCheatCompatibility::CreateMove(CUserCmd* pCmd, bool* pSendPacket)
 {
 	if (!Active())
-		return;
+	{
+		m_vHistory.clear(); // Do not reuse a previous enabled session's attack window.
+		return false;
+	}
 
 	Math::ClampAngles(pCmd->viewangles); // shouldn't happen, but failsafe
+	const auto initialAngles = pCmd->viewangles;
+	const int initialButtons = pCmd->buttons;
+	const bool initialSend = *pSendPacket;
 
 	m_vHistory.emplace_front(pCmd->viewangles, pCmd->buttons & IN_ATTACK, pCmd->buttons & IN_ATTACK2, *pSendPacket);
 	if (m_vHistory.size() > 5)
 		m_vHistory.pop_back();
 	if (m_vHistory.size() < 3)
-		return;
+		return false;
 
 	// prevent trigger checks, though this shouldn't happen ordinarily
 	if (!m_vHistory[0].m_bAttack1 && m_vHistory[1].m_bAttack1 && !m_vHistory[2].m_bAttack1)
@@ -55,6 +61,9 @@ void CAntiCheatCompatibility::CreateMove(CUserCmd* pCmd, bool* pSendPacket)
 			}
 		}
 	}
+	// Corrections have priority over AA for this command. Select the AA phase
+	// only after the caller knows this final packet/shot decision.
+	return initialAngles != pCmd->viewangles || initialButtons != pCmd->buttons || initialSend != *pSendPacket;
 }
 
 void CAntiCheatCompatibility::RespondCvarValue(INetMessage& msg)

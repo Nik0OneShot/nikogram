@@ -270,12 +270,12 @@ int CAntiAim::AntiAimTicks()
     return BodyYawPolicy::Budget(moving);
 }
 
-void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool bSendPacket, bool bPacketControl)
+void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool bSendPacket, bool bPacketControl, bool externalCorrection)
 {
-	G::AntiAim = bPacketControl && AntiAimOn() && ShouldRun(pLocal, pWeapon, pCmd);
+	G::AntiAim = bPacketControl && !externalCorrection && AntiAimOn() && ShouldRun(pLocal, pWeapon, pCmd);
 
-	int iAntiBackstab = F::Misc.AntiBackstab(pLocal, pCmd, bSendPacket);
-	if (!iAntiBackstab)
+	int iAntiBackstab = externalCorrection ? 0 : F::Misc.AntiBackstab(pLocal, pCmd, bSendPacket);
+	if (!iAntiBackstab && !externalCorrection)
 		FakeShotAngles(pLocal, pWeapon, pCmd);
 
 	if (!G::AntiAim)
@@ -364,6 +364,61 @@ void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bo
 	MinWalk(pLocal, pCmd);
 }
 
+void CAntiAim::SealCommand(int sequence, const CUserCmd* command, bool send)
+{
+	m_tPacket = command ? AntiAimPacketPolicy::Ticket{ sequence, command->command_number,
+		G::AntiAim, send, vFakeAngles.x, vFakeAngles.y } : AntiAimPacketPolicy::Ticket{};
+}
+
+bool CAntiAim::PrepareForSend(int sequence, CUserCmd* command)
+{
+	if (!command || !m_tPacket.NeedsRepair(sequence, command->command_number,
+		command->viewangles.x, command->viewangles.y)) return false;
+
+	// This is the newest command in an ACTUAL CLC_Move, not a predicted send.
+	// Do not let a late phase change or angle overwrite publish a real command.
+	const Vec3 fake = { m_tPacket.fakePitch, m_tPacket.fakeYaw, command->viewangles.z };
+	SDK::FixMovement(command, fake);
+	command->viewangles = fake;
+	I::Input->CommitUserCmd(sequence);
+	m_tPacket.selectedSend = true; // Serialization retries must be idempotent.
+	++m_iPacketRepairs;
+	// A repaired batch no longer matches the body's speculative simulation.
+	m_bBodyValid = false;
+	m_iBatchTicks = 0;
+	m_tPreviousReal = m_tBatchReal = {};
+	return true;
+}
+
+void CAntiAim::AuditSerialized(int sequence, const CUserCmd* command, bool queued)
+{
+	if (!command || !m_tPacket.Matches(sequence, command->command_number)) return;
+	m_iSerializedCommand = command->command_number;
+	m_flSerializedYaw = command->viewangles.y;
+	m_bPacketQueued = queued;
+	if (!Vars::Debug::Logging.Value || !AntiAimOn()) return;
+	static ULONGLONG nextReport = 0;
+	const auto now = GetTickCount64();
+	if (now < nextReport) return;
+	nextReport = now + 1000;
+	SDK::Output("AA packet", std::format(
+		"cmd={} active={} selected_send={} fake_yaw={:.2f} serialized_yaw={:.2f} queued={} repairs={} (not server acknowledgement)",
+		command->command_number, m_tPacket.controlled, m_tPacket.selectedSend,
+		m_tPacket.fakeYaw, m_flSerializedYaw, queued, m_iPacketRepairs).c_str(),
+		Vars::Menu::Theme::Accent.Value, OUTPUT_CONSOLE | OUTPUT_DEBUG);
+}
+
+void CAntiAim::ResetPacketState()
+{
+	m_tPacket = {};
+	m_bBodyValid = false;
+	m_iBatchTicks = 0;
+	m_tPreviousReal = m_tBatchReal = {};
+	m_iSerializedCommand = -1;
+	m_iPacketRepairs = 0;
+	m_bPacketQueued = false;
+}
+
 void CAntiAim::Draw(CTFPlayer* pLocal)
 {
 	if (!pLocal->IsAlive() || pLocal->IsAGhost() || !I::Input->CAM_IsThirdPerson() || !AntiAimOn())
@@ -398,7 +453,12 @@ void CAntiAim::Draw(CTFPlayer* pLocal)
 					H::Draw.StringOutlined(font, vScreen1.x, vScreen1.y + font.m_nTall * 3, bodyColour,
 						Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT,
 						std::format("Real command pose: eye {:.1f} | body {:.1f}", real->m_vRecordedEyeAngles.y,
-							real->m_vRenderAngles.y).c_str());
+								real->m_vRenderAngles.y).c_str());
+				if (m_iSerializedCommand >= 0)
+					H::Draw.StringOutlined(font, vScreen1.x, vScreen1.y + font.m_nTall * 4, bodyColour,
+						Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT,
+						std::format("Packet cmd {} | yaw {:.1f} | queued {} | repairs {} (not server ack)",
+							m_iSerializedCommand, m_flSerializedYaw, m_bPacketQueued, m_iPacketRepairs).c_str());
 			}
 		}
 

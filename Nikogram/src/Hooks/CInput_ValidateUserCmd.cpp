@@ -6,4 +6,7 @@ MAKE_HOOK(CInput_ValidateUserCmd, S::CInput_ValidateUserCmd(), void,
 	void* rcx, CUserCmd* usercmd, int sequence_number)
 {
 	DEBUG_RETURN(CInput_ValidateUserCmd, rcx, usercmd, sequence_number);
+	// CreateMove seals the final command/checksum. Preserve native validation.
+	if (!usercmd || sequence_number < 0) return;
+	CALL_ORIGINAL(rcx, usercmd, sequence_number);
 }

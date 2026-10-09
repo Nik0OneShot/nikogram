@@ -11,6 +11,7 @@
 #include "../Features/Triggerbot/Triggerbot.h"
 #include "../Features/Aimbot/AutoFlarePunch.h"
 #include "../Features/Aimbot/SplashWorker.h"
+#include "../Features/PacketManip/AntiAim/AntiAim.h"
 #include "../Features/Aimbot/SmoothAim.h"
 
 MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
@@ -19,6 +20,7 @@ MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 	DEBUG_RETURN(CHLClient_LevelShutdown, rcx);
 
 	F::Visuals.RestoreWorldModulation();
+	F::AntiAim.ResetPacketState();
 	F::AnimInterp.Restore();
 	SplashWorker::Invalidate();
     SmoothAim::controller.Reset();

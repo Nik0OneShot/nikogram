@@ -5,5 +5,5 @@ MAKE_HOOK(CInput_GetUserCmd, U::Memory.GetVirtual(I::Input, 8), CUserCmd*,
 {
 	DEBUG_RETURN(CInput_GetUserCmd, rcx, sequence_number);
 
-	return &I::Input->m_pCommands[sequence_number % MULTIPLAYER_BACKUP];
+	return I::Input->CommandSlot(sequence_number);
 }

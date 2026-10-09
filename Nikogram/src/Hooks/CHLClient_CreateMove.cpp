@@ -144,6 +144,7 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 	auto pWeapon = H::Entities.GetWeapon();
 	if (!pLocal)
 	{
+		F::AntiAim.ResetPacketState();
 		AmmoLifetimeDiagnostics::Reset("no_local");
 		F::Blockbot.Reset();
 		F::Visuals.ResetLocalAnimationQueue();
@@ -181,8 +182,8 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 		F::Misc.RunPost(pLocal, pCmd);
 		F::PacketManip.Run(pLocal, pWeapon, pCmd, pSendPacket);
 		F::Ticks.CreateMove(pLocal, pWeapon, pCmd, pSendPacket);
-		F::AntiAim.Run(pLocal, pWeapon, pCmd, *pSendPacket, s_iVerified == 1);
-		F::AntiCheatCompatibility.CreateMove(pCmd, pSendPacket);
+		const bool compatibilityOwnsCommand = F::AntiCheatCompatibility.CreateMove(pCmd, pSendPacket);
+		F::AntiAim.Run(pLocal, pWeapon, pCmd, *pSendPacket, s_iVerified == 1, compatibilityOwnsCommand);
 		// Spread correction counter-rotates the command, not the intended cursor
 		// direction. Keep later angle changes, but undo that rotation for matching.
 		F::Backtrack.ToCursor(pLocal, pWeapon, pCmd, pCmd->viewangles-spreadCorrection);
@@ -196,4 +197,6 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 	AmmoLifetimeDiagnostics::Final(pLocal,pWeapon,pCmd);
 	if (s_iVerified != 1)
 		s_bSendPacket = bEngineSendPacket, G::Choking = false; // can't choke safely, hand the engine back its own value
+	F::AntiAim.SealCommand(sequence_number, pCmd, *pSendPacket);
+	I::Input->CommitUserCmd(sequence_number);
 }

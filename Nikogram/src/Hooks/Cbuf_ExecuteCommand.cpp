@@ -21,6 +21,8 @@ MAKE_HOOK(Cbuf_ExecuteCommand, S::Cbuf_ExecuteCommand(), void,
 	if (args.ArgC())
 	{
         const char* sCommand = args[0];
+		// A server must not opt the user into exporting their local preview.
+		if (!_stricmp(sCommand, "aa_preview") && source != src_command) return;
 		std::deque<const char*> vArgs;
 		for (int i = 1; i < args.ArgC(); i++)
 			vArgs.push_back(args[i]);

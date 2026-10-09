@@ -15,6 +15,7 @@
 #include "../Features/Spectate/Spectate.h"
 #include "../Features/Visuals/Visuals.h"
 #include "../Features/Visuals/AnimInterp/AnimInterp.h"
+#include "../Features/Visuals/FakeAngle/FakeAngle.h"
 #include "../Features/Visuals/ESP/ESP.h"
 #include "../Features/Visuals/Chams/Chams.h"
 #include "../Features/Visuals/Glow/Glow.h"
@@ -80,6 +81,7 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 	}
 	case FRAME_RENDER_START:
 		F::AnimInterp.RenderStart();
+		F::FakeAngle.SendPreviewHead(); // read the exact bones used by the yellow preview before Restore()
 		for (auto& tBind : F::Binds.m_vBinds)
 		{	// don't drop inputs for binds
 			if (tBind.m_iType != BindEnum::Key)

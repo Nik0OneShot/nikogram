@@ -2,6 +2,7 @@
 #include "../../../SDK/SDK.h"
 #include "BodyYawPolicy.h"
 #include "LegitAAPolicy.h"
+#include "AntiAimPacketPolicy.h"
 
 class CAntiAim
 {
@@ -23,13 +24,21 @@ private:
 	const void* m_pBodyModel = nullptr;
 	int m_iBodyCommand = 0, m_iBodyChoke = 0, m_iBatchTicks = 0;
 	bool m_bBodyValid = false;
+	AntiAimPacketPolicy::Ticket m_tPacket = {};
+	int m_iPacketRepairs = 0, m_iSerializedCommand = -1;
+	float m_flSerializedYaw = 0.f;
+	bool m_bPacketQueued = false;
 
 public:
 	bool AntiAimOn();
 	bool YawOn();
 	bool ShouldRun(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
-	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool bSendPacket, bool bPacketControl);
+	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool bSendPacket, bool bPacketControl, bool externalCorrection = false);
 	void Draw(CTFPlayer* pLocal);
+	void SealCommand(int sequence, const CUserCmd* command, bool send);
+	bool PrepareForSend(int sequence, CUserCmd* command);
+	void AuditSerialized(int sequence, const CUserCmd* command, bool queued);
+	void ResetPacketState();
 
 	int AntiAimTicks();
 

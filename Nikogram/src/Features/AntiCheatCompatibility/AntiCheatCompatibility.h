@@ -23,7 +23,7 @@ private:
 	int m_iJumps = 0;
 
 public:
-    void CreateMove(CUserCmd* pCmd, bool* pSendPacket);
+    bool CreateMove(CUserCmd* pCmd, bool* pSendPacket);
     void BunnyHop(CUserCmd* pCmd, bool bCurrValid, bool bLastValid);
     void RespondCvarValue(INetMessage& msg);
 

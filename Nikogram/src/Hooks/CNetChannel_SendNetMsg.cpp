@@ -4,6 +4,8 @@
 #include "../Features/Backtrack/Backtrack.h"
 #include "../Features/Misc/Misc.h"
 #include "../Features/AntiCheatCompatibility/AntiCheatCompatibility.h"
+#include "../Features/Visuals/Visuals.h"
+#include "../Features/PacketManip/AntiAim/AntiAim.h"
 
 MAKE_SIGNATURE(CNetChannel_SendNetMsg, "engine.dll", "48 89 5C 24 ? 48 89 74 24 ? 48 89 7C 24 ? 41 56 48 83 EC ? 48 8B F1 45 0F B6 F1", 0x0);
 
@@ -79,6 +81,13 @@ MAKE_HOOK(CNetChannel_SendNetMsg, S::CNetChannel_SendNetMsg(), bool,
 			int nLastOutGoingCommand = I::ClientState->lastoutgoingcommand;
 			int nChokedCommands = I::ClientState->chokedcommands;
 			int nNextCommandNr = nLastOutGoingCommand + nChokedCommands + 1;
+			auto newest = I::Input->GetUserCmd(nNextCommandNr);
+			if (F::AntiAim.PrepareForSend(nNextCommandNr, newest))
+			{
+				// Discard a display batch based on the obsolete command. Do not run
+				// simulation twice or manufacture a pose to conceal the correction.
+				F::Visuals.ResetLocalAnimationQueue();
+			}
 
 			byte data[4000];
 			pMsg->m_DataOut.StartWriting(data, sizeof(data));
@@ -96,13 +105,16 @@ MAKE_HOOK(CNetChannel_SendNetMsg, S::CNetChannel_SendNetMsg(), bool,
 				nFrom = nTo;
 			}
 
+			bool queued = false;
 			if (bOk)
 			{
 				if (nExtraCommands > 0)
 					pNetChan->m_nChokedPackets -= nExtraCommands;
 
-				CALL_ORIGINAL(pNetChan, reinterpret_cast<INetMessage&>(*pMsg), bForceReliable, bVoice);
+				queued = CALL_ORIGINAL(pNetChan, reinterpret_cast<INetMessage&>(*pMsg), bForceReliable, bVoice);
 			}
+			F::AntiAim.AuditSerialized(nNextCommandNr, newest, queued);
+			if (!queued) return false;
 		}
 
 		if (!F::Ticks.m_bSpeedhack)

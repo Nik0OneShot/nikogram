@@ -123,8 +123,8 @@ std::wstring Hash(std::span<const unsigned char> bytes){
  for(auto byte:digest){result+=hex[byte>>4];result+=hex[byte&15];}return result;
 }
 bool VerifyPayloads(){
-    return Hash(Resource(ID_PAYLOAD))==L"6F0046DABFB3EDA78B206F9FADD63CBAD35BE0D5EC0830E18E21A7766151A1A5"
-        &&Hash(Resource(ID_SOURCE))==L"B2A64A30702080DA8C49BFACE76938AD6AD0E0F655ED0437EF23CEA8C0DCCB2B";
+    return Hash(Resource(ID_PAYLOAD))==L"D66CB4B49764FAF06A351F675BDADA095196124CD62D31AC01E04A2F99295450"
+        &&Hash(Resource(ID_SOURCE))==L"62E76ACB3BAA92920659563F3C9DE53F0FDC464F635775FD67601CF732DE53D3";
 }
 std::wstring Error(DWORD error){
  wchar_t* message=nullptr;FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,nullptr,error,0,reinterpret_cast<PWSTR>(&message),0,nullptr);
