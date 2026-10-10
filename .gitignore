@@ -386,3 +386,19 @@ PRIVATE-LEARNING.md
 *.mjs
 /build/
 /output/
+
+# Publish source and user documentation, not internal development reports.
+*.txt
+*.md
+!README.md
+!README.txt
+!LICENSE
+!LICENSE.*
+!COPYING
+!COPYING.*
+!NOTICE
+!NOTICE.*
+!THIRD-PARTY-NOTICES.txt
+!GPL-3.0.txt
+!lgpl-3.0.txt
+!CMakeLists.txt
