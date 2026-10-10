@@ -199,7 +199,7 @@ void CBinds::SetVars(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bManage)
 	CConditionSensor sensor(pLocal);
 	GetBinds(DEFAULT_BIND, pLocal, pWeapon, m_vBinds, sensor, bManage);
 	LoopVars(DEFAULT_BIND);
-	AimModes::Apply(MenuMode::Active==MenuMode::Moonlit);
+	AimModes::Apply(MenuMode::Custom(MenuMode::Active));
 
 	m_bDisplay = F::Menu.m_bIsOpen || Vars::Menu::BindWindow.Value && !s_bUI;
 }

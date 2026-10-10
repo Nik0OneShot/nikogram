@@ -2,6 +2,7 @@
 #include "../ImGui/MoonlitHud.h"
 #include "BacktrackPolicy.h"
 #include "CursorBacktrackPolicy.h"
+#include "NetworkTimingPolicy.h"
 #include "../Aimbot/Aimbot.h"
 #include "../Aimbot/AimbotGlobal/AimbotGlobal.h"
 #include "../ImGui/Menu/Menu.h"
@@ -34,6 +35,12 @@ float CBacktrack::GetReal(int iFlow, bool bNoFake)
     const float latency=iFlow!=MAX_FLOWS?pNetChan->GetLatency(iFlow)-(bNoFake && iFlow==FLOW_INCOMING?GetFakeLatency():0.f)
         :pNetChan->GetLatency(FLOW_INCOMING)+pNetChan->GetLatency(FLOW_OUTGOING)-(bNoFake?GetFakeLatency():0.f);
     return std::isfinite(latency)?std::max(latency,0.f):0.f;
+}
+
+float CBacktrack::ProjectileLead(float simulated, float original)
+{
+    return float(NetworkTimingPolicy::ProjectileLead(TICKS_TO_TIME(m_iTickCount),simulated,original,
+        GetReal(FLOW_OUTGOING),TICKS_TO_TIME(GetAnticipatedChoke()),GetReal(MAX_FLOWS),TICK_INTERVAL));
 }
 
 float CBacktrack::GetWishFake()
@@ -287,7 +294,8 @@ std::vector<TickRecord*> CBacktrack::GetValidRecords(std::vector<TickRecord*>& v
 
     std::vector<TickRecord*> vReturn = {};
     vReturn.reserve(vRecords.size());
-    float flCorrect = std::clamp(GetReal(MAX_FLOWS, false) + ROUND_TO_TICKS(GetFakeInterp()), 0.f, m_flMaxUnlag) + flTimeMod;
+    float flCorrect = float(NetworkTimingPolicy::RewindCorrection(GetReal(MAX_FLOWS, false),
+        ROUND_TO_TICKS(GetFakeInterp()), m_flMaxUnlag)) + flTimeMod;
     int iServerTick = m_iTickCount + TIME_TO_TICKS(GetReal(FLOW_OUTGOING)) + GetAnticipatedChoke() + Vars::Backtrack::Offset.Value;
     const float window=GetWindow();
     // Window zero retains the original nearest-record mode, but never forces
@@ -446,7 +454,7 @@ void CBacktrack::CleanRecords()
 
 		//const int iOldSize = pRecords.size();
 
-		const float flDeadtime = I::GlobalVars->curtime + GetReal() - m_flMaxUnlag;
+		const float flDeadtime = TICKS_TO_TIME(m_iTickCount) + GetReal(FLOW_OUTGOING) - m_flMaxUnlag;
 		if (vRecords.size() > 1 && vRecords.back().m_flSimTime == std::numeric_limits<float>::max())
 			vRecords.pop_back();
 		while (!vRecords.empty())
@@ -510,7 +518,7 @@ void CBacktrack::ReportSelection(const TickRecord* record,const CUserCmd* comman
     if(last && now-last<100) return;
     last=now;
     const int serverTick=m_iTickCount+TIME_TO_TICKS(GetReal(FLOW_OUTGOING))+GetAnticipatedChoke()+Vars::Backtrack::Offset.Value;
-    const float correction=std::clamp(GetReal(MAX_FLOWS,false)+ROUND_TO_TICKS(GetFakeInterp()),0.f,m_flMaxUnlag);
+    const float correction=float(NetworkTimingPolicy::RewindCorrection(GetReal(MAX_FLOWS,false),ROUND_TO_TICKS(GetFakeInterp()),m_flMaxUnlag));
     const float age=TICKS_TO_TIME(serverTick-TIME_TO_TICKS(record->m_flSimTime));
     SelfDamageDiagnostics::Write("backtrack_selection",std::format(
         "cmd={} target={} record_time={} record_tick={} command_tick={} lerp_ticks={} age={} delta={} effective_ms={} invalid={} incoming={} outgoing={} fake_latency={} sent_interp={} applied_interp={} server_tick={} shot_attempt_not_confirmation=1",

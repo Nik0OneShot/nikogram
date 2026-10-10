@@ -19,6 +19,10 @@ void CFonts::Reload(float flDPI, bool bOutline)
 	m_mFonts[FONT_MOONLIT_LABEL] = { "Segoe UI", (std::max)(1, int(14.f * flDPI)), FONTFLAG_ANTIALIAS, 600, m_mFonts[FONT_MOONLIT_LABEL].m_dwFont };
 	m_mFonts[FONT_MOONLIT_DETAIL] = { "Segoe UI", (std::max)(1, int(12.f * flDPI)), FONTFLAG_ANTIALIAS, 400, m_mFonts[FONT_MOONLIT_DETAIL].m_dwFont };
 	m_mFonts[FONT_MOONLIT_COUNT] = { "Segoe UI", (std::max)(1, int(24.f * flDPI)), FONTFLAG_ANTIALIAS, 600, m_mFonts[FONT_MOONLIT_COUNT].m_dwFont };
+    const EFonts dapperFonts[]{FONT_DAPPER_LABEL,FONT_DAPPER_DETAIL,FONT_DAPPER_COUNT,FONT_DAPPER_SERIF_LABEL,FONT_DAPPER_SERIF_DETAIL,FONT_DAPPER_SERIF_COUNT};
+    const int dapperSizes[]{14,12,24,14,12,26};
+    for(int i=0;i<6;++i)
+        m_mFonts[dapperFonts[i]]={i<3?"Tahoma":"Georgia",(std::max)(1,int(dapperSizes[i]*flDPI)),FONTFLAG_ANTIALIAS,400,m_mFonts[dapperFonts[i]].m_dwFont};
 
 	for (auto& fFont : m_mFonts | std::views::values)
 	{

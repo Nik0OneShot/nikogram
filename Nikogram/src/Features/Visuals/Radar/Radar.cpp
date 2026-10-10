@@ -160,7 +160,7 @@ void CRadar::Draw(CTFPlayer* local)
             if (!bind.m_bEnabled || bind.m_iVisibility==BindVisibilityEnum::Hidden) continue;
             bool visible=true;int parent=bind.m_iParent,depth=0;
             while(parent!=DEFAULT_BIND) {if(parent<0||parent>=int(F::Binds.m_vBinds.size())||++depth>int(F::Binds.m_vBinds.size())) {visible=false;break;}const auto& b=F::Binds.m_vBinds[parent];if(!b.m_bEnabled||!b.m_bActive) {visible=false;break;}parent=b.m_iParent;}
-            const bool effective=BindPresentation::Get(bind,n,visible,MenuMode::Active==MenuMode::Moonlit).active;
+            const bool effective=BindPresentation::Get(bind,n,visible,MenuMode::Custom(MenuMode::Active)).active;
             if (!visible || (bind.m_iVisibility==BindVisibilityEnum::WhileActive && !effective)) continue;
             const auto name=ShortName(bind.m_sName,24);
             const std::string info=R::ShowBindKey.Value && bind.m_iType==BindEnum::Key?U::KeyHandler.String(byte(std::clamp(bind.m_iKey,0,255))):"";

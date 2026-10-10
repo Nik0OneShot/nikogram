@@ -2,6 +2,7 @@
 #include "../../ImGui/MoonlitHud.h"
 
 #include "../../Visuals/Materials/Materials.h"
+#include "../RenderState.h"
 
 // Draws camera to the screen
 void CCameraWindow::Draw()
@@ -51,6 +52,8 @@ void CCameraWindow::RenderView(void* rcx, const CViewSetup& pViewSetup)
 	tViewSetup.height = tWindowBox.h + 1;
 	tViewSetup.m_flAspectRatio = float(tViewSetup.width) / float(tViewSetup.height);
 	tViewSetup.fov = 90;
+	// An auxiliary camera must not feed the main view's exposure histogram.
+	tViewSetup.m_bDoBloomAndToneMapping = false;
 
 	RenderCustomView(rcx, tViewSetup, m_pCameraTexture);
 
@@ -59,7 +62,9 @@ void CCameraWindow::RenderView(void* rcx, const CViewSetup& pViewSetup)
 
 void CCameraWindow::RenderCustomView(void* rcx, const CViewSetup& pViewSetup, ITexture* pTexture)
 {
-	auto pRenderContext = I::MaterialSystem->GetRenderContext();
+    RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
+    auto pRenderContext=context.Get();if(!pRenderContext||!pTexture)return;
+    RenderState::ToneMappingScope toneMapping(pRenderContext);
 
 	pRenderContext->PushRenderTargetAndViewport();
 	pRenderContext->SetRenderTarget(pTexture);
@@ -68,7 +73,6 @@ void CCameraWindow::RenderCustomView(void* rcx, const CViewSetup& pViewSetup, IT
 	CViewRender_RenderView->Call<void>(rcx, pViewSetup, VIEW_CLEAR_COLOR | VIEW_CLEAR_DEPTH, RENDERVIEW_UNSPECIFIED);
 
 	pRenderContext->PopRenderTargetAndViewport();
-	pRenderContext->Release();
 }
 
 void CCameraWindow::Initialize()

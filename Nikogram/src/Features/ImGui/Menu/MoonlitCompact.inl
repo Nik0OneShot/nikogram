@@ -133,7 +133,6 @@ void CMenu::MoonlitAim(bool legit)
                 {
                     SettingSlider(A::General::SmoothAmount,"Automatic gentle correction, 0 to 10. Zero removes Smooth's contribution.");
                     SettingSlider(A::General::AssistAmount,"Mouse-driven hitbox guidance. Yields to fast flicks and deliberate movement away; no Assistive pull while the mouse is idle.");
-                    SettingChoice(A::General::AssistHitbox,"Hitscan: closest enabled, visible hitbox at your crosshair height, or prefer an enabled, visible head. Never forces its centre. Disabled/blocked regions are not used. Projectiles retain their predicted aiming solution.");
                 }
                 if(combined||style==A::General::AimTypeEnum::Smooth)
                 {
@@ -146,9 +145,13 @@ void CMenu::MoonlitAim(bool legit)
                 }
                 else SettingSlider(A::General::AssistStrength,"Strength of the existing mouse-driven Assistive style.");
             }
+            SettingSlider(A::General::TargetSwitchDelay,"Pause before moving or automatically firing at a different target. First acquisition is immediate; zero restores instant switching.");
+            Setting(A::General::DynamicTargetSwitch,"Sample one delay per handoff using the same bounds as Triggerbot. Candidate changes do not restart the timer.");
+            if(FGet(AimModes::Resolve(A::General::DynamicTargetSwitch)))
+            {SettingSlider(A::General::TargetSwitchMin);SettingSlider(A::General::TargetSwitchMax);}
+            SettingSlider(A::General::AimFOV,nullptr,"Aim field of view");SettingSlider(A::Hitscan::MultipointScale);
             SettingChoice(A::General::TargetSelection);
             SettingChoice(A::Hitscan::Hitboxes);SettingChoice(A::Hitscan::MultipointHitboxes);
-            SettingSlider(A::General::AimFOV,nullptr,"Aim field of view");SettingSlider(A::Hitscan::MultipointScale);
             Heading("Automatic firing");Setting(A::General::AutoShoot,nullptr,true);
             Heading("Advanced targeting");SettingChoice(A::General::Target);SettingChoice(A::General::Ignore);
             SettingChoice(A::General::LeadAndRestrict);SettingSlider(A::General::MaxTargets);
@@ -203,9 +206,12 @@ void CMenu::MoonlitAntiAim()
         {CompactPanel p{"Anti-aim angles"};if(p)
         {
             SettingActivation(A::Enabled,MoonlitBinding::OnLethal);SettingChoice(A::PitchReal);SettingChoice(A::PitchFake);
-            SettingChoice(A::RealYawBase);SettingChoice(A::YawReal);SettingSlider(A::RealYawOffset);SettingSlider(A::RealYawValue);
-            SettingChoice(A::FakeYawBase);SettingChoice(A::YawFake);SettingSlider(A::FakeYawOffset);SettingSlider(A::FakeYawValue);
+            SettingChoice(A::RealYawBase);SettingChoice(A::YawReal);SettingSlider(A::RealYawOffset);
+            if(FGet(A::YawReal,true)==A::YawEnum::Jitter)SettingSlider(A::RealYawValue);
+            SettingChoice(A::FakeYawBase);SettingChoice(A::YawFake);SettingSlider(A::FakeYawOffset);
+            if(FGet(A::YawFake,true)==A::YawEnum::Jitter)SettingSlider(A::FakeYawValue);
             SettingSlider(A::SpinSpeed);Setting(A::MinWalk);Setting(A::HidePitchOnShot);
+            Setting(A::FirstPersonRing);if(FGet(A::FirstPersonRing,true))SettingSlider(A::RingOffset);
         }}
         c.Next();
         {CompactPanel p{"Fake lag",c.height*.48f};if(p)
@@ -287,7 +293,7 @@ void CMenu::MoonlitESP()
         }}
         {CompactPanel p{"World & effects"};if(p)
         {
-            Setting(V::Removals::Scope,nullptr,false,"Remove scope overlay");Setting(V::Removals::PostProcessing,nullptr,false,"Remove post processing");
+            Setting(V::Removals::Scope,nullptr,false,"Remove scope overlay");Setting(V::Removals::PostProcessing,"Clean screenshots keeps native exposure/post processing active to prevent brightness changes.",false,"Remove post processing");
             Setting(V::Removals::ScreenEffects,nullptr,false,"Remove screen effects");Setting(V::Removals::ViewPunch,nullptr,false,"Remove view punch");
             Setting(V::Thirdperson::Enabled,nullptr,true);Setting(V::Thirdperson::Crosshair,nullptr,false,"Thirdperson Crosshair");
             SettingSlider(V::UI::FieldOfView);SettingSlider(V::UI::ZoomFieldOfView);
@@ -307,6 +313,15 @@ void CMenu::MoonlitMisc()
             Setting(M::Automation::AntiAFK);Setting(M::Automation::AcceptItemDrops);SettingChoice(M::Automation::AntiBackstab);
             Setting(M::Automation::TauntControl,nullptr,true);Setting(M::Automation::KartControl,nullptr,true);
             Setting(M::Blockbot::Enabled,nullptr,true);Setting(M::Sound::HitsoundAlways);Setting(M::Sound::RemoveDSP);
+            Heading("Freelook");
+            PendingModes.try_emplace(&M::Freelook::Enabled,BindEnum::KeyEnum::Hold);
+            Setting(M::Freelook::Enabled,"Hold to move the camera without changing your normal aim or movement direction.",true);
+            More("Freelook settings...",Editor::Misc,1);
+            Heading("OptiFine Zoom");
+            PendingModes.try_emplace(&M::OptifineZoom::Enabled,BindEnum::KeyEnum::Hold);
+            Setting(M::OptifineZoom::Enabled,"Assign a key; Hold is the default. Release restores the current normal or scoped view.",true);
+            SettingSlider(M::OptifineZoom::Magnification);
+            More("Zoom settings...",Editor::Misc,1);
             Heading("Utilities");
             if(Button("Console",{-1,0}))I::EngineClient->ClientCmd_Unrestricted("toggleconsole");
             if(Button("Full update",{-1,0}))I::EngineClient->ClientCmd_Unrestricted("cl_fullupdate");
@@ -330,7 +345,7 @@ void CMenu::MoonlitMisc()
             changed|=Checkbox("Shimejis",&Workspace::PetEnabled);changed|=Checkbox("Subtle transitions",&MenuMode::Animations);
             changed|=Checkbox("Smooth sliders",&MenuMode::SmoothSliders);
             if(changed)m_sInterfaceStatus=Workspace::Save()?"Appearance saved.":"Could not save appearance.";
-            Setting(Vars::Visuals::UI::CleanScreenshots);
+            Setting(Vars::Visuals::UI::CleanScreenshots,"Hides custom draws for screenshots. Keeps native post processing active on every frame to preserve exposure.");
             More("Interface settings...",Editor::Interface);More("Compatibility & utilities...",Editor::Misc,4);
             if(Button("Reset menu layout",{-1,0}))ResetCompactLayout=true;
             if(Button("Hide menu",{-1,0})){m_bIsOpen=false;I::MatSystemSurface->SetCursorAlwaysVisible(false);}

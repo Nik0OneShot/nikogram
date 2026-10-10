@@ -1062,6 +1062,7 @@
     <ClCompile Include="src\Hooks\CViewRender_LevelInit.cpp" />
     <ClCompile Include="src\Hooks\CViewRender_PerformScreenOverlay.cpp" />
     <ClCompile Include="src\Hooks\CViewRender_RenderView.cpp" />
+    <ClCompile Include="src\Hooks\IMatRenderContext_Bind.cpp" />
     <ClCompile Include="src\Hooks\DataTable_Warning.cpp" />
     <ClCompile Include="src\Hooks\Direct3DDevice9.cpp" />
     <ClCompile Include="src\Hooks\DoEnginePostProcessing.cpp" />
@@ -1441,8 +1442,6 @@
     <ClInclude Include="src\Features\ImGui\Menu\MoonlitControls.inl" />
     <ClInclude Include="src\Features\ImGui\Menu\MoonlitBinding.h" />
     <ClInclude Include="src\Features\ImGui\SteamDefaultAvatar.h" />
-    <ClInclude Include="src\Features\ImGui\MaterialDesign\IconDefinitions.h" />
-    <ClInclude Include="src\Features\ImGui\MaterialDesign\MaterialIcons.h" />
     <ClInclude Include="src\Features\ImGui\Menu\Components.h" />
     <ClInclude Include="src\Features\ImGui\Menu\Menu.h" />
     <ClInclude Include="src\Features\Players\PlayerCore.h" />
@@ -1538,12 +1537,9 @@
     <ClInclude Include="src\SDK\Definitions\Misc\Modes.h" />
     <ClInclude Include="src\SDK\Definitions\Misc\MouseCode.h" />
     <ClInclude Include="src\SDK\Definitions\Misc\NetAdr.h" />
-    <ClInclude Include="src\SDK\Definitions\Misc\SharedDefs.h" />
     <ClInclude Include="src\SDK\Definitions\Misc\String.h" />
     <ClInclude Include="src\SDK\Definitions\Misc\Studio.h" />
     <ClInclude Include="src\SDK\Definitions\Misc\TextureGroupNames.h" />
-    <ClInclude Include="src\SDK\Definitions\Misc\TFSharedDefs.h" />
-    <ClInclude Include="src\SDK\Definitions\Misc\Const.h" />
     <ClInclude Include="src\SDK\Definitions\Misc\VGUI.h" />
     <ClInclude Include="src\SDK\Definitions\Misc\VPlane.h" />
     <ClInclude Include="src\SDK\Definitions\Misc\VTF.h" />
@@ -1571,7 +1567,6 @@
     <ClInclude Include="src\Utils\NetVars\NetVars.h" />
     <ClInclude Include="src\Utils\Signatures\Signatures.h" />
     <ClInclude Include="src\Utils\Timer\Timer.h" />
-    <ClInclude Include="src\Utils\UtlVector\UtlVector.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
@@ -1599,6 +1594,23 @@
   <ItemGroup>
     <ResourceCompile Include="DapperAssets.rc" />
     <ClInclude Include="src\Features\Visuals\RenderState.h" />
+    <ClInclude Include="src\Features\Visuals\ZoomPolicy.h" />
+    <ClInclude Include="src\Features\Visuals\CapturePolicy.h" />
+    <ClInclude Include="src\Features\Visuals\Dapper\WorldPhoto.h" />
+    <ClInclude Include="src\Features\Visuals\Dapper\SkyPhoto.h" />
+    <ClInclude Include="src\Features\Visuals\Dapper\PhotoAssetPolicy.h" />
+    <ClInclude Include="src\Features\Visuals\Dapper\PhotoRenderPolicy.h" />
+    <ClInclude Include="src\Features\Visuals\Dapper\WorldBindPolicy.h" />
+    <ClInclude Include="src\Features\Visuals\RenderAudit.h" />
+    <ClInclude Include="src\Features\Backtrack\NetworkTimingPolicy.h" />
+    <ClInclude Include="src\Features\Aimbot\AimbotHitscan\HeadRecordPolicy.h" />
+    <ClInclude Include="src\Features\PacketManip\AntiAim\EdgeCoverPolicy.h" />
+    <ClInclude Include="src\Features\PacketManip\AntiAim\AngleDisplayPolicy.h" />
+    <ClInclude Include="src\Features\Aimbot\TargetSwitchPolicy.h" />
+    <ClInclude Include="src\Features\ImGui\MenuPalette.h" />
+    <ClInclude Include="src\Features\ImGui\DapperStyle.h" />
+    <None Include="src\Features\ImGui\Menu\Dapper.inl" />
+    <ClInclude Include="src\Features\ImGui\DeviceStatePolicy.h" />
     <ClInclude Include="src\Features\Visuals\Dapper\Dapper.h" />
     <None Include="assets\dapper\*" />
   </ItemGroup>

@@ -18,6 +18,7 @@ class CMenu
 private:
 	void DrawMenu();
 	void DrawMoonlit();
+    void DrawDapper();
     bool DrawInterfacePreferences(bool showStyleChoice = true);
 	void DrawMenuStyleChoice();
 	std::string m_sInterfaceStatus;

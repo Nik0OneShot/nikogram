@@ -19,7 +19,7 @@ namespace MenuStartup
         Request(DWORD pid, std::uint64_t birth, int style)
         {
             if (style == -1) return;
-            if (style < 0 || style > 1) return;
+            if (style < 0 || style > 4) return;
             const auto name = Name(pid, birth);
             mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Message), name.c_str());
             if (!mapping) return;
@@ -48,7 +48,7 @@ namespace MenuStartup
         if (!mapping) return;
         if (const auto* data = static_cast<const Message*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(Message))))
         {
-            if (data->magic == 0x4E4B4D53 && data->version == 1 && data->style >= 0 && data->style <= 1)
+            if (data->magic == 0x4E4B4D53 && data->version == 1 && data->style >= 0 && data->style <= 4)
                 Override = data->style;
             UnmapViewOfFile(data);
         }

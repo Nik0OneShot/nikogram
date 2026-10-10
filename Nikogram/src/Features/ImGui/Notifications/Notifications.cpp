@@ -78,7 +78,8 @@ static inline int Y()
 void CNotifications::Draw()
 {
 	using namespace ImGui;
-	const bool moonlit = MenuMode::Active == MenuMode::Moonlit;
+	const bool moonlit = MenuMode::Custom(MenuMode::Hud());
+    const bool dapper=MenuMode::Dapper(MenuMode::Hud());
 
 	std::lock_guard tLock(m_tMutex);
 	for (auto it = m_vNotifications.begin(); it != m_vNotifications.end();)
@@ -96,7 +97,7 @@ void CNotifications::Draw()
 	const float scale = std::max(0.1f, H::Draw.Scale());
 	const float margin = H::Draw.Scale(8), padding = H::Draw.Scale(moonlit ? 14 : 10);
 	const float barHeight = H::Draw.Scale(moonlit ? 3 : 12), textGap = H::Draw.Scale(moonlit ? 12 : 7);
-	const auto badge = moonlit && Workspace::PetEnabled ? F::Render.NikoLauncherIcon() : ImTextureID{};
+	const auto badge = dapper?F::Render.DapperPhoto(DapperStyle::Photo(MenuMode::Hud())):moonlit&&Workspace::PetEnabled?F::Render.NikoLauncherIcon():ImTextureID{};
 	const float badgeSpace = badge ? H::Draw.Scale(26) : 0.f;
 	const float maxWidth = GetIO().DisplaySize.x - margin * 2;
 	if (maxWidth <= padding * 2 + badgeSpace || GetIO().DisplaySize.y <= margin * 2) return;
@@ -164,16 +165,16 @@ void CNotifications::Draw()
 		const ImVec2 pos(x, ShouldReverseY() ? y - h : y);
 		const float stroke = std::max(1.f, scale);
 		pDrawList->PushClipRect(ImVec2(0, 0), GetIO().DisplaySize, true);
-		pDrawList->AddRectFilled(pos, pos + ImVec2(w, h), moonlit ? IM_COL32(33,27,48,245) : IM_COL32(0,0,0,255), moonlit ? H::Draw.Scale(12) : 0.f);
+		pDrawList->AddRectFilled(pos, pos + ImVec2(w, h), moonlit ? GetColorU32(F::Render.Background0.Value) : IM_COL32(0,0,0,255), moonlit&&!dapper ? H::Draw.Scale(12) : 0.f);
 		pDrawList->AddRect(pos + ImVec2(stroke * .5f, stroke * .5f), pos + ImVec2(w - stroke * .5f, h - stroke * .5f),
-			moonlit ? IM_COL32(72,59,92,255) : tint(1.f), moonlit ? H::Draw.Scale(12) : 0.f, ImDrawFlags_None, stroke);
+			moonlit ? GetColorU32(ImGuiCol_Border) : tint(1.f), moonlit&&!dapper ? H::Draw.Scale(12) : 0.f, ImDrawFlags_None, stroke);
 		float lineY = pos.y + padding;
-		if (badge) pDrawList->AddImage(badge, pos + ImVec2(padding,padding), pos + ImVec2(padding+H::Draw.Scale(20),padding+H::Draw.Scale(20)));
+		if (badge) pDrawList->AddImage(badge, pos + ImVec2(padding,padding), pos + ImVec2(padding+H::Draw.Scale(20),padding+H::Draw.Scale(20)),{0,0},{1,1},IM_COL32(255,255,255,int(255*(dapper?DapperStyle::Opacity(MenuMode::Hud()):1.f))));
 		for (const auto& line : textLines)
 		{
 			const float lineWidth = CalcTextSize(line.c_str()).x;
 			pDrawList->AddText(GetFont(), GetFontSize(), ImVec2(pos.x + (moonlit ? padding + badgeSpace : (w - lineWidth) * .5f), lineY),
-				moonlit ? IM_COL32(241,234,250,255) : tint(1.f), line.c_str());
+				moonlit ? GetColorU32(F::Render.Active.Value) : tint(1.f), line.c_str());
 			lineY += GetFontSize();
 		}
 		const ImVec2 bar = pos + ImVec2(padding, padding + textHeight + textGap);
@@ -181,7 +182,7 @@ void CNotifications::Draw()
 		const int filled = NotificationStyle::Filled(remaining, layout.count);
 		if (moonlit)
 		{
-			pDrawList->AddRectFilled(bar, bar + ImVec2(w - padding * 2,barHeight), IM_COL32(72,59,92,255), barHeight * .5f);
+			pDrawList->AddRectFilled(bar, bar + ImVec2(w - padding * 2,barHeight), GetColorU32(ImGuiCol_Border), dapper?0.f:barHeight * .5f);
 			if (remaining > 0.f) pDrawList->AddRectFilled(bar, bar + ImVec2((w - padding * 2) * remaining,barHeight), tint(1.f), barHeight * .5f);
 		}
 		for (int i = 0; !moonlit && i < layout.count; ++i)

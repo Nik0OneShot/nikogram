@@ -1,4 +1,7 @@
 #include "SDK.h"
+#include "../Features/Visuals/CapturePolicy.h"
+#include "../Features/Visuals/RenderAudit.h"
+#include <mutex>
 
 CUserCmd* IInput::CommandSlot(int sequence)
 {
@@ -995,5 +998,13 @@ void SDK::GetProjectileFireSetup(CTFPlayer* pPlayer, const Vec3& vAngIn, Vec3 vO
 
 bool SDK::CleanScreenshot()
 {
-	return Vars::Visuals::UI::CleanScreenshots.Value && I::EngineClient->IsTakingScreenshot();
+    static CapturePolicy::Latch capture;
+    static std::mutex captureMutex;
+    const std::lock_guard lock(captureMutex);
+    const bool nativeCapture=I::EngineClient->IsTakingScreenshot();
+    RenderAudit::SignalCapture(nativeCapture);
+    const bool active = capture.Update(Vars::Visuals::UI::CleanScreenshots.Value,
+        nativeCapture, I::GlobalVars->framecount);
+    // Remember late requests even while this scene's decision is frozen.
+    return CapturePolicy::scene.value_or(active);
 }

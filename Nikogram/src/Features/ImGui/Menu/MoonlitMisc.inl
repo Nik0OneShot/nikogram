@@ -28,6 +28,26 @@ void CMenu::MenuMoonlitMisc()
             if(Vars::Debug::Options.Value)if(Card c{"Rocket-jump debug tuning",true};c){SettingSlider(M::Movement::AutoRocketJumpChokeGrounded);SettingSlider(M::Movement::AutoRocketJumpChokeAir);SettingSlider(M::Movement::AutoRocketJumpSkipGround);SettingSlider(M::Movement::AutoRocketJumpSkipAir);SettingSlider(M::Movement::AutoRocketJumpTimingOffset);SettingSlider(M::Movement::AutoRocketJumpApplyAbove);}
             break;
         case 1:
+            if(Card c{"Freelook"};c)
+            {
+                PendingModes.try_emplace(&M::Freelook::Enabled,BindEnum::KeyEnum::Hold);
+                Setting(M::Freelook::Enabled,"Hold a key to look around without turning your normal aim or movement. Works in first and third person, including while zoomed.",true);
+                Setting(M::Freelook::Limited,"Off allows continuous horizontal rotation; vertical view always stops at straight up/down.");
+                BeginDisabled(!FGet(M::Freelook::Limited));
+                SettingSlider(M::Freelook::Horizontal);SettingSlider(M::Freelook::Vertical);EndDisabled();
+                SettingChoice(M::Freelook::Return);
+                BeginDisabled(FGet(M::Freelook::Return)!=M::Freelook::ReturnEnum::Smooth);
+                SettingSlider(M::Freelook::ReturnTime);EndDisabled();
+            }
+            if(Card c{"OptiFine Zoom"};c)
+            {
+                PendingModes.try_emplace(&M::OptifineZoom::Enabled,BindEnum::KeyEnum::Hold);
+                Setting(M::OptifineZoom::Enabled,"Assign a key to hold-to-zoom. Release restores your current normal or scoped view.",true);
+                SettingSlider(M::OptifineZoom::Magnification,"Optical magnification relative to your current view.");
+                Setting(M::OptifineZoom::Smooth);BeginDisabled(!FGet(M::OptifineZoom::Smooth));
+                SettingSlider(M::OptifineZoom::Transition);EndDisabled();
+                Setting(M::OptifineZoom::ScaleSensitivity,"Reduce mouse sensitivity in proportion to the zoom, including its transition.");
+            }
             if(Card c{"Player actions"};c){SettingChoice(M::Automation::AntiBackstab);Setting(M::Automation::TauntControl,nullptr,true);Setting(M::Automation::KartControl,nullptr,true);}
             if(Card c{"Mann vs. Machine",true};c){Setting(M::MannVsMachine::InstantRespawn);Setting(M::MannVsMachine::InstantRevive);Setting(M::MannVsMachine::AllowInspect);}
             TableNextColumn();

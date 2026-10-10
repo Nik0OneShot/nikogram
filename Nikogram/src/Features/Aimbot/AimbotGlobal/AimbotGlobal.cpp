@@ -2,11 +2,66 @@
 #include "../TargetPolicy.h"
 #include "../CombatPriorityPolicy.h"
 #include "../SmoothAim.h"
+#include "../AimModes.h"
+#include "../../ImGui/Menu/Menu.h"
+#include "../../Triggerbot/TriggerPolicy.h"
+#include <random>
 
 #include "../Aimbot.h"
 #include "../../Players/PlayerUtils.h"
 #include "../../Ticks/Ticks.h"
 #include "../../EnginePrediction/EnginePrediction.h"
+
+void CAimbotGlobal::BeginTargetSwitch(CTFPlayer* local, CTFWeaponBase* weapon, CUserCmd* cmd)
+{
+    namespace A = Vars::Aimbot::General;
+    const unsigned handle = weapon ? weapon->GetRefEHandle().ToInt() : 0;
+    const int context = (local ? local->m_iClass() : 0) + 32 * (AimModes::Active + 2);
+    const float settings[] = { A::TargetSwitchDelay.Value, float(A::DynamicTargetSwitch.Value), A::TargetSwitchMin.Value, A::TargetSwitchMax.Value };
+    bool changed = false;
+    for (int i = 0; i < 4; ++i) changed |= settings[i] != m_switchSettings[i];
+    // ShouldAim also tests weapon cooldown for Plain/Silent: do NOT reset the
+    // handoff timer there, or every shot would become a new initial acquisition.
+    if (!local || !local->IsAlive() || !local->CanAttack() || !weapon || !A::AimType.Value
+        || cmd->weaponselect || F::Menu.m_bIsOpen || I::EngineVGui->IsGameUIVisible() || handle != m_switchWeapon
+        || context != m_switchContext || A::AimType.Value != m_switchStyle || changed)
+        for (auto& state : m_switch) state.Reset();
+    m_switchWeapon = handle; m_switchStyle = A::AimType.Value;
+    m_switchContext = context;
+    std::copy_n(settings, 4, m_switchSettings);
+    m_switchSeen[0] = m_switchSeen[1] = false;
+}
+
+bool CAimbotGlobal::AllowTargetSwitch(CBaseEntity* target)
+{
+    namespace A = Vars::Aimbot::General;
+    const int slot = F::Aimbot.m_bRunningSecondary ? 1 : 0;
+    m_switchSeen[slot] = true;
+    auto& state = m_switch[slot];
+    // Independent RNG, just like Triggerbot; never touch spread/crit randomness.
+    static std::mt19937 generator(unsigned(GetTickCount64()) ^ GetCurrentProcessId());
+    const auto delay = state.waiting ? std::optional<double>(state.delay) : TriggerPolicy::Delay(A::DynamicTargetSwitch.Value,
+        A::TargetSwitchDelay.Value, A::TargetSwitchMin.Value, A::TargetSwitchMax.Value,
+        std::uniform_real_distribution<double>(0., 1.)(generator));
+    return delay && state.Update(target ? target->GetRefEHandle().ToInt() : 0,
+        double(GetTickCount64()) * .001, *delay);
+}
+
+void CAimbotGlobal::EndTargetSwitch()
+{
+    for (int slot = 0; slot < 2; ++slot) if (!m_switchSeen[slot] && m_switch[slot].current)
+    {
+        const auto client = I::ClientEntityList->GetClientEntityFromHandle(CBaseHandle(m_switch[slot].current));
+        const auto entity = client ? client->As<CBaseEntity>() : nullptr;
+        // No evaluation during cooldown is not evidence of target loss. A dead
+        // or removed player is; otherwise the next validated candidate arms it.
+        if(entity && (!entity->IsPlayer() || entity->As<CTFPlayer>()->IsAlive())) continue;
+        const bool previous = F::Aimbot.m_bRunningSecondary;
+        F::Aimbot.m_bRunningSecondary = slot != 0;
+        AllowTargetSwitch(nullptr); // Start at target loss, even with no replacement yet.
+        F::Aimbot.m_bRunningSecondary = previous;
+    }
+}
 
 std::vector<Target_t> CAimbotGlobal::ManageTargets(std::vector<Target_t>(*GetTargets)(CTFPlayer* pLocal, CTFWeaponBase* pWeapon), CTFPlayer* pLocal, CTFWeaponBase* pWeapon,
 	int iMethod, int iMaxTargets)

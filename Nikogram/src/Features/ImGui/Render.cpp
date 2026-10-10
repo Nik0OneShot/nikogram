@@ -4,6 +4,8 @@
 #include "SteamDefaultAvatar.h"
 #include "NikogramLogo.h"
 #include "MoonlitHud.h"
+#include "DeviceStatePolicy.h"
+#include "../Visuals/Dapper/PhotoAssetPolicy.h"
 #include <mutex>
 
 #include "../../Hooks/Direct3DDevice9.h"
@@ -19,6 +21,7 @@
 void CRender::Render(IDirect3DDevice9* pDevice)
 {
 	if (!pDevice || pDevice->TestCooperativeLevel() != D3D_OK) return;
+    if (SDK::CleanScreenshot()) { MoonlitHud::InvalidateBadge(); return; }
 	if (m_pLauncherDevice != pDevice)
 	{
 		ReleaseLauncherTextures();
@@ -29,6 +32,8 @@ void CRender::Render(IDirect3DDevice9* pDevice)
 		Initialize(pDevice);
 	});
 
+    DeviceStatePolicy::Scope<IDirect3DDevice9, IDirect3DStateBlock9, D3DSTATEBLOCKTYPE> state(pDevice, D3DSBT_ALL);
+    if (!state.Ready()) return; // Leave engine state untouched if restoration is unavailable.
 	LoadColors();
 	{
 		static float flStaticScale = Vars::Menu::Scale.Value;
@@ -38,8 +43,6 @@ void CRender::Render(IDirect3DDevice9* pDevice)
 			Reload();
 	}
 
-	DWORD dwOldRGB; pDevice->GetRenderState(D3DRS_SRGBWRITEENABLE, &dwOldRGB);
-	pDevice->SetRenderState(D3DRS_SRGBWRITEENABLE, false);
 	ImGui_ImplDX9_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
@@ -50,7 +53,6 @@ void CRender::Render(IDirect3DDevice9* pDevice)
 	ImGui::EndFrame();
 	ImGui::Render();
 	ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-	pDevice->SetRenderState(D3DRS_SRGBWRITEENABLE, dwOldRGB);
 }
 
 void CRender::LoadColors()
@@ -153,6 +155,17 @@ void CRender::LoadFonts()
 	FontMono = loadTerminus(16);
 	FontMoonlit = io.Fonts->AddFontFromMemoryCompressedTTF(RobotoMedium_compressed_data, RobotoMedium_compressed_size, H::Draw.Scale(16), &tFontConfig);
 	FontMoonlitHeading = io.Fonts->AddFontFromMemoryCompressedTTF(RobotoMedium_compressed_data, RobotoMedium_compressed_size, H::Draw.Scale(25), &tFontConfig);
+    wchar_t windowsPath[MAX_PATH]{};GetWindowsDirectoryW(windowsPath,MAX_PATH);
+    for(int i=0;i<3;++i)
+    {
+        const auto path=(std::filesystem::path(windowsPath)/"Fonts"/(i==0?"tahoma.ttf":"georgia.ttf")).string();
+        std::error_code error;
+        const bool exists=std::filesystem::is_regular_file(path,error);
+        FontDapper[i]=exists?io.Fonts->AddFontFromFileTTF(path.c_str(),H::Draw.Scale(i==0?15:16),&tFontConfig):nullptr;
+        FontDapperHeading[i]=exists?io.Fonts->AddFontFromFileTTF(path.c_str(),H::Draw.Scale(i==0?22:25),&tFontConfig):nullptr;
+        if(!FontDapper[i])FontDapper[i]=FontMoonlit;
+        if(!FontDapperHeading[i])FontDapperHeading[i]=FontMoonlitHeading;
+    }
 
 	ImFontConfig tIconConfig;
 	tIconConfig.PixelSnapH = true;
@@ -246,13 +259,14 @@ namespace MoonlitHud
 {
 	namespace
 	{
-		struct BadgeDraw { int x, y, size, left, top, right, bottom; };
+		struct BadgeDraw { int x, y, size, left, top, right, bottom, photo; float opacity; };
 		struct BadgeBatch { std::array<BadgeDraw, 256> draws{}; size_t count = 0; double time = 0.; };
 		BadgeBatch building, ready;
 		std::mutex badgeMutex;
 	}
 	void BeginBadges()
 	{
+        Configure();
 		std::lock_guard lock(badgeMutex);
 		building.count = 0; // Keep the completed snapshot visible during the next Paint.
 	}
@@ -269,21 +283,23 @@ namespace MoonlitHud
 		building.count = ready.count = 0;
 	}
 	void ReleaseBadge() { InvalidateBadge(); }
-	bool Badge(int x, int y, int size)
+	bool Badge(int x, int y, int size, bool charged, bool watched)
 	{
-		if (!Enabled() || !Workspace::PetEnabled || size <= 0) return false;
+		if (!Enabled() || (!MenuMode::Dapper(MenuMode::Hud()) && !Workspace::PetEnabled) || size <= 0) return false;
 		int left, top, right, bottom; bool clippingDisabled;
 		I::MatSystemSurface->GetClippingRect(left, top, right, bottom, clippingDisabled);
 		if (clippingDisabled) { left = top = 0; right = H::Draw.m_nScreenW; bottom = H::Draw.m_nScreenH; }
 		if (x >= right || y >= bottom || x + size <= left || y + size <= top) return false;
 		std::lock_guard lock(badgeMutex);
 		if (building.count == building.draws.size()) return false;
-		building.draws[building.count++] = {x,y,size,left,top,right,bottom};
+        const int style=MenuMode::Hud();
+		building.draws[building.count++] = {x,y,size,left,top,right,bottom,
+            MenuMode::Dapper(style)?DapperStyle::Photo(style,charged,watched):0,MenuMode::Dapper(style)?DapperStyle::Opacity(style):1.f};
 		return true;
 	}
 	void DrawBadges()
 	{
-		if (!Enabled() || !Workspace::PetEnabled || SDK::CleanScreenshot()
+		if (!Enabled() || (!MenuMode::Dapper(MenuMode::Hud()) && !Workspace::PetEnabled) || SDK::CleanScreenshot()
 			|| !I::EngineClient->IsInGame() || !H::Entities.GetLocal())
 		{
 			InvalidateBadge();
@@ -298,16 +314,16 @@ namespace MoonlitHud
 		if (!batch.count) return;
 		const double age = SDK::PlatFloatTime() - batch.time;
 		if (age < 0. || age > .1) return;
-		const auto texture = F::Render.NikoLauncherIcon();
-		if (!texture) return;
 		// Use the same alpha-capable DX9 image as Binds. The background list keeps
 		// badges below menu windows; clipping remains the original HUD panel's.
 		auto* draw = ImGui::GetBackgroundDrawList();
 		for (size_t i = 0; i < batch.count; ++i)
 		{
 			const auto& b = batch.draws[i];
+            const auto texture=b.photo?F::Render.DapperPhoto(b.photo):F::Render.NikoLauncherIcon();
+            if(!texture)continue;
 			draw->PushClipRect({float(b.left),float(b.top)}, {float(b.right),float(b.bottom)}, true);
-			draw->AddImage(texture, {float(b.x),float(b.y)}, {float(b.x+b.size),float(b.y+b.size)});
+			draw->AddImage(texture, {float(b.x),float(b.y)}, {float(b.x+b.size),float(b.y+b.size)}, {0,0},{1,1},IM_COL32(255,255,255,int(255*b.opacity)));
 			draw->PopClipRect();
 		}
 	}
@@ -323,6 +339,7 @@ void CRender::ReleaseLauncherTextures()
 {
 	MoonlitHud::InvalidateBadge();
 	if (m_pNikogramLogo) { m_pNikogramLogo->Release(); m_pNikogramLogo = nullptr; }
+    for(auto& texture:m_pDapperPhotos){if(texture)texture->Release();texture=nullptr;}
 	for (auto& texture : m_pPetTextures) { if (texture) texture->Release(); texture = nullptr; }
 	if (m_pNikoIcon) { m_pNikoIcon->Release(); m_pNikoIcon = nullptr; }
 	if (m_pLocalAvatar) { m_pLocalAvatar->Release(); m_pLocalAvatar = nullptr; }
@@ -330,6 +347,27 @@ void CRender::ReleaseLauncherTextures()
 	m_uAvatarOwner = 0;
 	m_iAvatarHandle = -1;
 	m_uNextAvatarCheck = 0;
+}
+
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+ImTextureID CRender::DapperPhoto(int selection)
+{
+    const int index=PhotoAssetPolicy::Index(selection);if(index<0)return 0;
+    auto& texture=m_pDapperPhotos[index];
+    if(!texture)
+    {
+        const auto module=reinterpret_cast<HMODULE>(&__ImageBase);
+        const auto resource=FindResourceW(module,MAKEINTRESOURCEW(PhotoAssetPolicy::assets[index].resource),MAKEINTRESOURCEW(10));
+        if(!resource||SizeofResource(module,resource)!=512*512*4)return 0;
+        const auto memory=LoadResource(module,resource);
+        const auto rgba=memory?static_cast<const unsigned char*>(LockResource(memory)):nullptr;
+        if(!rgba)return 0;
+        // Convert the existing resource's RGBA bytes to DX9 ARGB explicitly.
+        std::vector<unsigned int> argb(512*512);
+        for(size_t i=0;i<argb.size();++i)argb[i]=(unsigned(rgba[i*4+3])<<24)|(unsigned(rgba[i*4])<<16)|(unsigned(rgba[i*4+1])<<8)|unsigned(rgba[i*4+2]);
+        texture=CreateLauncherTexture(argb.data(),512,512);
+    }
+    return reinterpret_cast<ImTextureID>(texture);
 }
 
 ImTextureID CRender::PetTexture(int frame, const unsigned int* pixels, unsigned int width, unsigned int height)

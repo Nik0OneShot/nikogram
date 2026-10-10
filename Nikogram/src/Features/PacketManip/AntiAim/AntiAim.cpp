@@ -7,10 +7,11 @@
 #include "../../AntiCheatCompatibility/AntiCheatCompatibility.h"
 #include "../../Visuals/AnimInterp/AnimInterp.h"
 #include "../../ImGui/MenuMode.h"
+#include "EdgeCoverPolicy.h"
 
 bool CAntiAim::UsingLegitAA() const
 {
-	return MenuMode::Active == MenuMode::Moonlit && Vars::AntiAim::LegitEnabled.Value;
+	return MenuMode::Custom(MenuMode::Active) && Vars::AntiAim::LegitEnabled.Value;
 }
 
 LegitAAPolicy::Preset CAntiAim::LegitPreset() const
@@ -111,30 +112,6 @@ void CAntiAim::FakeShotAngles(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 		pCmd->viewangles.x += 360 * (vFakeAngles.x < 0 ? -1 : 1);
 }
 
-static inline float EdgeDistance(CTFPlayer* pEntity, float flYaw, float flOffset)
-{
-	Vec3 vForward, vRight; Math::AngleVectors({ 0, flYaw, 0 }, &vForward, &vRight, nullptr);
-	Vec3 vCenter = pEntity->GetCenter();
-
-	CGameTrace trace = {};
-	CTraceFilterWorldAndPropsOnly filter = {};
-	SDK::Trace(vCenter, vCenter + vRight * flOffset, MASK_SHOT | CONTENTS_GRATE, &filter, &trace);
-	F::AntiAim.vEdgeTrace.emplace_back(trace.startpos, trace.endpos);
-	SDK::Trace(trace.endpos, trace.endpos + vForward * 300.f, MASK_SHOT | CONTENTS_GRATE, &filter, &trace);
-	F::AntiAim.vEdgeTrace.emplace_back(trace.startpos, trace.endpos);
-
-	return trace.fraction;
-}
-
-static inline int GetEdge(CTFPlayer* pEntity, const float flYaw)
-{
-	float flSize = pEntity->GetSize().y;
-	float flEdgeLeftDist = EdgeDistance(pEntity, flYaw, -flSize);
-	float flEdgeRightDist = EdgeDistance(pEntity, flYaw, flSize);
-
-	return flEdgeLeftDist > flEdgeRightDist ? -1 : 1;
-}
-
 static inline int GetJitter(uint32_t uHash)
 {
 	struct Entry { int command=-1;bool side=false; };
@@ -156,7 +133,7 @@ float CAntiAim::GetYawOffset(CTFPlayer* pEntity, bool bFake)
 	case Vars::AntiAim::YawEnum::Left: return 90.f;
 	case Vars::AntiAim::YawEnum::Right: return -90.f;
 	case Vars::AntiAim::YawEnum::Backwards: return 180.f;
-	case Vars::AntiAim::YawEnum::Edge: return (bFake ? Vars::AntiAim::FakeYawValue.Value : Vars::AntiAim::RealYawValue.Value) * GetEdge(pEntity, I::EngineClient->GetViewAngles().y);
+	case Vars::AntiAim::YawEnum::Edge: return 0.f; // Solved as an absolute yaw by EdgeYaw, never a render-camera offset.
 	case Vars::AntiAim::YawEnum::Jitter: return (bFake ? Vars::AntiAim::FakeYawValue.Value : Vars::AntiAim::RealYawValue.Value) * iJitter;
 	case Vars::AntiAim::YawEnum::Spin: return Math::NormalizeAngle(fmod(I::GlobalVars->tickcount * Vars::AntiAim::SpinSpeed.Value, 360.f));
 	}
@@ -180,7 +157,7 @@ float CAntiAim::GetBaseYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake)
 				continue;
 			
 			const Vec3 vAngleTo = Math::CalcAngle(pLocal->m_vecOrigin(), pPlayer->m_vecOrigin());
-			const float flFOVTo = Math::CalcFov(I::EngineClient->GetViewAngles(), vAngleTo);
+			const float flFOVTo = Math::CalcFov(G::OriginalCmd.viewangles, vAngleTo);
 
 			if (flFOVTo < flSmallestFovTo)
 			{
@@ -194,6 +171,260 @@ float CAntiAim::GetBaseYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake)
 	return G::OriginalCmd.viewangles.y;
 }
 
+float CAntiAim::EdgeYaw(CTFPlayer* local, CUserCmd* cmd, bool fake)
+{
+    const auto model=local->GetModel();
+    if(m_pEdgeLocal!=local||m_pEdgeModel!=model)
+    {m_iEdgeCommand=-1;m_bEdgeValid=false;m_pEdgeLocal=local;m_pEdgeModel=model;}
+    if(m_iEdgeCommand==cmd->command_number)return fake?m_flEdgeFake:m_flEdgeReal;
+    if(m_iEdgeCommand>=0&&cmd->command_number!=m_iEdgeCommand+1)m_bEdgeValid=false;
+    const bool previousValid=m_iEdgeCommand>=0&&cmd->command_number==m_iEdgeCommand+1;
+    const float previousReal=m_flEdgeReal;
+    const float previousFake=m_flEdgeFake;
+    m_iEdgeCommand=cmd->command_number;
+    const float base=GetBaseYaw(local,cmd,false),fakeBase=GetBaseYaw(local,cmd,true);
+    const bool realEdge=Vars::AntiAim::YawReal.Value==Vars::AntiAim::YawEnum::Edge;
+    const bool fakeEdge=Vars::AntiAim::YawFake.Value==Vars::AntiAim::YawEnum::Edge;
+    const float configuredReal=base+(realEdge?0.f:GetYawOffset(local,false));
+    const float configuredFake=fakeBase+(fakeEdge?0.f:GetYawOffset(local,true));
+    const float barrier=fakeEdge&&previousValid?previousFake:configuredFake;
+    // These remain simulation-space estimates, NOT cached render bones or a
+    // guarantee of exact animated/server head positions.
+    const Vec3 origin=local->m_vecOrigin(),center=local->GetCenter();
+    const auto head=EdgeCoverPolicy::HeadProbe(local->m_vecViewOffset().z,local->m_flModelScale());
+    const Vec3 anchor=origin+Vec3{0,0,head.height};
+    CTraceFilterWorldAndPropsOnly filter;
+    struct Wall {float yaw=0.f,distance=97.f;Vec3 contact;};
+    std::array<Wall,3> walls{};
+    int wallCount=0;
+    // Find a physical, near-vertical wall at head height. Do not mistake the
+    // floor/ceiling or a waist-high obstacle for head protection.
+    for(int i=0;i<48;++i)
+    {
+        const Vec3 end=anchor+Math::RotatePoint({96,0,0},{},{0,float(i)*7.5f,0});
+        CGameTrace tr{};SDK::Trace(anchor,end,MASK_SHOT|CONTENTS_GRATE,&filter,&tr);
+        vEdgeTrace.emplace_back(anchor,tr.endpos);
+        const Vec3 n=tr.plane.normal;
+        const float horizontal=n.x*n.x+n.y*n.y,distance=tr.fraction*96.f;
+        if(!tr.DidHit()||tr.startsolid||tr.allsolid||!std::isfinite(distance)||
+            !std::isfinite(horizontal)||horizontal<.5f||std::abs(n.z)>.5f)continue;
+        const float yaw=EdgeCoverPolicy::Normalize(std::atan2(-n.y,-n.x)*57.295779513f);
+        int slot=-1;
+        for(int w=0;w<wallCount;++w)
+            if(EdgeCoverPolicy::Distance(yaw,walls[w].yaw)<10.f){slot=w;break;}
+        if(slot<0&&wallCount<int(walls.size()))slot=wallCount++;
+        if(slot<0)
+        {
+            slot=0;
+            for(int w=1;w<wallCount;++w)if(walls[w].distance>walls[slot].distance)slot=w;
+            if(distance>=walls[slot].distance)continue;
+            walls[slot]={yaw,distance,tr.endpos};
+        }
+        else if(distance<walls[slot].distance)walls[slot]={yaw,distance,tr.endpos};
+    }
+    // Keep competing corner/doorway faces, not just the single nearest normal.
+    // Pick a small, deterministic set of nearest live enemies; never use the
+    // camera direction or a render bone cache as the cover reference.
+    std::array<std::pair<float,Vec3>,3> threats{};
+    int threatCount=0;
+    for(auto entity:H::Entities.GetGroup(EntityEnum::PlayerEnemy))
+    {
+        auto player=entity->As<CTFPlayer>();
+        if(player->IsDormant()||!player->IsAlive()||player->IsAGhost()||F::PlayerUtils.IsIgnored(player->entindex()))continue;
+        const Vec3 eye=player->GetShootPos();
+        const float distance=(eye-anchor).Length();
+        if(!std::isfinite(distance)||distance<1.f)continue;
+        int slot=threatCount;
+        if(threatCount==int(threats.size()))
+        {
+            slot=0;for(int t=1;t<threatCount;++t)if(threats[t].first>threats[slot].first)slot=t;
+            if(distance>=threats[slot].first)continue;
+        }
+        else ++threatCount;
+        threats[slot]={distance,eye};
+    }
+    int selectedWall=-1;
+    for(int w=0;w<wallCount;++w)
+        if(selectedWall<0||walls[w].distance<walls[selectedWall].distance)selectedWall=w;
+    // Keep the same adjacent face on near ties, not different walls per yaw.
+    if(selectedWall>=0&&previousValid&&m_bEdgeValid)
+        for(int w=0;w<wallCount;++w)
+            if(EdgeCoverPolicy::Distance(walls[w].yaw,m_flEdgeWallYaw)<10.f&&
+                walls[w].distance<=walls[selectedWall].distance+4.f){selectedWall=w;break;}
+    if(selectedWall>=0)m_flEdgeWallYaw=walls[selectedWall].yaw;
+    float approach=base;
+    if(threatCount)
+    {
+        int nearest=0;
+        for(int t=1;t<threatCount;++t)if(threats[t].first<threats[nearest].first)nearest=t;
+        const Vec3 direction=threats[nearest].second-anchor;
+        approach=std::atan2(direction.y,direction.x)*57.295779513f;
+    }
+    auto fit=[&](float yaw)
+    {
+        const Vec3 h=origin+Math::RotatePoint({head.forward,0,head.height},{},{0,yaw,0});
+        EdgeCoverPolicy::CoverFit result{};
+        for(int w=0;w<wallCount;++w)
+        {
+            if(w!=selectedWall)continue;
+            const Vec3 toward=Math::RotatePoint({96,0,0},{},{0,walls[w].yaw,0});
+            const Vec3 margin=Math::RotatePoint({0,head.forward*.5f,0},{},{0,walls[w].yaw,0});
+            EdgeCoverPolicy::CoverFit support{};support.misses=0;support.head=0;support.valid=true;
+            for(const Vec3& point:{h,h+margin,h-margin})
+            {
+                CGameTrace tr{};SDK::Trace(point,point+toward,MASK_SHOT|CONTENTS_GRATE,&filter,&tr);
+                if(!std::isfinite(tr.fraction)){support.valid=false;break;}
+                float clearance=tr.startsolid||tr.allsolid?0.f:std::clamp(tr.fraction,0.f,1.f)*96.f;
+                if(!tr.DidHit()&&!tr.startsolid&&!tr.allsolid)
+                {
+                    ++support.misses;
+                    // Parallel rays can all run PAST a thin jamb. Its observed
+                    // contact is still useful geometry: keep its actual distance
+                    // instead of assigning every yaw the same artificial 96.
+                    const Vec3 target=walls[w].contact+toward*(8.f/96.f);
+                    SDK::Trace(point,target,MASK_SHOT|CONTENTS_GRATE,&filter,&tr);
+                    if(tr.DidHit()&&!tr.startsolid&&!tr.allsolid&&std::isfinite(tr.fraction))
+                        clearance=(tr.endpos-point).Length();
+                }
+                support.head=std::max(support.head,clearance);
+            }
+            CGameTrace tr{};SDK::Trace(center,center+toward,MASK_SHOT|CONTENTS_GRATE,&filter,&tr);
+            if(std::isfinite(tr.fraction))support.body=tr.startsolid||tr.allsolid?0.f:std::clamp(tr.fraction,0.f,1.f)*96.f;
+            if(EdgeCoverPolicy::BetterCover(support,result))result=support;
+        }
+        const Vec3 side=Math::RotatePoint({0,head.forward*.5f,0},{},{0,yaw,0});
+        const Vec3 vertical{0,0,head.forward*.375f};
+        for(int t=0;t<threatCount;++t)
+        {
+            int visible=0;
+            for(const Vec3& point:{h,h+side,h-side,h+vertical,h-vertical})
+            {
+                CGameTrace tr{};SDK::Trace(threats[t].second,point,MASK_SHOT|CONTENTS_GRATE,&filter,&tr);
+                // A bad/solid attacker origin is unknown, not proof of cover.
+                if(tr.startsolid||tr.allsolid||!std::isfinite(tr.fraction)||!tr.DidHit()||tr.fraction>=.999f)++visible;
+            }
+            result.visible+=visible;result.worstVisible=std::max(result.worstVisible,visible);
+            CGameTrace tr{};SDK::Trace(threats[t].second,center,MASK_SHOT|CONTENTS_GRATE,&filter,&tr);
+            if(tr.startsolid||tr.allsolid||!std::isfinite(tr.fraction)||!tr.DidHit()||tr.fraction>=.999f)++result.bodyVisible;
+        }
+        if(!threatCount&&selectedWall>=0)
+        {
+            // Explicit synthetic approach when alone. This is an occlusion
+            // estimate, not an invented enemy or native hitbox verification.
+            const Vec3 source=anchor+Math::RotatePoint({512,0,0},{},{0,approach,0});
+            for(const Vec3& point:{h,h+side,h-side,h+vertical,h-vertical})
+            {
+                CGameTrace tr{};SDK::Trace(source,point,MASK_SHOT|CONTENTS_GRATE,&filter,&tr);
+                if(tr.startsolid||tr.allsolid||!std::isfinite(tr.fraction)||!tr.DidHit()||tr.fraction>=.999f)++result.visible;
+            }
+            result.worstVisible=result.visible;
+        }
+        return result;
+    };
+    // Open space is a lateral-displacement problem, not a largest-yaw-gap
+    // problem. Only Real Edge owns this fallback; fixed selectors stay fixed.
+    auto fallback=[&]()
+    {
+        auto pair=EdgeCoverPolicy::Fallback(base,fakeBase,realEdge,fakeEdge,configuredReal,configuredFake);
+        if(realEdge)
+        {
+            const float reference=approach;
+            const float left=EdgeCoverPolicy::Normalize(reference+90.f),right=EdgeCoverPolicy::Normalize(reference-90.f);
+            const auto leftFit=fit(left),rightFit=fit(right);
+            pair.real=EdgeCoverPolicy::Lateral(reference,previousValid,previousReal,leftFit,rightFit);
+            if(!EdgeCoverPolicy::Separated(pair.real,barrier))
+            {
+                const float other=EdgeCoverPolicy::Normalize(pair.real+180.f);
+                if(EdgeCoverPolicy::Separated(other,barrier))pair.real=other;
+                else pair.real=EdgeCoverPolicy::Normalize(barrier+90.f);
+            }
+            pair.real=EdgeCoverPolicy::Route(previousReal,pair.real,barrier,previousValid);
+            if(fakeEdge)pair.fake=EdgeCoverPolicy::Normalize(pair.real+180.f);
+        }
+        else if(fakeEdge)pair.fake=EdgeCoverPolicy::Route(previousFake,pair.fake,pair.real,previousValid);
+        m_bEdgeValid=false;m_flEdgeReal=pair.real;m_flEdgeFake=pair.fake;
+        return fake?m_flEdgeFake:m_flEdgeReal;
+    };
+    if(!wallCount)return fallback();
+    struct Candidate {float yaw;EdgeCoverPolicy::CoverFit fit;};
+    std::array<Candidate,64> choices{};
+    int count=0;
+    int best=-1;
+    auto add=[&](float yaw)
+    {
+        yaw=EdgeCoverPolicy::Normalize(yaw);
+        for(int c=0;c<count;++c)if(EdgeCoverPolicy::Distance(yaw,choices[c].yaw)<.01f)return;
+        if(count==int(choices.size()))return;
+        const int index=count++;choices[index]={yaw,fit(yaw)};
+        if((!realEdge||EdgeCoverPolicy::Separated(yaw,barrier))&&
+            (best<0||EdgeCoverPolicy::BetterCover(choices[index].fit,choices[best].fit)))best=index;
+    };
+    for(int i=0;i<36;++i)add(float(i)*10.f);
+    for(int w=0;w<wallCount;++w)
+    {
+        add(walls[w].yaw);add(walls[w].yaw+90.f);add(walls[w].yaw-90.f);
+        const Vec3 direction=walls[w].contact-anchor;
+        add(std::atan2(direction.y,direction.x)*57.295779513f);
+    }
+    add(configuredFake+180.f);add(configuredFake+90.f);add(configuredFake-90.f);
+    add(barrier+90.f);add(barrier-90.f);add(barrier+180.f);
+    if(!realEdge){add(configuredReal+90.f);add(configuredReal-90.f);}
+    if(m_bEdgeValid)add(m_flEdgeReal);
+    if(best<0||!choices[best].fit.valid)return fallback();
+    const float coarse=choices[best].yaw;
+    for(float offset:{-5.f,-2.5f,2.5f,5.f})add(coarse+offset);
+    // A finite edge may only cover part of the head envelope. Retain the BEST
+    // available wall fit rather than discarding the wall and facing backwards.
+    // Concealment first: no head-offset allowance for a larger angular gap.
+    // Continuity and separation only break practically identical cover ties.
+    const auto bestFit=choices[best].fit;
+    if(realEdge&&!fakeEdge)
+    {
+        for(int c=0;c<count;++c)
+        {
+            if(!EdgeCoverPolicy::Separated(choices[c].yaw,barrier))continue;
+            if(!EdgeCoverPolicy::ComparableCover(choices[c].fit,bestFit,.05f))continue;
+            const float gap=EdgeCoverPolicy::Distance(choices[c].yaw,configuredFake);
+            const float oldGap=EdgeCoverPolicy::Distance(choices[best].yaw,configuredFake);
+            if(gap>oldGap+.05f||(std::abs(gap-oldGap)<=.05f&&EdgeCoverPolicy::BetterCover(choices[c].fit,choices[best].fit)))best=c;
+        }
+    }
+    if(realEdge&&previousValid)
+        for(int c=0;c<count;++c)
+            if(EdgeCoverPolicy::Distance(choices[c].yaw,previousReal)<.01f&&
+                EdgeCoverPolicy::Separated(choices[c].yaw,barrier)&&
+                EdgeCoverPolicy::ComparableCover(choices[c].fit,choices[best].fit,.05f))
+                {best=c;break;}
+    m_flEdgeReal=realEdge?EdgeCoverPolicy::Route(previousReal,choices[best].yaw,barrier,previousValid):EdgeCoverPolicy::Normalize(configuredReal);m_bEdgeValid=true;
+    // Each selector owns only its own yaw. A fixed fake must stay exactly fixed,
+    // even when that limits the separation available to a protected real.
+    if(!fakeEdge)
+    {
+        m_flEdgeFake=EdgeCoverPolicy::Normalize(configuredFake);
+        return fake?m_flEdgeFake:m_flEdgeReal;
+    }
+    // Only Fake Edge may optimize the decoy; never move a fixed real selector.
+    int decoy=-1;
+    const float opposite=EdgeCoverPolicy::Normalize(m_flEdgeReal+180.f);
+    const Candidate exact{opposite,fit(opposite)};
+    auto chooseFake=[&](const Candidate& candidate,int index)
+    {
+        if(!candidate.fit.valid||EdgeCoverPolicy::Distance(candidate.yaw,m_flEdgeReal)<90.f)return;
+        if(realEdge&&previousValid&&!EdgeCoverPolicy::ClearArc(previousReal,m_flEdgeReal,candidate.yaw))return;
+        const auto old=decoy<0?EdgeCoverPolicy::CoverFit{}:decoy==64?exact.fit:choices[decoy].fit;
+        const float oldYaw=decoy==64?exact.yaw:decoy<0?m_flEdgeReal:choices[decoy].yaw;
+        if(EdgeCoverPolicy::MoreExposed(candidate.fit,old)||
+            (!EdgeCoverPolicy::MoreExposed(old,candidate.fit)&&
+             EdgeCoverPolicy::Distance(candidate.yaw,m_flEdgeReal)>EdgeCoverPolicy::Distance(oldYaw,m_flEdgeReal)+.001f))
+            decoy=index;
+    };
+    for(int i=0;i<count;++i)chooseFake(choices[i],i);
+    chooseFake(exact,64);
+    m_flEdgeFake=decoy==64?exact.yaw:decoy>=0?choices[decoy].yaw:opposite;
+    if(!realEdge)m_flEdgeFake=EdgeCoverPolicy::Route(previousFake,m_flEdgeFake,m_flEdgeReal,previousValid);
+    return fake?m_flEdgeFake:m_flEdgeReal;
+}
+
 float CAntiAim::GetYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake)
 {
 	if (UsingLegitAA())
@@ -201,6 +432,8 @@ float CAntiAim::GetYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake)
 		const auto preset = LegitPreset();
 		return BodyYawPolicy::Normalize(G::OriginalCmd.viewangles.y + (bFake ? preset.fake : preset.real));
 	}
+    if((bFake?Vars::AntiAim::YawFake.Value:Vars::AntiAim::YawReal.Value)==Vars::AntiAim::YawEnum::Edge)
+        return EdgeYaw(pLocal,pCmd,bFake);
 	float flYaw = GetBaseYaw(pLocal, pCmd, bFake) + GetYawOffset(pLocal, bFake);
 	return BodyYawPolicy::Normalize(flYaw);
 }
@@ -280,6 +513,7 @@ void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bo
 
 	if (!G::AntiAim)
 	{
+        m_iEdgeCommand=-1;m_bEdgeValid=false;
 		m_bBodyValid = false;
 		m_iBatchTicks = 0;
 		m_tPreviousReal = m_tBatchReal = {};
@@ -341,10 +575,12 @@ void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bo
 			m_tBatchRealBeforeCommand = m_tBatchReal;
 			if (!bSendPacket)
 				vSend.y = BodyYawPolicy::Choose(m_tBody, vRealAngles.y, vFakeAngles.y, bMoving,
-					std::max(1, m_iBatchTicks - I::ClientState->chokedcommands), TICK_INTERVAL, m_tPreviousReal).yaw;
+						std::max(1, m_iBatchTicks - I::ClientState->chokedcommands), TICK_INTERVAL, m_tPreviousReal,
+                        !UsingLegitAA()&&Vars::AntiAim::YawReal.Value==Vars::AntiAim::YawEnum::Edge,
+                        m_tBatchReal.valid?m_tBatchReal.eye:m_tPreviousReal.eye).yaw;
 			BodyYawPolicy::Step(m_tBody, vSend.y, bMoving, TICK_INTERVAL);
 			if (!bSendPacket)
-				m_tBatchReal = { m_tBody.feet, vRealAngles.y, true };
+				m_tBatchReal = { m_tBody.feet, vRealAngles.y, true, vSend.y };
 			else
 				m_tPreviousReal = m_tBatchReal;
 			m_iBodyCommand = pCmd->command_number;
@@ -410,6 +646,7 @@ void CAntiAim::AuditSerialized(int sequence, const CUserCmd* command, bool queue
 
 void CAntiAim::ResetPacketState()
 {
+    m_iEdgeCommand=-1;m_bEdgeValid=false;
 	m_tPacket = {};
 	m_bBodyValid = false;
 	m_iBatchTicks = 0;
@@ -421,7 +658,27 @@ void CAntiAim::ResetPacketState()
 
 void CAntiAim::Draw(CTFPlayer* pLocal)
 {
-	if (!pLocal->IsAlive() || pLocal->IsAGhost() || !I::Input->CAM_IsThirdPerson() || !AntiAimOn())
+    if(!pLocal->IsAlive()||pLocal->IsAGhost()||!AntiAimOn())return;
+    if(!I::Input->CAM_IsThirdPerson()&&Vars::AntiAim::FirstPersonRing.Value&&G::AntiAim)
+    {
+        static float real=0,fake=0,last=0;static bool valid=false;
+        const float now=I::GlobalVars->realtime,view=I::EngineClient->GetViewAngles().y;
+        if(!valid||now<last||now-last>.25f){real=vRealAngles.y-view;fake=vFakeAngles.y-view;valid=true;}
+        else{real=AngleDisplayPolicy::SmoothAngle(real,vRealAngles.y-view,now-last);fake=AngleDisplayPolicy::SmoothAngle(fake,vFakeAngles.y-view,now-last);}
+        last=now;
+        const float offset=std::isfinite(Vars::AntiAim::RingOffset.Value)?std::clamp(Vars::AntiAim::RingOffset.Value,35.f,250.f):75.f;
+        const int x=H::Draw.m_nScreenW/2,y=H::Draw.m_nScreenH/2+int(offset);
+        H::Draw.LineCircle(x,y,22,48,{180,180,190,150});
+        auto marker=[&](float angle,Color_t colour,const char* text)
+        {
+            const float rad=angle*.01745329252f;
+            const int px=x-int(std::sin(rad)*22),py=y-int(std::cos(rad)*22);
+            H::Draw.Line(x,y,px,py,colour);H::Draw.FillCircle(px,py,3,12,colour);
+            H::Draw.StringOutlined(H::Fonts.GetFont(FONT_INDICATORS),px+4,py,colour,{0,0,0,220},ALIGN_TOPLEFT,text);
+        };
+        marker(real,{100,240,150,255},"R");marker(fake,{245,120,145,255},"F");
+    }
+	if (!I::Input->CAM_IsThirdPerson())
 		return;
 
 	if (Vars::AntiAim::AntiAimLines.Value)

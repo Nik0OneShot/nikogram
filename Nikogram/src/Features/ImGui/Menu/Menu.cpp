@@ -514,8 +514,13 @@ void CMenu::DrawMenuStyleChoice()
     TextUnformatted("Menu style");
     int choice = MenuMode::Pending >= 0 ? MenuMode::Pending : MenuMode::Active;
     SetNextItemWidth(std::min(GetContentRegionAvail().x, H::Draw.Scale(260)));
-    if (Combo("##MenuStyle", &choice, "Nullcore\0Moonlit\0")) MenuMode::Choose(choice);
+    if (Combo("##MenuStyle", &choice, "Nullcore\0Nikogram\0Dapper Desktop\0Bank of Dapper\0Dapper Scrapbook\0")) MenuMode::Choose(choice);
     if (MenuMode::Pending >= 0) TextWrapped("Menu style will change when you close the menu.");
+    int indicator=MenuMode::Indicator+1;
+    TextUnformatted("Indicator style");SetNextItemWidth(std::min(GetContentRegionAvail().x,H::Draw.Scale(260)));
+    if(Combo("##IndicatorStyle",&indicator,"Follow menu\0Nullcore\0Nikogram\0Dapper Desktop\0Bank of Dapper\0Dapper Scrapbook\0"))
+    {MenuMode::Indicator=indicator-1;MoonlitHud::InvalidateBadge();m_sInterfaceStatus=Workspace::Save()?"Indicator style saved.":"Could not save indicator style.";}
+    TextWrapped("Menu and indicators can use different styles. These are appearance preferences only.");
     if (!m_sInterfaceStatus.empty()) TextWrapped("%s", m_sInterfaceStatus.c_str());
     Separator();
 }
@@ -548,6 +553,7 @@ bool CMenu::DrawInterfacePreferences(bool showStyleChoice)
                             selectedPreset = index;
                             snprintf(presetName, sizeof(presetName), "%s", preset.name.c_str());
                             MenuPresets::Apply(preset);
+                            MoonlitHud::InvalidateBadge();
                             loadedPreset = preset.name;
                             m_sInterfaceStatus = Workspace::Save() ? "Menu config loaded." : "Loaded, but could not save workspace preferences.";
                         }
@@ -666,7 +672,28 @@ bool CMenu::DrawInterfacePreferences(bool showStyleChoice)
                 { std::copy_n(titleText, 3, Workspace::TitleTextColour); Workspace::TitleTextOverride = true; }
                 SameLine(); if (Button("Use brighter accent##TitleText")) Workspace::TitleTextOverride = false;
                 }
-                else TextWrapped("Moonlit uses its own palette. Your Nullcore colours are preserved and can be edited in Nullcore.");
+                else
+                {
+                    const bool dapper=MenuMode::Dapper(MenuMode::Active);
+                    TextUnformatted(dapper?DapperStyle::Name(MenuMode::Active):"Nikogram colours");
+                    auto& palette=dapper?DapperStyle::Get(MenuMode::Active).colours:MenuPalette::Colours;
+                    bool changed=false;
+                    for(int role=0;role<MenuPalette::Count;++role)
+                        changed |= ColorEdit3(MenuPalette::Names[role],palette[role].data(),ImGuiColorEditFlags_NoInputs);
+                    if(Button("Reset this style's colours")){palette=dapper?DapperStyle::Default(DapperStyle::Index(MenuMode::Active)):MenuPalette::Default();changed=true;}
+                    if(changed) m_sInterfaceStatus=Workspace::Save()?"Appearance colours saved.":"Could not save appearance colours.";
+                    TextWrapped("Each menu keeps its own colours; your other styles are preserved.");
+                }
+                Separator();TextUnformatted("Dapper portraits");
+                static int portraitStyle=0;
+                Combo("Customize style",&portraitStyle,DapperStyle::Names,3);
+                auto& portrait=DapperStyle::Themes[portraitStyle];bool portraitChanged=false;
+                int selectedPhoto=portrait.photo-1;
+                if(Combo("Portrait",&selectedPhoto,"Dapper Mann\0Dapper Mann - Money\0Giga Mann\0")){portrait.photo=selectedPhoto+1;portraitChanged=true;}
+                portraitChanged|=SliderInt("Photo visibility",&portrait.opacity,20,100,"%d%%",ImGuiSliderFlags_AlwaysClamp);
+                portraitChanged|=Checkbox("Status-reactive indicator photos",&portrait.reactive);
+                TextWrapped("Reactive photos: Giga Mann when ready, Dapper Mann while charging, Money Mann for spectators. Menu portraits stay as selected.");
+                if(portraitChanged)m_sInterfaceStatus=Workspace::Save()?"Portrait preferences saved.":"Could not save portrait preferences.";
 				Separator(); TextUnformatted("Pets");
                 Checkbox("Pets enabled", &Workspace::PetEnabled);
                 Checkbox("Niko", &Workspace::PetNiko);SameLine();Checkbox("Alula", &Workspace::PetAlula);SameLine();Checkbox("Calamus", &Workspace::PetCalamus);
@@ -750,7 +777,6 @@ void CMenu::MenuAimbot(int iTab)
 					FDropdown(Vars::Aimbot::General::Ignore, FDropdownEnum::Right);
                     FDropdown(Vars::Aimbot::General::LeadAndRestrict, FDropdownEnum::InlineTitle);
                     if(IsItemHovered()) SetTooltip("Off: restrict current target position. Strict: restrict calculated firing direction and search alternative projectile candidates. Adaptive: first search strictly, then allow bounded close-range projectile exceptions for targets inside your FOV. Hitscan and melee use Strict in Adaptive mode. Auto-airblast is unchanged. Self-damage prevention still applies.");
-					FSlider(Vars::Aimbot::General::AimFOV);
 					FSlider(Vars::Aimbot::General::MaxTargets, FSliderEnum::Left);
 					PushTransparent(!(Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Invisible));
 					{
@@ -764,7 +790,6 @@ void CMenu::MenuAimbot(int iTab)
                         {
                             FSlider(Vars::Aimbot::General::SmoothAmount,FSliderEnum::Left);
                             FSlider(Vars::Aimbot::General::AssistAmount,FSliderEnum::Right);
-                            FDropdown(Vars::Aimbot::General::AssistHitbox);
                             FSlider(Vars::Aimbot::General::SmoothTime);
                         }
                     }
@@ -782,6 +807,15 @@ void CMenu::MenuAimbot(int iTab)
                             }
                         }
                     }
+                    FSlider(Vars::Aimbot::General::TargetSwitchDelay);
+                    FToggle(Vars::Aimbot::General::DynamicTargetSwitch);
+                    if(FGet(Vars::Aimbot::General::DynamicTargetSwitch,true))
+                    {
+                        FSlider(Vars::Aimbot::General::TargetSwitchMin,FSliderEnum::Left);
+                        FSlider(Vars::Aimbot::General::TargetSwitchMax,FSliderEnum::Right);
+                    }
+                    FSlider(Vars::Aimbot::General::AimFOV);
+                    FSlider(Vars::Aimbot::Hitscan::MultipointScale);
 					PushTransparent(!(Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Unsimulated));
 					{
 						FSlider(Vars::Aimbot::General::TickTolerance, FSliderEnum::Right);
@@ -871,24 +905,15 @@ void CMenu::MenuAimbot(int iTab)
 					FDropdown(Vars::Aimbot::Hitscan::Hitboxes, FDropdownEnum::Left);
 					FDropdown(Vars::Aimbot::Hitscan::MultipointHitboxes, FDropdownEnum::Right);
 					std::vector<const char*> hitscanModifierPreview;
-					for (auto* option : { &Vars::Aimbot::Hitscan::PrioritizeMedics, &Vars::Aimbot::Hitscan::Extrapolation, &Vars::Aimbot::Hitscan::ExtrapolationGuide })
+					for (auto* option : { &Vars::Aimbot::Hitscan::PrioritizeMedics })
 						if (FGet(*option)) hitscanModifierPreview.push_back(option->m_vNames.front());
 					FModifierDropdown(Vars::Aimbot::Hitscan::Modifiers, [] {
 						FDropdownToggle(Vars::Aimbot::Hitscan::PrioritizeMedics);
-						bool extrapolationHovered=false;
-						FDropdownToggle(Vars::Aimbot::Hitscan::Extrapolation, 0, &extrapolationHovered);
-						FTooltip("Estimate a player's current server position from recent movement. Experimental: server lag compensation can make normal targeting more accurate.", extrapolationHovered);
-						FDropdownToggle(Vars::Aimbot::Hitscan::ExtrapolationGuide);
 					}, hitscanModifierPreview);
-					FSlider(Vars::Aimbot::Hitscan::MultipointScale);
 					PushTransparent(!(Vars::Aimbot::Hitscan::Modifiers.Value & Vars::Aimbot::Hitscan::ModifiersEnum::Tapfire));
 					{
 						FSlider(Vars::Aimbot::Hitscan::TapfireDistance);
 					}
-					PopTransparent();
-					PushTransparent(!Vars::Aimbot::Hitscan::Extrapolation.Value);
-					FSlider(Vars::Aimbot::Hitscan::ExtrapolationRange, FSliderEnum::None, nullptr, &Hovered);
-					FTooltip("Maximum estimate horizon in milliseconds. Drag: 0-100 ms; click the value to enter more. Default: 50 ms; 0 uses normal targeting. Sample-age and movement safety limits still apply. No projectile travel or future shot timestamps.", Hovered);
 					PopTransparent();
 				} EndSection();
 				if (Vars::Debug::Options.Value)
@@ -1278,6 +1303,7 @@ void CMenu::MenuHVH(int iTab)
 				{
 					FToggle(Vars::AntiAim::Enabled, FToggleEnum::Left);
 					FToggle(Vars::AntiAim::HidePitchOnShot, FToggleEnum::Right);
+                    FToggle(Vars::AntiAim::FirstPersonRing);FSlider(Vars::AntiAim::RingOffset);
 					FDropdown(Vars::AntiAim::PitchReal, FDropdownEnum::Left);
 					FDropdown(Vars::AntiAim::PitchFake, FDropdownEnum::Right);
 					FDropdown(Vars::AntiAim::YawReal, FDropdownEnum::Left);
@@ -1286,12 +1312,12 @@ void CMenu::MenuHVH(int iTab)
 					FDropdown(Vars::AntiAim::FakeYawBase, FDropdownEnum::Right);
 					FSlider(Vars::AntiAim::RealYawOffset, FSliderEnum::Left);
 					FSlider(Vars::AntiAim::FakeYawOffset, FSliderEnum::Right);
-					PushTransparent(Vars::AntiAim::YawReal.Value != Vars::AntiAim::YawEnum::Edge && Vars::AntiAim::YawReal.Value != Vars::AntiAim::YawEnum::Jitter);
+					PushTransparent(Vars::AntiAim::YawReal.Value != Vars::AntiAim::YawEnum::Jitter);
 					{
 						FSlider(Vars::AntiAim::RealYawValue, FSliderEnum::Left);
 					}
 					PopTransparent();
-					PushTransparent(Vars::AntiAim::YawFake.Value != Vars::AntiAim::YawEnum::Edge && Vars::AntiAim::YawFake.Value != Vars::AntiAim::YawEnum::Jitter);
+					PushTransparent(Vars::AntiAim::YawFake.Value != Vars::AntiAim::YawEnum::Jitter);
 					{
 						FSlider(Vars::AntiAim::FakeYawValue, FSliderEnum::Right);
 					}
@@ -1826,6 +1852,7 @@ void CMenu::MenuVisuals(int iTab)
 					FToggle(Vars::Visuals::UI::ScoreboardUtility, FToggleEnum::Right);
 					FToggle(Vars::Visuals::UI::ScoreboardColors, FToggleEnum::Left);
 					FToggle(Vars::Visuals::UI::CleanScreenshots, FToggleEnum::Right);
+					FTooltip("Keeps native post processing active on every frame to preserve exposure.");
 				} EndSection();
 				if (Section("Thirdperson"))
 				{
@@ -1932,6 +1959,7 @@ void CMenu::MenuVisuals(int iTab)
 					FToggle(Vars::Visuals::Removals::Taunts, FToggleEnum::Right);
 					FToggle(Vars::Visuals::Removals::Scope, FToggleEnum::Left);
 					FToggle(Vars::Visuals::Removals::PostProcessing, FToggleEnum::Right);
+					FTooltip("Clean screenshots keeps native exposure/post processing active to prevent brightness changes.");
 					FToggle(Vars::Visuals::Removals::ScreenOverlays, FToggleEnum::Left);
 					FToggle(Vars::Visuals::Removals::ScreenEffects, FToggleEnum::Right);
 					FToggle(Vars::Visuals::Removals::ViewPunch, FToggleEnum::Left);
@@ -1969,6 +1997,8 @@ void CMenu::MenuVisuals(int iTab)
 					FDropdown(Vars::Visuals::World::Modulations);
 					FSDropdown(Vars::Visuals::World::WorldTexture, FDropdownEnum::Left);
 					FSDropdown(Vars::Visuals::World::SkyboxChanger, FDropdownEnum::Right);
+                    FDropdown(Vars::Visuals::World::DapperSky);FSlider(Vars::Visuals::World::DapperSkyRepeat);
+                    FDropdown(Vars::Visuals::World::DapperPhoto);FToggle(Vars::Visuals::World::DapperProps);FSlider(Vars::Visuals::World::DapperRepeat);
 					PushTransparent(!(Vars::Visuals::World::Modulations.Value & Vars::Visuals::World::ModulationsEnum::World));
 					{
 						FColorPicker(Vars::Colors::WorldModulation, FColorPickerEnum::Left);
@@ -2246,6 +2276,23 @@ void CMenu::MenuMisc(int iTab)
 						}
 					} EndSection();
 				}
+				if (Section("Freelook"))
+				{
+					FToggle(Vars::Misc::Freelook::Enabled);
+					FToggle(Vars::Misc::Freelook::Limited);
+					FSlider(Vars::Misc::Freelook::Horizontal);
+					FSlider(Vars::Misc::Freelook::Vertical);
+					FDropdown(Vars::Misc::Freelook::Return);
+					FSlider(Vars::Misc::Freelook::ReturnTime);
+				} EndSection();
+				if (Section("OptiFine Zoom"))
+				{
+					FToggle(Vars::Misc::OptifineZoom::Enabled);
+					FSlider(Vars::Misc::OptifineZoom::Magnification);
+					FToggle(Vars::Misc::OptifineZoom::Smooth);
+					FSlider(Vars::Misc::OptifineZoom::Transition);
+					FToggle(Vars::Misc::OptifineZoom::ScaleSensitivity);
+				} EndSection();
 				if (Section("Automation"))
 				{
 					FDropdown(Vars::Misc::Automation::AntiBackstab); // pitch/fake _might_ slip up some auto backstabs
@@ -3797,7 +3844,7 @@ void CMenu::MenuSettings(int iTab)
 
 					// Match the list heading's left edge; retain parent/child indentation.
 					SetCursorPos({ vOriginalPos.x + H::Draw.Scale(5), vOriginalPos.y + textY });
-					const auto displayed=BindPresentation::Get(_tBind,_iBind,BindPresentation::ParentsActive(_tBind,F::Binds.m_vBinds),MenuMode::Active==MenuMode::Moonlit);
+					const auto displayed=BindPresentation::Get(_tBind,_iBind,BindPresentation::ParentsActive(_tBind,F::Binds.m_vBinds),MenuMode::Custom(MenuMode::Active));
 					PushStyleColor(ImGuiCol_Text, displayed.active ? F::Render.Accent.Value : F::Render.Active.Value);
 					FText(TruncateText(_tBind.m_sName, flTextWidth * (1.f / 3) - H::Draw.Scale(20)).c_str());
 					if(IsItemHovered())SetTooltip("%s: %s\nBind condition: %s",displayed.feature?"Feature":"Condition",displayed.active?"active":"inactive",_tBind.m_bActive?"matched":"not matched");
@@ -4609,8 +4656,8 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 
 	bool bContains = s_mDragBoxStorage.contains(uHash);
 	auto& tStorage = s_mDragBoxStorage[uHash];
-	const bool themeSizeChanged = (MoonlitHud::Enabled() || tStorage.m_iStyle == MenuMode::Moonlit)
-		&& (tStorage.m_iStyle != MenuMode::Active || tStorage.m_vSize.x != vSize.x || tStorage.m_vSize.y != vSize.y);
+	const bool themeSizeChanged = (MoonlitHud::Enabled() || MenuMode::Custom(tStorage.m_iStyle))
+		&& (tStorage.m_iStyle != MenuMode::Hud() || tStorage.m_vSize.x != vSize.x || tStorage.m_vSize.y != vSize.y);
 
 	SetNextWindowSize(vSize, ImGuiCond_Always);
 	if (!bContains || tDragBox != tStorage.m_tDragBox || H::Draw.Scale() != tStorage.m_flScale || themeSizeChanged)
@@ -4683,7 +4730,7 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 			SetWindowPos(vWindowPos);
 		}
 		tDragBox.x = vWindowPos.x + vSize.x / 2, tDragBox.y = vWindowPos.y;
-		tStorage = { tDragBox, H::Draw.Scale(), vSize, MenuMode::Active };
+		tStorage = { tDragBox, H::Draw.Scale(), vSize, MenuMode::Hud() };
 		FSet(tVar, tDragBox);
 
 		// The crit panel is an empty drag surface. Only position the cursor when
@@ -4782,7 +4829,7 @@ void CMenu::DrawBinds()
 			if (iParent != tBind.m_iParent || !tBind.m_bEnabled && !m_bIsOpen)
 				continue;
 
-			const auto display=BindPresentation::Get(tBind,iBind,bParentActive,MenuMode::Active==MenuMode::Moonlit);
+			const auto display=BindPresentation::Get(tBind,iBind,bParentActive,MenuMode::Custom(MenuMode::Active));
 			if (tBind.m_iVisibility == BindVisibilityEnum::Always || tBind.m_iVisibility == BindVisibilityEnum::WhileActive && display.active || m_bIsOpen)
 			{
 				std::string sType; std::string sInfo;
@@ -4918,8 +4965,10 @@ void CMenu::DrawBinds()
 
 		if (moonlit)
 		{
-			GetWindowDrawList()->AddRectFilled(vWindowPos, vWindowPos + vActualSize, IM_COL32(33,27,48,245), H::Draw.Scale(12));
-			GetWindowDrawList()->AddRect(vWindowPos, vWindowPos + vActualSize, IM_COL32(72,59,92,255), H::Draw.Scale(12));
+            const float radius=MenuMode::Dapper(MenuMode::Hud())?0.f:H::Draw.Scale(12);
+			GetWindowDrawList()->AddRectFilled(vWindowPos, vWindowPos + vActualSize, GetColorU32(F::Render.Background0.Value), radius);
+			GetWindowDrawList()->AddRect(vWindowPos, vWindowPos + vActualSize, GetColorU32(ImGuiCol_Border), radius);
+            if(MenuMode::Hud()==MenuMode::BankOfDapper)GetWindowDrawList()->AddRectFilled(vWindowPos,vWindowPos+ImVec2(vActualSize.x,H::Draw.Scale(3)),GetColorU32(F::Render.Accent.Value));
 		}
 		else if (Vars::Menu::BindWindowTitle.Value)
 			RenderTwoToneBackground(H::Draw.Scale(28), F::Render.Background0, F::Render.Background0p5, F::Render.Background2);
@@ -4934,9 +4983,10 @@ void CMenu::DrawBinds()
 		if (Vars::Menu::BindWindowTitle.Value)
 		{
 			SetCursorPos({ H::Draw.Scale(8), H::Draw.Scale(6) });
-			if (moonlit && Workspace::PetEnabled)
+			if (moonlit && (MenuMode::Dapper(MenuMode::Hud())||Workspace::PetEnabled))
 			{
-				if (auto icon = F::Render.NikoLauncherIcon()) Image(icon, {H::Draw.Scale(20), H::Draw.Scale(20)});
+				if (auto icon = MenuMode::Dapper(MenuMode::Hud())?F::Render.DapperPhoto(DapperStyle::Photo(MenuMode::Hud())):F::Render.NikoLauncherIcon())
+                    ImageWithBg(icon,{H::Draw.Scale(20),H::Draw.Scale(20)},{0,0},{1,1},{0,0,0,0},{1,1,1,MenuMode::Dapper(MenuMode::Hud())?DapperStyle::Opacity(MenuMode::Hud()):1.f});
 				else IconImage(ICON_MD_KEYBOARD, F::Render.Accent);
 			}
 			else IconImage(ICON_MD_KEYBOARD, F::Render.Accent);
@@ -4958,10 +5008,10 @@ void CMenu::DrawBinds()
 			float flPosX = flCardX - H::Draw.Scale(6);
 			const ImVec2 vMin(vWindowPos.x + flCardX, vWindowPos.y + flTextY - H::Draw.Scale(4));
 			const ImVec2 vMax(vMin.x + flCardWidth, vMin.y + H::Draw.Scale(moonlit ? 30 : 24));
-			GetWindowDrawList()->AddRectFilled(vMin, vMax, moonlit ? IM_COL32(43,36,60,255) : IM_COL32(0,0,0,255), moonlit ? H::Draw.Scale(8) : 0.f);
+			GetWindowDrawList()->AddRectFilled(vMin, vMax, moonlit ? GetColorU32(F::Render.Background1.Value) : IM_COL32(0,0,0,255), moonlit&&!MenuMode::Dapper(MenuMode::Hud()) ? H::Draw.Scale(8) : 0.f);
 			if (moonlit)
 				GetWindowDrawList()->AddCircleFilled(vMin + ImVec2(H::Draw.Scale(8), H::Draw.Scale(15)), H::Draw.Scale(2.5f),
-					bEffectiveActive ? IM_COL32(192,163,243,255) : IM_COL32(100,87,120,255));
+					GetColorU32(bEffectiveActive?F::Render.Accent.Value:F::Render.Inactive.Value));
 			if (bEffectiveActive && !moonlit)
 			{
 				// A steady glow communicates activation without distracting flashing.
@@ -5037,7 +5087,7 @@ void CMenu::DrawBinds()
 			{
 				const auto keyPos = GetCursorScreenPos();
 				GetWindowDrawList()->AddRectFilled(keyPos - ImVec2(H::Draw.Scale(4), H::Draw.Scale(2)),
-					keyPos + CalcTextSize(sState.c_str()) + ImVec2(H::Draw.Scale(4), H::Draw.Scale(2)), IM_COL32(25,21,33,255), H::Draw.Scale(5));
+					keyPos + CalcTextSize(sState.c_str()) + ImVec2(H::Draw.Scale(4), H::Draw.Scale(2)), GetColorU32(ImGuiCol_FrameBg), MenuMode::Dapper(MenuMode::Hud())?0.f:H::Draw.Scale(5));
 			}
 			drawBindText(sState.c_str());
 			PopStyleColor();
@@ -5118,6 +5168,7 @@ static inline void ManageVars()
 }
 
 #include "Moonlit.inl"
+#include "Dapper.inl"
 
 void CMenu::Render()
 {
@@ -5127,7 +5178,7 @@ void CMenu::Render()
 		return;
 
 	m_bInKeybind = false;
-	if (!m_bIsOpen || MenuMode::Active != MenuMode::Moonlit) MoonlitUI::CancelCapture();
+	if (!m_bIsOpen || !MenuMode::Custom(MenuMode::Active)) MoonlitUI::CancelCapture();
 	if (m_bIsOpen)
 	{
 		for (short iKey = 1; iKey < 255; iKey++)
@@ -5145,6 +5196,7 @@ void CMenu::Render()
         if (m_bIsOpen || !MenuMode::ApplyClosed()) return;
         ClearActiveID(); ClosePopupsOverWindow(nullptr, false); ActiveMap.clear();
         m_bInKeybind = false; NikoPet::Close();
+        MoonlitHud::InvalidateBadge();
         m_sInterfaceStatus = Workspace::Save() ? "Menu style saved." : "Menu changed, but preferences could not be saved.";
     };
     applyClosedStyle();
@@ -5154,6 +5206,7 @@ void CMenu::Render()
 	{
 		ManageVars();
 		if (MenuMode::Active == MenuMode::Moonlit) DrawMoonlit();
+        else if(MenuMode::Dapper(MenuMode::Active)) DrawDapper();
         else DrawMenu();
         applyClosedStyle();
 
@@ -5195,9 +5248,9 @@ void CMenu::Render()
 	}
 	if (MoonlitHud::Enabled())
 	{
-		MoonlitUI::StyleScope theme;
+		MoonlitUI::StyleScope theme(MenuMode::Hud());
 		GetStyle().WindowPadding = {H::Draw.Scale(8), H::Draw.Scale(8)};
-		PushFont(F::Render.FontMoonlit);
+		PushFont(F::Render.FontRegular);
 		DrawBinds();
 		F::Notifications.Draw();
 		PopFont();

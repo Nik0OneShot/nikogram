@@ -496,7 +496,7 @@ Color_t CGroups::GetColor(CBaseEntity* pEntity, Group_t* pGroup)
 
 bool CGroups::GroupsActive()
 {
-	return (MenuMode::Active != MenuMode::Moonlit || Vars::ESP::MoonlitEnabled.Value)
+	return (!MenuMode::Custom(MenuMode::Active) || Vars::ESP::MoonlitEnabled.Value)
 		&& Vars::ESP::ActiveGroups.Value && !m_vGroups.empty();
 }
 

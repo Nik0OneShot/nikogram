@@ -104,7 +104,7 @@ void CSpectatorList::DrawMoonlit(CTFPlayer* local)
     m_vIndicatorSize = {float(box.w), float(box.h)};
     Frame(box);
     H::Draw.StartClipping(box.x, box.y, box.w, box.h);
-    Badge(box.x + pad, box.y + pad - MoonlitHud::S(3), MoonlitHud::S(20));
+    Badge(box.x + pad, box.y + pad - MoonlitHud::S(3), MoonlitHud::S(20),true,!m_vSpectators.empty());
     Text(box.x + pad + BadgeSpace(), box.y + pad, "spectators", Ink, Label(), inner / 2 - BadgeSpace());
     Text(box.x + width - pad, box.y + pad + MoonlitHud::S(1), Vars::Menu::SpectatorScope.Value == 1 ? "watching me" : "all players",
         Muted, Detail(), inner / 2, ALIGN_TOPRIGHT);

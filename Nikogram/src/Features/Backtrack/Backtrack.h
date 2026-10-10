@@ -69,6 +69,7 @@ public:
 	matrix3x4* GetBones(CBaseEntity* pEntity);
 
 	float GetReal(int iFlow = MAX_FLOWS, bool bNoFake = true);
+    float ProjectileLead(float simulated, float original);
 	float GetWishFake();
 	float GetWishLerp();
 	float GetFakeLatency();

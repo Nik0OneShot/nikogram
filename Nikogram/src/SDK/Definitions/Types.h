@@ -1149,7 +1149,7 @@ struct Glow_t
 
 	inline bool operator!=(const Glow_t& t) const
 	{
-		return Stencil != t.Stencil || Blur != t.Blur;
+		return !(*this == t);
 	}
 
 	inline bool operator()() const

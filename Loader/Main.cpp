@@ -100,7 +100,7 @@ LRESULT CALLBACK Procedure(HWND w,UINT message,WPARAM a,LPARAM b){
   app.minimize=button(Minimize,L"-",BS_OWNERDRAW);app.close=button(Close,L"x",BS_OWNERDRAW);app.notices=button(Notices,L"licenses",BS_OWNERDRAW);
   app.menuLabel=CreateWindowExW(0,L"STATIC",L"Startup menu",WS_CHILD|WS_VISIBLE,0,0,0,0,w,nullptr,app.instance,nullptr);
   app.menu=CreateWindowExW(0,L"COMBOBOX",L"Startup menu",WS_CHILD|WS_VISIBLE|WS_TABSTOP|CBS_DROPDOWNLIST|WS_VSCROLL,0,0,0,0,w,reinterpret_cast<HMENU>(INT_PTR(StartupMenu)),app.instance,nullptr);
-  for(auto label:{L"Use saved preference",L"Nullcore",L"Moonlit"})SendMessageW(app.menu,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label));
+  for(auto label:{L"Use saved preference",L"Nullcore",L"Nikogram",L"Dapper Desktop",L"Bank of Dapper",L"Dapper Scrapbook"})SendMessageW(app.menu,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label));
   SendMessageW(app.menu,CB_SETCURSEL,0,0);
   SizeControls();Refresh();SetTimer(w,1,1000,nullptr);return 0;
  }

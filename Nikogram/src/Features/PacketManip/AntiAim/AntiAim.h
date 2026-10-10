@@ -3,6 +3,7 @@
 #include "BodyYawPolicy.h"
 #include "LegitAAPolicy.h"
 #include "AntiAimPacketPolicy.h"
+#include "AngleDisplayPolicy.h"
 
 class CAntiAim
 {
@@ -14,6 +15,13 @@ private:
 	float GetYawOffset(CTFPlayer* pEntity, bool bFake);
 	float GetBaseYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake);
 	float GetYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake);
+    float EdgeYaw(CTFPlayer* local, CUserCmd* cmd, bool fake);
+    float m_flEdgeReal=0, m_flEdgeFake=0;
+    float m_flEdgeWallYaw=0;
+    int m_iEdgeCommand=-1;
+    bool m_bEdgeValid=false;
+    CTFPlayer* m_pEdgeLocal=nullptr;
+    const void* m_pEdgeModel=nullptr;
 	float GetPitch(float flCurPitch);
 	void MinWalk(CTFPlayer* pLocal, CUserCmd* pCmd);
 	BodyYawPolicy::State m_tBody = {};

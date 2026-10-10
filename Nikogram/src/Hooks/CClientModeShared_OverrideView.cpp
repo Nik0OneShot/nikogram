@@ -12,6 +12,8 @@ MAKE_HOOK(CClientModeShared_OverrideView, U::Memory.GetVirtual(I::ClientModeShar
 	if (auto pLocal = H::Entities.GetLocal(); pLocal && pView)
 	{
 		F::Visuals.FOV(pLocal, pView);
+		F::Visuals.ApplyFreelook(pView);
 		F::Visuals.ThirdPerson(pLocal, pView);
 	}
+	F::Visuals.ApplyOptifineZoom(H::Entities.GetLocal(), pView);
 }

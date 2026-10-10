@@ -1,6 +1,33 @@
 #include "AimbotHitscan.h"
 #include "../SmoothAim.h"
 #include "../AimRegionPolicy.h"
+#include "HeadRecordPolicy.h"
+
+static bool ConfirmRecordHead(CTFPlayer* local,CTFPlayer* player,const TickRecord* record,const Vec3& eye,const Vec3& direction,float range)
+{
+    auto set=player->GetHitboxSet();if(!set||!record)return false;
+    HeadRecordPolicy::Nearest nearest(range);
+    for(int index=0;index<set->numhitboxes;++index)
+    {
+        auto box=set->pHitbox(index);if(!box||box->bone<0||box->bone>=MAXSTUDIOBONES)continue;
+        CursorBacktrackPolicy::Matrix bone{};
+        for(int row=0;row<3;++row)for(int col=0;col<4;++col)bone[row][col]=record->m_aBones[box->bone][row][col];
+        double distance;
+        if(CursorBacktrackPolicy::HitDistance({eye.x,eye.y,eye.z},{direction.x,direction.y,direction.z},
+            {box->bbmin.x,box->bbmin.y,box->bbmin.z},{box->bbmax.x,box->bbmax.y,box->bbmax.z},bone,range,distance))
+            nearest.Consider(index,index==HITBOX_HEAD,distance);
+    }
+    if(nearest.hitbox!=HITBOX_HEAD)return false;
+    class Filter:public CTraceFilterHitscan
+    {
+    public:CTFPlayer* target=nullptr;
+        bool ShouldHitEntity(IHandleEntity* e,int mask)override
+        {return reinterpret_cast<CBaseEntity*>(e)!=target&&CTraceFilterHitscan::ShouldHitEntity(e,mask);}
+    } filter;
+    filter.pSkip=local;filter.target=player;
+    CGameTrace trace{};SDK::Trace(eye,eye+direction*float(nearest.distance),MASK_SHOT|CONTENTS_GRATE,&filter,&trace);
+    return !trace.startsolid&&!trace.allsolid&&trace.fraction>=.9999f;
+}
 
 static bool RegionPoint(const Vec3& eye,const Vec3& view,const Vec3& mins,const Vec3& maxs,const matrix3x4& transform,Vec3& local,bool& inside,float& heightMiss)
 {
@@ -468,6 +495,10 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 	}
 	else
 	{
+		// A rendered/cached pose is not a server-valid record. Wait for the
+		// next network sample rather than shooting players using screen bones.
+		if (bPlayer && !bWrangler && pWeapon->GetWeaponID()!=TF_WEAPON_MEDIGUN)
+			return false;
 		F::Backtrack.m_tRecord = { tTarget.m_pEntity->m_flSimulationTime(), tTarget.m_pEntity->m_vecOrigin(), Vec3(), Vec3() };
 		if (!tTarget.m_pEntity->SetupBones(F::Backtrack.m_tRecord.m_aBones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, tTarget.m_pEntity->m_flSimulationTime()))
 			return false;
@@ -623,6 +654,11 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 					&& (!pHullTransform || Math::RayToOBB(m_vEyePos, vForward, vHullMins, vHullMaxs, *pHullTransform)))
 				{
 					if(bRegion&&!SmoothPolicy::PlacementBetter(height,flRegionScore,flBestRegionHeight,flBestRegionHit))continue;
+                    if(bPlayer&&!bWrangler&&!bServerEstimate&&tHitbox.m_iHitbox==HITBOX_HEAD)
+                    {
+                        Vec3 shot;Math::AngleVectors(vAngles+pLocal->m_vecPunchAngle(),&shot);
+                        if(!ConfirmRecordHead(pLocal,tTarget.m_pEntity->As<CTFPlayer>(),pRecord,m_vEyePos,shot,pWeapon->GetRange()))continue;
+                    }
 					tTarget.m_vAngleTo = vAngles;
 					tTarget.m_pRecord = pRecord;
 					tTarget.m_vPos = vOrigin;
@@ -988,6 +1024,7 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 
 		const auto iResult = CanHit(tTarget, pLocal, pWeapon);
 		if (!iResult) continue;
+        if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)) break;
 		F::Aimbot.m_bHitscanAssisted = true;
 		if (iResult == 2)
 		{

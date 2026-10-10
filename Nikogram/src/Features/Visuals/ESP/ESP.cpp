@@ -723,7 +723,7 @@ void CESP::Store(CTFPlayer* pLocal)
 
 	for (auto& [pEntity, pGroup] : F::Groups.GetGroup(false))
 	{
-		if ((!pGroup->m_iESP && !(pEntity->IsPlayer() && pGroup->m_iDapperESP > 0 && pGroup->m_iDapperESP <= 3)) || (MenuMode::Active == MenuMode::Moonlit && !pGroup->m_bMoonlitInformation))
+		if ((!pGroup->m_iESP && !(pEntity->IsPlayer() && pGroup->m_iDapperESP > 0 && pGroup->m_iDapperESP <= 3)) || (MenuMode::Custom(MenuMode::Active) && !pGroup->m_bMoonlitInformation))
 			continue;
 
 		if (pEntity->IsPlayer())

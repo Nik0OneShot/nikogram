@@ -1,5 +1,7 @@
 #pragma once
 #include "../../SDK/SDK.h"
+#include "ZoomPolicy.h"
+#include "FreelookPolicy.h"
 
 struct Projectile_t
 {
@@ -39,6 +41,14 @@ private:
 
 	bool m_bStoredDefaultFOV = false, m_bStoredCamIdealLag = false;
 	float m_flOriginalDefaultFOV = 0.f, m_flOriginalCamIdealLag = 0.f;
+	OptifineZoom::State m_tOptifineZoom;
+	int m_iOptifineFrame = -1;
+	float m_flOptifineMouseScale = 1.f;
+	bool CanOptifineZoom() const;
+	Freelook::State m_tFreelook;
+	int m_iFreelookOwner = -1, m_iFreelookFrame = -1;
+	Freelook::Settings FreelookSettings() const;
+	void SyncFreelook();
 
 	void PruneDrawStorages();
 
@@ -56,6 +66,12 @@ public:
 	void DrawHitboxes(int iStore = 0);
 
 	void FOV(CTFPlayer* pLocal, CViewSetup* pView);
+	bool FreelookMouse(Vec3& view, CUserCmd* command, float mouseX, float mouseY);
+	void FreelookCommand(CTFPlayer* local, CUserCmd* command);
+	void ApplyFreelook(CViewSetup* view);
+	void ResetFreelook() { m_tFreelook.Reset(); m_iFreelookOwner = m_iFreelookFrame = -1; }
+	void ApplyOptifineZoom(CTFPlayer* pLocal, CViewSetup* pView);
+	float OptifineMouseScale() const;
 	void ThirdPerson(CTFPlayer* pLocal, CViewSetup* pView);
 
 	void OverrideWorldTextures();

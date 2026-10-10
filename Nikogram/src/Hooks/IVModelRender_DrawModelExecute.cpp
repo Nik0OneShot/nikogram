@@ -7,6 +7,8 @@
 #include "../Features/Visuals/CameraWindow/CameraWindow.h"
 #include "../Features/SkinChanger/SkinChanger.h"
 #include "../Features/SkinChanger/RenderPolicy.h"
+#include "../Features/Visuals/Dapper/WorldPhoto.h"
+#include "../Features/Visuals/RenderAudit.h"
 
 MAKE_SIGNATURE(CBaseAnimating_InternalDrawModel, "client.dll", "48 8B C4 55 56 48 8D 6C 24 ? 48 81 EC ? ? ? ? 44 8B 81", 0x0);
 MAKE_SIGNATURE(CBaseViewModel_DrawModel, "client.dll", "40 53 55 56 48 83 EC ? 80 B9", 0x0);
@@ -96,6 +98,15 @@ MAKE_HOOK(IVModelRender_DrawModelExecute, U::Memory.GetVirtual(I::ModelRender, 1
 			return;
 		}
 	}
+
+	// Some map fixtures (for example resupply lockers) are dynamic props, not
+	// members of CStaticPropMgr's array. Restrict this route by model namespace;
+	// never apply the world-photo option to players, weapons or viewmodels.
+	const auto mapModel=pInfo.pModel?I::ModelInfoClient->GetModelName(pInfo.pModel):nullptr;
+	PhotoRenderPolicy::PropScope<IVModelRender,IMaterial,OverrideType_t> mapPhoto(I::ModelRender,
+		DapperWorld::PropMaterial(gameUI||s_bDrawingViewmodelEffect||!mapModel
+			||!PhotoRenderPolicy::MapProp(mapModel)||corpseMaterial!=nullptr),OVERRIDE_NORMAL);
+	if(mapPhoto.Active()){RenderAudit::WorldPropDraw(true);return CALL_ORIGINAL(rcx,pState,pInfo,pBoneToWorld);}
 
 	if (Vars::Misc::SkinChanger::Enabled.Value && SkinRender::AllowCosmeticRender(F::Chams.m_bRendering,F::Glow.m_bRendering))
 	{

@@ -1,4 +1,5 @@
 #include "../SDK/SDK.h"
+#include "../Features/Visuals/Visuals.h"
 
 MAKE_SIGNATURE(CTFInput_CAM_CapYaw, "client.dll", "40 53 48 83 EC ? 0F 29 74 24 ? 0F 28 F1", 0x0);
 MAKE_SIGNATURE(CTFInput_ApplyMouse, "client.dll", "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC ? 0F 29 74 24 ? 49 8B E8", 0x0);
@@ -11,7 +12,10 @@ MAKE_HOOK(CTFInput_ApplyMouse, S::CTFInput_ApplyMouse(), void,
 
 	// we should maybe predict the shield cond for better accuracy
 
-	CALL_ORIGINAL(rcx, viewangles, cmd, mouse_x, mouse_y);
+	const float zoomScale = F::Visuals.OptifineMouseScale();
+	if (F::Visuals.FreelookMouse(viewangles, cmd, mouse_x * zoomScale, mouse_y * zoomScale))
+		return; // Shield turn limiting applies to actual aim, never the detached camera.
+	CALL_ORIGINAL(rcx, viewangles, cmd, mouse_x * zoomScale, mouse_y * zoomScale);
 
 	if (!Vars::Misc::Movement::ShieldTurnRate.Value)
 		return;

@@ -2,23 +2,43 @@
 namespace MoonlitUI
 {
     using namespace ImGui;
-    inline ImVec4 Colour(int r, int g, int b) { return {r/255.f,g/255.f,b/255.f,1.f}; }
-    inline const ImVec4 Purple = Colour(192,163,243), Gold = Colour(242,204,127);
+    inline int Appearance=MenuMode::Nikogram;
+    inline ImVec4 Colour(int r, int g, int b)
+    {
+        for(int role=0;role<MenuPalette::Count;++role)
+            if(r==MenuPalette::Defaults[role][0]&&g==MenuPalette::Defaults[role][1]&&b==MenuPalette::Defaults[role][2])
+            {const auto& rgb=MenuMode::Dapper(Appearance)?DapperStyle::Get(Appearance).colours[role]:MenuPalette::Colours[role];return {rgb[0],rgb[1],rgb[2],1.f};}
+        if(r==39&&g==31&&b==55) return Colour(43,36,60); // Popup panel.
+        if(r==65&&g==48&&b==87) return Colour(67,51,90); // Navigation selection.
+        return {r/255.f,g/255.f,b/255.f,1.f};
+    }
+    inline ImVec4 Purple = Colour(192,163,243), Gold = Colour(242,204,127);
     struct StyleScope
     {
+        int savedAppearance=Appearance;
+        bool savedDrawing=MenuMode::DrawingMoonlit;
+        int savedDrawingStyle=MenuMode::DrawingStyle;
         ImGuiStyle style = GetStyle();
         ImColor colours[9] = {F::Render.Accent,F::Render.Background0,F::Render.Background0p5,F::Render.Background1,
             F::Render.Background1p5,F::Render.Background1p5L,F::Render.Background2,F::Render.Inactive,F::Render.Active};
         ImFont* savedSmallFont=F::Render.FontSmall, *savedRegularFont=F::Render.FontRegular, *savedLargeFont=F::Render.FontLarge;
-        StyleScope()
+        StyleScope(int appearance=MenuMode::Active)
         {
+            Appearance=appearance;
+            MenuMode::DrawingStyle=appearance;
             MenuMode::DrawingMoonlit = true;
+            Purple=Colour(192,163,243);Gold=Colour(242,204,127);
             F::Render.Accent=Purple; F::Render.Background0=Colour(33,27,48);
             F::Render.Background0p5=F::Render.Background1=F::Render.Background1p5=Colour(43,36,60);
             F::Render.Background1p5L=Colour(67,51,90);F::Render.Background2=Colour(110,86,145);
             F::Render.Active=Colour(241,234,250);F::Render.Inactive=Colour(187,175,202);
             F::Render.FontSmall=F::Render.FontRegular=F::Render.FontMoonlit;
             F::Render.FontLarge=F::Render.FontMoonlitHeading;
+            if(MenuMode::Dapper(appearance))
+            {
+                const int index=DapperStyle::Index(appearance);
+                F::Render.FontSmall=F::Render.FontRegular=F::Render.FontDapper[index];F::Render.FontLarge=F::Render.FontDapperHeading[index];
+            }
             auto& s=GetStyle();const float k=Vars::Menu::Scale.Value;
             s.WindowPadding={12*k,12*k};s.FramePadding={6*k,2*k};s.ItemSpacing={8*k,4*k};s.ItemInnerSpacing={6*k,3*k};
             s.CellPadding={4*k,2*k}; // Space between settings columns, without changing Nullcore.
@@ -36,13 +56,21 @@ namespace MoonlitUI
             c[ImGuiCol_CheckMark]=c[ImGuiCol_SliderGrab]=Purple;c[ImGuiCol_SliderGrabActive]=Gold;
             c[ImGuiCol_ScrollbarGrab]=F::Render.Background2;c[ImGuiCol_ScrollbarGrabHovered]=Purple;c[ImGuiCol_ScrollbarGrabActive]=Purple;
             c[ImGuiCol_ResizeGrip]=Colour(72,59,92);c[ImGuiCol_ResizeGripHovered]=Purple;c[ImGuiCol_ResizeGripActive]=Purple;
+            if(MenuMode::Dapper(appearance))
+            {
+                s.WindowRounding=appearance==MenuMode::DapperScrapbook?4*k:0;s.FrameRounding=0;s.ChildRounding=0;
+                s.WindowTitleAlign={0,.5f};s.FrameBorderSize=1;s.ScrollbarRounding=0;
+            }
         }
         ~StyleScope()
         {
             GetStyle()=style;F::Render.Accent=colours[0];F::Render.Background0=colours[1];F::Render.Background0p5=colours[2];
             F::Render.Background1=colours[3];F::Render.Background1p5=colours[4];F::Render.Background1p5L=colours[5];
             F::Render.Background2=colours[6];F::Render.Inactive=colours[7];F::Render.Active=colours[8];
-            F::Render.FontSmall=savedSmallFont;F::Render.FontRegular=savedRegularFont;F::Render.FontLarge=savedLargeFont;MenuMode::DrawingMoonlit=false;
+            F::Render.FontSmall=savedSmallFont;F::Render.FontRegular=savedRegularFont;F::Render.FontLarge=savedLargeFont;
+            MenuMode::DrawingMoonlit=savedDrawing;Appearance=savedAppearance;
+            MenuMode::DrawingStyle=savedDrawingStyle;
+            Purple=Colour(192,163,243);Gold=Colour(242,204,127);
         }
     };
     inline float Ease(ImGuiID id,float target,bool slider=false)
@@ -94,7 +122,8 @@ void CMenu::DrawMoonlit()
 {
     using namespace ImGui;using namespace MoonlitUI;
     StyleScope theme;PushFont(F::Render.FontMoonlit);
-    static int page=0;
+    static int page=0,searchMode=AimModes::Legit;
+    static std::string globalSearch;
     const char* names[]={"Ragebot","Anti aim","Legitbot","ESP","Misc","Skin changer","Playerlist","Configs"};
     const char* icons[]={ICON_MD_GPS_FIXED,ICON_MD_SWAP_HORIZ,ICON_MD_MOUSE,ICON_MD_VISIBILITY,ICON_MD_SETTINGS,ICON_MD_BRUSH,ICON_MD_PERSON,ICON_MD_SAVE};
     const auto screen=GetIO().DisplaySize;const float k=Vars::Menu::Scale.Value;
@@ -147,7 +176,22 @@ void CMenu::DrawMoonlit()
                 Text("Editing: %s",bind.m_sName.c_str());SameLine();
                 if(SmallButton("Back to base"))CurrentBind=DEFAULT_BIND;Separator();
             }
-            switch(page)
+            if(page==0)searchMode=AimModes::Rage;else if(page==2)searchMode=AimModes::Legit;
+            SetNextItemWidth(std::max(100.f,GetContentRegionAvail().x-65*k));
+            InputTextWithHint("##NikogramSearch","Search all settings, including hidden settings...",&globalSearch);
+            SameLine();if(Button("Clear"))globalSearch.clear();
+            if(!globalSearch.empty())
+            {
+                if(page!=0&&page!=2)
+                {
+                    SetNextItemWidth(180*k);
+                    int selected=searchMode==AimModes::Rage?0:1;
+                    if(Combo("Aim settings for",&selected,"Ragebot\0Legitbot\0"))searchMode=selected?AimModes::Legit:AimModes::Rage;
+                }
+                TextDisabled("Searching %s aim settings and all shared settings.",searchMode==AimModes::Legit?"Legitbot":"Ragebot");
+                Separator();AimModes::EditScope editing(searchMode);MenuSearch(globalSearch);
+            }
+            else switch(page)
             {
             case 0:MoonlitAim(false);break;case 1:MoonlitAntiAim();break;case 2:MoonlitAim(true);break;
             case 3:MoonlitESP();break;case 4:MoonlitMisc();break;case 5:SkinChanger::Menu();break;

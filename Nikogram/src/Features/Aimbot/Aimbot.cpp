@@ -86,6 +86,7 @@ void CAimbot::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 #include "AutoViewmodelSwitch.h"
 void CAimbot::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
+    F::AimbotGlobal.BeginTargetSwitch(pLocal, pWeapon, pCmd);
     SmoothAim::Begin(pLocal,pWeapon,pCmd,!F::Ticks.GetShootAngle());
 	m_bHitscanAssisted = false;
 	F::AutoAirblast.m_bPlayerBlast=false;
@@ -102,6 +103,7 @@ void CAimbot::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 	if(!viewmodelWait) RunMain(pLocal, pWeapon, pCmd);
     else {m_bRan=false;F::AutoFlarePunch.Diagnostic("viewmodel_frame_blocked",pLocal,pWeapon,pCmd);}
 
+    F::AimbotGlobal.EndTargetSwitch();
 	G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
 	if (F::AutoAirblast.m_bPlayerBlast) G::Attacking=1;
 	F::AutoFlarePunch.Shot(pWeapon,pCmd);

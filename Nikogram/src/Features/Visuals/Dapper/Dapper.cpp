@@ -1,4 +1,5 @@
 #include "Dapper.h"
+#include "PhotoAssetPolicy.h"
 #include "../../../SDK/SDK.h"
 #include "../../../SDK/Definitions/Misc/VTF.h"
 
@@ -8,9 +9,9 @@ namespace Dapper
     namespace
     {
         constexpr int Size=512;
-        constexpr const char* TextureNames[]{"nikogram/dapper_portrait_v054", "nikogram/dapper_money_v054", "nikogram/dapper_giga_v054"};
-        struct Photo { const unsigned char* rgba=nullptr; ITexture* texture=nullptr; int surface=0; };
+        struct Photo { const unsigned char* rgba=nullptr; ITexture* texture=nullptr; int surface=0; std::string name; ITexture* worldTexture=nullptr;std::string worldName; };
         Photo photos[3];
+        std::uint64_t generation=0;
         class Regenerator final : public ITextureRegenerator
         {
             const unsigned char* pixels;
@@ -55,25 +56,48 @@ namespace Dapper
     void Load()
     {
         const auto module=reinterpret_cast<HMODULE>(&__ImageBase);
+        if(!generation)
+        {
+            LARGE_INTEGER counter{};QueryPerformanceCounter(&counter);
+            generation=static_cast<std::uint64_t>(counter.QuadPart);
+        }
         for(int i=0;i<3;++i)
         {
-            auto& photo=photos[i];if(photo.texture)continue;
-            const auto resource=FindResourceW(module,MAKEINTRESOURCEW(301+i),MAKEINTRESOURCEW(10));
+            auto& photo=photos[i];if(photo.texture&&photo.worldTexture)continue;
+            const auto resource=FindResourceW(module,MAKEINTRESOURCEW(PhotoAssetPolicy::assets[i].resource),MAKEINTRESOURCEW(10));
             if(!resource||SizeofResource(module,resource)!=Size*Size*4)continue;
             const auto memory=LoadResource(module,resource);
             photo.rgba=memory?static_cast<const unsigned char*>(LockResource(memory)):nullptr;
             if(!photo.rgba)continue;
             // No CLAMPS/CLAMPT: UVs repeat in both directions.
-            auto texture=I::MaterialSystem->CreateProceduralTexture(TextureNames[i],TEXTURE_GROUP_MODEL,Size,Size,
-                IMAGE_FORMAT_BGRX8888,TEXTUREFLAGS_TRILINEAR|TEXTUREFLAGS_NOLOD|TEXTUREFLAGS_PROCEDURAL);
-            if(IsErrorTexture(texture))continue;
-            texture->IncrementReferenceCount();
-            texture->SetTextureRegenerator(new Regenerator(photo.rgba));
-            texture->Download();photo.texture=texture;
+            // Engine materials/textures can survive DLL unload. A new generation
+            // must not resolve a previous DLL's same-named procedural texture.
+            for(bool mask:{false,true})
+            {
+                auto& pixels=mask?photo.worldTexture:photo.texture;if(pixels)continue;
+                auto& name=mask?photo.worldName:photo.name;
+                name=PhotoAssetPolicy::TextureName(i,generation)+(mask?"_world_mask":"");
+                // The terrain shader requires a declared alpha channel for
+                // self-illumination. All pixels are still alpha=255. Preserve
+                // the proven BGRX/no-alpha texture for chams and unlit props.
+                auto texture=I::MaterialSystem->CreateProceduralTexture(name.c_str(),TEXTURE_GROUP_MODEL,Size,Size,
+                    mask?IMAGE_FORMAT_BGRA8888:IMAGE_FORMAT_BGRX8888,
+                    TEXTUREFLAGS_TRILINEAR|TEXTUREFLAGS_NOLOD|TEXTUREFLAGS_PROCEDURAL|(mask?TEXTUREFLAGS_EIGHTBITALPHA:0));
+                if(IsErrorTexture(texture))continue;
+                texture->IncrementReferenceCount();
+                texture->SetTextureRegenerator(new Regenerator(photo.rgba));
+                texture->Download();pixels=texture;
+            }
         }
     }
-    const char* TextureName(int index)
-    {return index>=0&&index<3&&photos[index].texture?TextureNames[index]:nullptr;}
+    const char* TextureName(int index,bool worldMask)
+    {
+        if(index<0||index>=3)return nullptr;
+        auto& photo=photos[index];
+        return worldMask?(photo.worldTexture?photo.worldName.c_str():nullptr):(photo.texture?photo.name.c_str():nullptr);
+    }
+    ITexture* Texture(int index,bool worldMask)
+    {return index>=0&&index<3?(worldMask?photos[index].worldTexture:photos[index].texture):nullptr;}
     void Draw(int selection,float x,float y,float width,float height)
     {
         if(selection<1||selection>3||width<=0||height<=0)return;
@@ -91,7 +115,9 @@ namespace Dapper
         {
             if(photo.surface){I::MatSystemSurface->DeleteTextureByID(photo.surface);I::MatSystemSurface->DestroyTextureID(photo.surface);}
             if(photo.texture){photo.texture->SetTextureRegenerator(nullptr);photo.texture->DecrementReferenceCount();}
+            if(photo.worldTexture){photo.worldTexture->SetTextureRegenerator(nullptr);photo.worldTexture->DecrementReferenceCount();}
             photo={};
         }
+        generation=0;
     }
 }

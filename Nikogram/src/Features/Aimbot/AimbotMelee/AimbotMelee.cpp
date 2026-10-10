@@ -680,6 +680,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		const auto iResult = CanHit(tTarget, pLocal, pWeapon);
 		MD::Event("can_hit_result",tTarget.m_pEntity->entindex(),float(iResult));
 		if (!iResult) continue;
+        if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)) break;
 		if (iResult == 2)
 		{
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };

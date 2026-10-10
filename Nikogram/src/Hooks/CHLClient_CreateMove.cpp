@@ -144,6 +144,7 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 	auto pWeapon = H::Entities.GetWeapon();
 	if (!pLocal)
 	{
+		F::Visuals.FreelookCommand(nullptr, nullptr);
 		F::AntiAim.ResetPacketState();
 		AmmoLifetimeDiagnostics::Reset("no_local");
 		F::Blockbot.Reset();
@@ -165,6 +166,7 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 
 	I::Prediction->Update(I::ClientState->m_nDeltaTick, I::ClientState->m_nDeltaTick > 0, I::ClientState->last_command_ack, I::ClientState->lastoutgoingcommand + I::ClientState->chokedcommands);
 
+	F::Visuals.FreelookCommand(pLocal, pCmd);
 	UpdateInfo(pLocal, pWeapon, pCmd);
 	SelfDamageDiagnostics::Snapshot("command_start",pLocal,pWeapon,pCmd);
 	AmmoLifetimeDiagnostics::Begin(pCmd->command_number);

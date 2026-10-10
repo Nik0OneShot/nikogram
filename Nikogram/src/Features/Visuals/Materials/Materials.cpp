@@ -6,6 +6,7 @@
 #include "../../Binds/Binds.h"
 #include "../Groups/Groups.h"
 #include "../Dapper/Dapper.h"
+#include "../Dapper/WorldPhoto.h"
 #include <filesystem>
 #include <fstream>
 
@@ -204,7 +205,13 @@ void CMaterials::LoadMaterials()
 		}
 
 		ModifyKeyValues(kv);
-		tMaterial.m_pMaterial = Create(tMaterial.m_sName.c_str(), kv);
+		// Keep saved/display names stable, but do not let photo chams resolve
+		// a same-named material retained from an earlier DLL's texture set.
+		std::string engineName=tMaterial.m_sName;
+		for(int photo=0;photo<3;++photo)
+			if(tMaterial.m_sName==Dapper::Names[photo])
+				if(const auto texture=Dapper::TextureName(photo))engineName=std::format("{}_chams",texture);
+		tMaterial.m_pMaterial = Create(engineName.c_str(), kv);
 		//StoreVars(tMaterial);
 	}
 
@@ -251,6 +258,7 @@ void CMaterials::LoadMaterials()
 
 void CMaterials::UnloadMaterials()
 {
+    DapperWorld::Restore();
 	m_bLoaded = false;
 
 	for (auto& tMaterial : m_mMaterials | std::views::values)

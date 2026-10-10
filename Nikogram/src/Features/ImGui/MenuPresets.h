@@ -10,6 +10,11 @@ namespace MenuPresets
     struct Preset
     {
         std::string name = "Niko - Yellow / Black";
+        bool hasNikogramColours=false;
+        MenuPalette::Palette nikogramColours=MenuPalette::Default();
+        bool hasDapperStyles=false;
+        std::array<DapperStyle::Preferences,3> dapperStyles{DapperStyle::Themes[0],DapperStyle::Themes[1],DapperStyle::Themes[2]};
+        int indicatorStyle=-1;
         std::array<float, 3> accent = { .85f, .75f, .20f }, background = { 0.f, 0.f, 0.f };
         bool compact = false, top = false, snap = true;
         bool textOverride = false;
@@ -37,6 +42,9 @@ namespace MenuPresets
     inline Preset Capture(const std::string& name)
     {
         Preset p; p.name = name;
+        p.hasNikogramColours=true;p.nikogramColours=MenuPalette::Colours;
+        p.hasDapperStyles=true;p.indicatorStyle=MenuMode::Indicator;
+        std::copy_n(DapperStyle::Themes,3,p.dapperStyles.begin());
         p.textOverride = Workspace::TextColourOverride;
         p.borderOverride = Workspace::InterfaceBorderSelected ? Workspace::InterfaceBorderCustom : Workspace::BorderColourOverride;
         std::copy_n(Workspace::InterfaceBorderSelected ? Workspace::InterfaceBorderColour : Workspace::BorderColour, 3, p.borderColour.begin());
@@ -62,6 +70,13 @@ namespace MenuPresets
     }
     inline void Apply(const Preset& p)
     {
+        if(p.hasNikogramColours)MenuPalette::Colours=p.nikogramColours;
+        if(p.hasDapperStyles)
+        {
+            std::copy(p.dapperStyles.begin(),p.dapperStyles.end(),DapperStyle::Themes);
+            for(auto& style:DapperStyle::Themes)DapperStyle::Normalize(style);
+            MenuMode::Indicator=MenuMode::Valid(p.indicatorStyle)?p.indicatorStyle:-1;
+        }
         Workspace::TextColourOverride = p.textOverride;
         Workspace::InterfaceBorderSelected = p.name != Preset{}.name;
         Workspace::InterfaceBorderCustom = p.borderOverride;
@@ -102,6 +117,28 @@ namespace MenuPresets
             {
                 const auto& tree = entry.second;
                 Preset p; p.name = tree.get<std::string>("name");
+                p.hasNikogramColours=tree.get<bool>("hasNikogramColours",false);
+                p.hasDapperStyles=tree.get<bool>("hasDapperStyles",false);
+                p.indicatorStyle=tree.get<int>("indicatorStyle",-1);
+                if(p.hasDapperStyles)for(int i=0;i<3;++i)
+                {
+                    auto& style=p.dapperStyles[i];const auto prefix="dapper"+std::to_string(i);
+                    style.photo=tree.get<int>(prefix+"Photo",i+1);style.opacity=tree.get<int>(prefix+"PhotoOpacity",100);
+                    style.reactive=tree.get<bool>(prefix+"ReactivePhoto",false);
+                    for(int r=0;r<MenuPalette::Count;++r)for(int c=0;c<3;++c)
+                    {
+                        auto value=tree.get<float>(prefix+"Colour"+std::to_string(r)+"_"+std::to_string(c),DapperStyle::Defaults[i][r][c]/255.f);
+                        if(!std::isfinite(value))throw std::runtime_error("Invalid Dapper colour");
+                        style.colours[r][c]=value;
+                    }
+                    DapperStyle::Normalize(style);
+                }
+                if(p.hasNikogramColours) for(int role=0;role<MenuPalette::Count;++role) for(int channel=0;channel<3;++channel)
+                {
+                    const auto value=tree.get<float>("nikogramColour"+std::to_string(role)+"_"+std::to_string(channel),MenuPalette::Defaults[role][channel]/255.f);
+                    if(!std::isfinite(value))throw std::runtime_error("Invalid Nikogram colour");
+                    p.nikogramColours[role][channel]=std::clamp(value,0.f,1.f);
+                }
                 p.textOverride = tree.get<bool>("textOverride", false);
                 p.inactiveTextOverride=tree.get<bool>("inactiveTextOverride",false);
                 p.titleTextOverride=tree.get<bool>("titleTextOverride",false);
@@ -173,6 +210,17 @@ namespace MenuPresets
             {
                 boost::property_tree::ptree tree;
                 tree.put("name", p.name);
+                tree.put("hasNikogramColours",p.hasNikogramColours);
+                tree.put("hasDapperStyles",p.hasDapperStyles);tree.put("indicatorStyle",p.indicatorStyle);
+                if(p.hasDapperStyles)for(int i=0;i<3;++i)
+                {
+                    const auto& style=p.dapperStyles[i];const auto prefix="dapper"+std::to_string(i);
+                    tree.put(prefix+"Photo",style.photo);tree.put(prefix+"PhotoOpacity",style.opacity);tree.put(prefix+"ReactivePhoto",style.reactive);
+                    for(int r=0;r<MenuPalette::Count;++r)for(int c=0;c<3;++c)
+                        tree.put(prefix+"Colour"+std::to_string(r)+"_"+std::to_string(c),style.colours[r][c]);
+                }
+                if(p.hasNikogramColours)for(int role=0;role<MenuPalette::Count;++role)for(int channel=0;channel<3;++channel)
+                    tree.put("nikogramColour"+std::to_string(role)+"_"+std::to_string(channel),p.nikogramColours[role][channel]);
                 tree.put("textOverride", p.textOverride);
                 tree.put("inactiveTextOverride",p.inactiveTextOverride);
                 tree.put("titleTextOverride",p.titleTextOverride);

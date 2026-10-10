@@ -1,5 +1,7 @@
 #include "Visuals.h"
 #include "RenderState.h"
+#include "Dapper/WorldPhoto.h"
+#include "Dapper/SkyPhoto.h"
 #include "../ImGui/MoonlitHud.h"
 
 #include "../Simulation/ProjectileSimulation/ProjectileSimulation.h"
@@ -16,6 +18,7 @@
 #include "AnimInterp/AnimInterp.h"
 #include "../World/World.h"
 #include "../ImGui/Workspace.h"
+#include "../ImGui/Menu/Menu.h"
 #include "../../SDK/Helpers/ExtrapolationEdge.h"
 
 MAKE_SIGNATURE(UTIL_PlayerByIndex, "server.dll", "48 83 EC ? 8B D1 85 C9 7E ? 48 8B 05", 0x0);
@@ -651,6 +654,104 @@ void CVisuals::FOV(CTFPlayer* pLocal, CViewSetup* pView)
 	}
 }
 
+Freelook::Settings CVisuals::FreelookSettings() const
+{
+	namespace L = Vars::Misc::Freelook;
+	return { L::Limited.Value, L::Return.Value == L::ReturnEnum::Smooth,
+		L::Horizontal.Value, L::Vertical.Value, L::ReturnTime.Value };
+}
+
+void CVisuals::SyncFreelook()
+{
+	auto local = H::Entities.GetLocal();
+	const bool eligible = CanOptifineZoom() && !local->IsTaunting() && !local->IsAGhost()
+		&& !local->InCond(TF_COND_HALLOWEEN_KART)
+		&& !(local->InCond(TF_COND_STUNNED) && (local->m_iStunFlags() & (TF_STUN_CONTROLS | TF_STUN_LOSER_STATE)));
+	const int owner = eligible ? local->GetRefEHandle().ToInt() : -1;
+	if (owner != m_iFreelookOwner)
+	{
+		m_tFreelook.Reset(); m_iFreelookFrame = -1; m_iFreelookOwner = owner;
+	}
+	const Vec3 base = I::EngineClient->GetViewAngles();
+	m_tFreelook.Sync(Vars::Misc::Freelook::Enabled.Value, eligible, { base.x, base.y }, FreelookSettings());
+}
+
+bool CVisuals::FreelookMouse(Vec3& view, CUserCmd* command, float mouseX, float mouseY)
+{
+	SyncFreelook();
+	if (!m_tFreelook.held) return false;
+	static auto yaw = H::ConVars.FindVar("m_yaw"), pitch = H::ConVars.FindVar("m_pitch");
+	const float yawScale = yaw ? yaw->GetFloat() : 0.022f;
+	const float pitchScale = pitch ? pitch->GetFloat() : 0.022f;
+	return Freelook::RedirectMouse(m_tFreelook, FreelookSettings(), view, command,
+		mouseX, mouseY, yawScale, pitchScale);
+}
+
+void CVisuals::FreelookCommand(CTFPlayer* local, CUserCmd* command)
+{
+	SyncFreelook();
+	if (!local || !command || !m_tFreelook.held) return;
+	// Freeze raw player input before OriginalCmd is captured. Existing gameplay,
+	// aimbot and anti-aim processing still run normally after this point.
+	command->viewangles = { m_tFreelook.anchor.pitch, m_tFreelook.anchor.yaw, 0.f };
+	command->mousedx = command->mousedy = 0;
+	const auto engine = I::EngineClient->GetViewAngles();
+	if (engine.x != command->viewangles.x || engine.y != command->viewangles.y)
+		I::EngineClient->SetViewAngles(command->viewangles);
+}
+
+void CVisuals::ApplyFreelook(CViewSetup* view)
+{
+	// Never advance the camera from an auxiliary projectile-camera render.
+	if (F::CameraWindow.m_bDrawing || !view) return;
+	SyncFreelook();
+	if (m_iFreelookFrame != I::GlobalVars->framecount)
+	{
+		m_iFreelookFrame = I::GlobalVars->framecount;
+		m_tFreelook.Advance(I::GlobalVars->absoluteframetime, FreelookSettings());
+	}
+	if (!m_tFreelook.Active()) return;
+	const auto base = I::EngineClient->GetViewAngles();
+	const auto camera = m_tFreelook.View({ base.x, base.y });
+	view->angles = { camera.pitch, camera.yaw, 0.f };
+}
+
+bool CVisuals::CanOptifineZoom() const
+{
+	auto local = H::Entities.GetLocal();
+	return !G::Unload && local && local->IsAlive() && I::EngineClient->IsInGame()
+		&& !F::Spectate.HasTarget() && !SDK::CleanScreenshot() && !F::Menu.m_bIsOpen
+		&& !I::EngineVGui->IsGameUIVisible() && !I::MatSystemSurface->IsCursorVisible()
+		&& SDK::IsGameWindowInFocus();
+}
+
+void CVisuals::ApplyOptifineZoom(CTFPlayer* pLocal, CViewSetup* pView)
+{
+	// Auxiliary projectile-camera renders must not advance or reset the main view.
+	if (F::CameraWindow.m_bDrawing) return;
+	if (!pLocal || !pView || !CanOptifineZoom() || !std::isfinite(pView->fov) || pView->fov <= 0.f || pView->fov >= 179.f)
+	{
+		m_tOptifineZoom.Reset(); m_iOptifineFrame = -1; m_flOptifineMouseScale = 1.f;
+		return;
+	}
+	namespace Z = Vars::Misc::OptifineZoom;
+	if (m_iOptifineFrame != I::GlobalVars->framecount)
+	{
+		m_iOptifineFrame = I::GlobalVars->framecount;
+		m_tOptifineZoom.Update(Z::Enabled.Value, true, Z::Smooth.Value, Z::Transition.Value, I::GlobalVars->absoluteframetime);
+	}
+	m_flOptifineMouseScale = m_tOptifineZoom.Scale(Z::Magnification.Value);
+	// Compose after ordinary FOV handling. Never write extra zoom into m_iFOV:
+	// doing that would feed it into the next frame and cause cumulative zoom.
+	pView->fov = m_tOptifineZoom.Fov(pView->fov, Z::Magnification.Value);
+	G::FOV = pView->fov;
+}
+
+float CVisuals::OptifineMouseScale() const
+{
+	return Vars::Misc::OptifineZoom::ScaleSensitivity.Value && CanOptifineZoom() ? m_flOptifineMouseScale : 1.f;
+}
+
 void CVisuals::ThirdPerson(CTFPlayer* pLocal, CViewSetup* pView)
 {
 	if (!pLocal->IsAlive() || F::Spectate.HasTarget())
@@ -979,6 +1080,7 @@ void CVisuals::PruneDrawStorages()
 
 void CVisuals::RestoreConVars()
 {
+	ResetFreelook();
 	if (m_bStoredDefaultFOV)
 	{
 		if (auto default_fov = H::ConVars.FindVar("default_fov"))
@@ -1083,8 +1185,11 @@ static inline void ApplyModulation(Color_t tColor, bool bSky = false)
 void CVisuals::Modulate()
 {
 	const bool bScreenshot = SDK::CleanScreenshot();
-	const bool bWorldModulation = Vars::Visuals::World::Modulations.Value & Vars::Visuals::World::ModulationsEnum::World && !bScreenshot;
-	const bool bSkyModulation = Vars::Visuals::World::Modulations.Value & Vars::Visuals::World::ModulationsEnum::Sky && !bScreenshot;
+    if(Vars::Visuals::World::DapperPhoto.Value)worldModulation.Restore();
+    DapperWorld::Update(bScreenshot);
+    DapperSky::Update(bScreenshot);
+	const bool bWorldModulation = Vars::Visuals::World::Modulations.Value & Vars::Visuals::World::ModulationsEnum::World && !bScreenshot && !DapperWorld::photo;
+	const bool bSkyModulation = Vars::Visuals::World::Modulations.Value & Vars::Visuals::World::ModulationsEnum::Sky && !bScreenshot && !DapperSky::enabled;
 
 	bool bSetChanged, bColorChanged, bSkyChanged, bConnection;
 	{
@@ -1124,6 +1229,8 @@ void CVisuals::Modulate()
 
 void CVisuals::RestoreWorldModulation()
 {
+    DapperSky::Restore();
+    DapperWorld::Restore();
 	worldModulation.Restore();
 	skyModulation.Restore();
 }

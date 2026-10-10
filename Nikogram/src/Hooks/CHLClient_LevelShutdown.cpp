@@ -30,6 +30,7 @@ MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 	F::AutoFlarePunch.Reset();
 	F::AnimInterp.Reset();
 	F::Visuals.ResetLocalAnimationQueue();
+	F::Visuals.ResetFreelook();
 	H::Entities.Clear(true);
 	F::MoveSim.Clear();
 	F::EnginePrediction.Unload();

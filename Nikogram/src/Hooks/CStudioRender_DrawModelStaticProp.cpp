@@ -1,4 +1,5 @@
 #include "../SDK/SDK.h"
+#include "../Features/Visuals/Dapper/PhotoRenderPolicy.h"
 
 MAKE_HOOK(CStudioRender_DrawModelStaticProp, U::Memory.GetVirtual(I::StudioRender, 30), void,
 	void* rcx, const DrawModelState_t& pState, const matrix3x4& modelToWorld, int flags)
@@ -6,7 +7,7 @@ MAKE_HOOK(CStudioRender_DrawModelStaticProp, U::Memory.GetVirtual(I::StudioRende
 	DEBUG_RETURN(CStudioRender_DrawModelStaticProp, rcx, pState, modelToWorld, flags);
 
 	bool bRestoreAlpha = false;
-	if (Vars::Visuals::World::NearPropFade.Value)
+	if (Vars::Visuals::World::NearPropFade.Value && !PhotoRenderPolicy::propDepth)
 	{
 		if (auto pLocal = H::Entities.GetLocal())
 		{

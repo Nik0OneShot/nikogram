@@ -75,7 +75,7 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 		F::CheatDetection.Run();
 		F::Spectate.NetUpdateEnd(pLocal);
 
-		F::Visuals.Modulate();
+		// Modulation is applied/restored at the scene boundary, including capture.
 		F::Visuals.DrawHitboxes(1);
 		break;
 	}

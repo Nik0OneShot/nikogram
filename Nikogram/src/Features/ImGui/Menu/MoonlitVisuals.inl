@@ -93,7 +93,7 @@ namespace MoonlitUI
             BeginDisabled(groups.size()>=32||CurrentBind!=DEFAULT_BIND);
             if(Button("Create starter group"))
             {
-                Group_t g;g.m_sName=std::string("Moonlit ")+ScopeNames[VisualScope];
+                Group_t g;g.m_sName=std::string("Nikogram ")+ScopeNames[VisualScope];
                 g.m_tColor=Color_t(192,163,243,255);g.m_bTagsOverrideColor=false;
                 g.m_iTargets=VisualScope==4?TargetsEnum::Buildings:VisualScope==5?TargetsEnum::ViewmodelWeapon:TargetsEnum::Players;
                 g.m_iConditions=VisualScope==3?ConditionsEnum::Local:(ConditionsEnum::RED|ConditionsEnum::BLU|(VisualScope==2?ConditionsEnum::Team:ConditionsEnum::Enemy));
@@ -252,7 +252,11 @@ void CMenu::MenuMoonlitVisuals()
             if(Card c{"Players & debris",true};c){Setting(V::Removals::Disguises);Setting(V::Removals::Taunts);Setting(V::Removals::Ragdolls);Setting(V::Removals::Gibs);Setting(V::Removals::MOTD);}
             if(Card c{"Interpolation removals",true};c){Help("Advanced: these also affect entity interpolation, not only appearance.");Setting(V::Removals::Interpolation);Setting(V::Removals::Lerp);Setting(V::Animations::Interpolation,"Checked means remove animation interpolation.");}
             TableNextColumn();
-            if(Card c{"World atmosphere"};c){SettingChoice(V::World::Modulations,"Enable the surfaces you want to tint. Darker colours also reduce brightness.");SettingColour(Vars::Colors::WorldModulation);SettingColour(Vars::Colors::SkyModulation);SettingColour(Vars::Colors::PropModulation);SettingString(V::World::SkyboxChanger);SettingString(V::World::WorldTexture);}
+            if(Card c{"World atmosphere"};c){SettingChoice(V::World::Modulations,"Enable the surfaces you want to tint. Darker colours also reduce brightness.");SettingColour(Vars::Colors::WorldModulation);SettingColour(Vars::Colors::SkyModulation);SettingColour(Vars::Colors::PropModulation);SettingString(V::World::SkyboxChanger);SettingString(V::World::WorldTexture);
+                SettingChoice(V::World::DapperSky,"Full-bright repeating photos on the six sky faces. Independent of world photos; takes priority over Skybox changer. 3D sky scenery stays native. Clean screenshots use the normal sky.");
+                if(FGet(V::World::DapperSky,true))SettingSlider(V::World::DapperSkyRepeat);
+                SettingChoice(V::World::DapperPhoto,"Full-bright repeating photos on opaque world surfaces, including ordinary proxy-backed walls. Water, sky and transparent/cutout surfaces are preserved.");
+                if(FGet(V::World::DapperPhoto,true)){Setting(V::World::DapperProps);SettingSlider(V::World::DapperRepeat);}}
             if(Card c{"Particles, fog & props",true};c){SettingColour(Vars::Colors::ParticleModulation);SettingColour(Vars::Colors::FogModulation);Setting(V::World::NearPropFade);Setting(V::World::NoPropFade);}
             if(Card c{"Weapon & player effects",true};c){SettingString(V::Effects::BulletTracer);SettingString(V::Effects::CritTracer);SettingString(V::Effects::MedigunBeam);SettingString(V::Effects::MedigunCharge);SettingString(V::Effects::ProjectileTrail);SettingChoice(V::Effects::SpellFootsteps);SettingColour(Vars::Colors::SpellFootstep);SettingChoice(V::Effects::RagdollEffects);Setting(V::Effects::DrawIconsThroughWalls);Setting(V::Effects::DrawDamageNumbersThroughWalls);}
         }

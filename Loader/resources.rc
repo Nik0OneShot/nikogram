@@ -7,8 +7,8 @@ ID_LOGO RCDATA "assets/nikogram.png"
 ID_NOTICES RCDATA "THIRD-PARTY-NOTICES.txt"
 1 RT_MANIFEST "loader.manifest"
 1 VERSIONINFO
-FILEVERSION 0,5,7,0
-PRODUCTVERSION 0,5,7,0
+FILEVERSION 0,6,16,0
+PRODUCTVERSION 0,6,16,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -16,10 +16,10 @@ BEGIN
  BEGIN
   BLOCK "040904B0"
   BEGIN
-   VALUE "FileDescription", "Nikogram offline loader"
+   VALUE "FileDescription", "Nikogram Freelook - locally tested, not live verified"
    VALUE "ProductName", "Nikogram"
-   VALUE "FileVersion", "0.5.7"
-   VALUE "ProductVersion", "0.5.7"
+   VALUE "FileVersion", "0.6.16"
+   VALUE "ProductVersion", "0.6.16"
   END
  END
  BLOCK "VarFileInfo"

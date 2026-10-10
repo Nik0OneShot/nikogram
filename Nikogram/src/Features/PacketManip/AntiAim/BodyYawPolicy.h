@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <initializer_list>
+#include "EdgeCoverPolicy.h"
 
 // Engine-independent predictor/planner. This is a model of native feet turning,
 // not a claim of server hitbox equivalence. It never writes animation state.
@@ -40,8 +41,8 @@ namespace BodyYawPolicy
     }
     struct Plan { float yaw=0.f,error=0.f;State end{}; };
     // Previous batch's predicted last-real body, not an interpolated render frame.
-    struct RealPose { float body=0.f,target=0.f;bool valid=false; };
-    inline Plan Choose(State initial,float target,float fake,bool moving,int remaining,float interval,RealPose previous={})
+    struct RealPose { float body=0.f,target=0.f;bool valid=false;float eye=std::numeric_limits<float>::quiet_NaN(); };
+    inline Plan Choose(State initial,float target,float fake,bool moving,int remaining,float interval,RealPose previous={},bool edge=false,float previousEye=std::numeric_limits<float>::quiet_NaN())
     {
         target=Normalize(target);fake=Normalize(fake);
         Plan best{target,std::numeric_limits<float>::infinity(),initial};
@@ -52,6 +53,8 @@ namespace BodyYawPolicy
         // completed body after the outgoing fake. Steering in earlier commands
         // may differ; the terminal real eye should face the requested direction.
         const float preferred=target;
+        const bool routeReference=std::isfinite(previousEye)||previous.valid;
+        const float routeFrom=std::isfinite(previousEye)?previousEye:previous.target;
         const auto consider=[&](State end,float first,float last)
         {
             const float realBodyError=Distance(end.feet,target);
@@ -69,7 +72,8 @@ namespace BodyYawPolicy
             // Align the true last-real body and eye, retaining the continuity
             // penalty that removed body alternation. The post-fake endpoint is
             // only a secondary preference; fake is still emitted unmodified.
-            const float tie=error*.1f+realBodyError*2.f+realBodyJump*2.f
+            const float routeError=edge?std::abs(EdgeCoverPolicy::Coordinate(end.feet,fake)-EdgeCoverPolicy::Coordinate(target,fake)):0.f;
+            const float tie=routeError*8.f+error*.1f+realBodyError*2.f+realBodyJump*2.f
                 +Distance(last,preferred)*4.f+Distance(first,preferred)*.001f;
             if(tie<bestTie)
                 best={Normalize(first),error,end},bestTie=tie;
@@ -93,7 +97,10 @@ namespace BodyYawPolicy
                 for(float yaw:{representative(state.goal,-44.9f,44.9f),
                     representative(state.goal,45.1f,179.9f),representative(state.goal,-179.9f,-45.1f)})
                 {
+                    if(edge&&(!EdgeCoverPolicy::Separated(yaw,fake)||
+                        (depth==remaining&&routeReference&&!EdgeCoverPolicy::ClearArc(routeFrom,yaw,fake))))continue;
                     State next=state;Step(next,yaw,false,interval);
+                    if(edge&&!EdgeCoverPolicy::ClearArc(state.feet,next.feet,fake))continue;
                     self(self,next,depth-1,depth==remaining?yaw:first,yaw);
                 }
             };
@@ -106,17 +113,42 @@ namespace BodyYawPolicy
                 State state=initial;
                 // Moving feet follow eye yaw directly. Earlier commands steer
                 // the body; the last real command always uses the requested eye.
-                for(int n=0;n<remaining;++n)Step(state,n+1==remaining?target:yaw,true,interval);
+                for(int n=0;n<remaining;++n)
+                {
+                    const float eye=n+1==remaining?target:yaw;
+                    if(edge&&(!EdgeCoverPolicy::Separated(eye,fake)||
+                        (!n&&routeReference&&!EdgeCoverPolicy::ClearArc(routeFrom,eye,fake))))return;
+                    const float before=state.feet;
+                    Step(state,eye,true,interval);
+                    if(edge&&!EdgeCoverPolicy::ClearArc(before,state.feet,fake))return;
+                }
                 consider(state,remaining==1?target:yaw,target);
             };
             // Cover both wrap branches, then refine locally. Candidate evaluation
             // is pure; the live prediction advances only on the selected command.
-            if(remaining==1){trial(target);return best;}
+            if(remaining==1){trial(target);if(!edge)return best;}
             for(int offset=-180;offset<180;offset+=2)trial(Normalize(target+float(offset)));
             float centre=best.yaw;
             for(int n=-20;n<=20;++n)trial(Normalize(centre+n*.1f));
             centre=best.yaw;
             for(int n=-10;n<=10;++n)trial(Normalize(centre+n*.01f));
+        }
+        if(edge&&!std::isfinite(bestTie))
+        {
+            // A terminal real command may not yet reach the destination without
+            // crossing the fake. Continue along a safe intermediate instead of
+            // falling back to the rejected direct command.
+            float bestRoute=std::numeric_limits<float>::infinity();
+            for(float yaw:{target,fake+90.f,fake-90.f,fake+135.f,fake-135.f,fake+179.9f,fake-179.9f})
+            {
+                yaw=Normalize(yaw);
+                if(!EdgeCoverPolicy::Separated(yaw,fake)||
+                    (routeReference&&!EdgeCoverPolicy::ClearArc(routeFrom,yaw,fake)))continue;
+                State next=initial;Step(next,yaw,moving,interval);
+                if(!EdgeCoverPolicy::ClearArc(initial.feet,next.feet,fake))continue;
+                const float error=std::abs(EdgeCoverPolicy::Coordinate(next.feet,fake)-EdgeCoverPolicy::Coordinate(target,fake));
+                if(error<bestRoute){bestRoute=error;best={yaw,error,next};}
+            }
         }
         return best;
     }

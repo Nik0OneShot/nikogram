@@ -282,6 +282,10 @@ NAMESPACE_BEGIN(Vars)
 				Friends = 1 << 0, Party = 1 << 1, Unprioritized = 1 << 2, Invulnerable = 1 << 3, Invisible = 1 << 4, Unsimulated = 1 << 5, DeadRinger = 1 << 6, Vaccinator = 1 << 7, Disguised = 1 << 8, Taunting = 1 << 9, Team = 1 << 10);
 			CVar(AimFOV, "Aim FOV", 180.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 180.f);
 			CVar(MaxTargets, "Max targets", 2, SLIDER_MIN, 1, 6);
+            CVar(TargetSwitchDelay, "Target switch delay", .15f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 1.f, .01f, "%.2f s");
+            CVar(DynamicTargetSwitch, "Dynamic target switch delay", false);
+            CVar(TargetSwitchMin, "Target switch minimum delay", .05f, SLIDER_CLAMP | SLIDER_PRECISION, .05f, .5f, .01f, "%.2f s");
+            CVar(TargetSwitchMax, "Target switch maximum delay", .15f, SLIDER_CLAMP | SLIDER_PRECISION, .05f, .5f, .01f, "%.2f s");
 			CVar(IgnoreInvisible, "Ignore invisible", 50.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
 			CVar(AssistStrength, "Assist strength", 25.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 1.f, "%g%%");
 			CVarEnum(SmoothFormula, "Smooth formula", 0, NONE, nullptr, VA_LIST("Default", "Damped"), Default, Damped);
@@ -545,9 +549,9 @@ NAMESPACE_BEGIN(Vars)
 			VA_LIST("None", "Up", "Down", "Jitter", "Reverse jitter"),
 			None, Up, Down, Jitter, ReverseJitter);
 		Enum(Yaw, Forward, Left, Right, Backwards, Edge, Jitter, Spin);
-		CVarValues(YawReal, "Real yaw", 0, NONE, nullptr,
+		CVarValues(YawReal, "Real yaw", 0, NONE, "Real Edge prioritizes nearby wall cover. Without usable cover it faces opposite the configured fake. Does not change the fake yaw selector.",
 			"Forward", "Left", "Right", "Backwards", "Edge", "Jitter", "Spin");
-		CVarValues(YawFake, "Fake yaw", 0, NONE, nullptr,
+		CVarValues(YawFake, "Fake yaw", 0, NONE, "Fake Edge prefers the exposed side and separation from the configured real. Does not change the real yaw selector.",
 			"Forward", "Left", "Right", "Backwards", "Edge", "Jitter", "Spin");
 		Enum(YawMode, View, Target);
 		CVarValues(RealYawBase, "Real base", 0, NONE, nullptr,
@@ -561,6 +565,8 @@ NAMESPACE_BEGIN(Vars)
 		CVar(SpinSpeed, "Spin speed", 15.f, SLIDER_PRECISION, -30.f, 30.f);
 		CVar(MinWalk, "Minwalk", true);
 		CVar(HidePitchOnShot, "Hide pitch on shot", false);
+        CVar(FirstPersonRing, "First person AA ring", false, VISUAL);
+        CVar(RingOffset, "AA ring below crosshair", 75.f, VISUAL | SLIDER_CLAMP, 35.f, 250.f, 5.f);
 
 		CVar(AntiAimLines, "Antiaim lines", false, NOSAVE);
 	NAMESPACE_END(AntiAim)
@@ -720,6 +726,11 @@ NAMESPACE_BEGIN(Vars)
 		NAMESPACE_END(Viewmodel)
 
 		NAMESPACE_BEGIN(World)
+            CVarValues(DapperSky, "Dapper Mann skybox", 0, VISUAL, nullptr, "Off", "Dapper Mann", "Money Mann", "Giga Mann");
+            CVar(DapperSkyRepeat, "Dapper Mann sky repeat", 2.f, VISUAL | SLIDER_CLAMP | SLIDER_PRECISION, .25f, 16.f, .25f);
+            CVarValues(DapperPhoto, "Dapper Mann world photo", 0, VISUAL, nullptr, "Off", "Dapper Mann", "Money Mann", "Giga Mann");
+            CVar(DapperProps, "Dapper Mann static props", false, VISUAL);
+            CVar(DapperRepeat, "Dapper Mann world repeat", 4.f, VISUAL | SLIDER_CLAMP | SLIDER_PRECISION, .25f, 16.f, .25f);
 			CVarEnum(Modulations, "Modulations", 0b00000, VISUAL | DROPDOWN_MULTI, nullptr,
 				VA_LIST("World", "Sky", "Prop", "Particle", "Fog"),
 				World = 1 << 0, Sky = 1 << 1, Prop = 1 << 2, Particle = 1 << 3, Fog = 1 << 4);
@@ -825,6 +836,21 @@ NAMESPACE_BEGIN(Vars)
 	NAMESPACE_END(Visuals)
 
 	NAMESPACE_BEGIN(Misc)
+		NAMESPACE_BEGIN(Freelook)
+			CVar(Enabled, "Freelook", false, VISUAL);
+			CVar(Limited, "Limit neck movement", false, VISUAL);
+			CVar(Horizontal, "Freelook horizontal limit", 90.f, VISUAL | SLIDER_CLAMP, 1.f, 180.f, 1.f, "%g deg");
+			CVar(Vertical, "Freelook vertical limit", 60.f, VISUAL | SLIDER_CLAMP, 1.f, 89.f, 1.f, "%g deg");
+			CVarEnum(Return, "Freelook return", 0, VISUAL, nullptr, VA_LIST("Instant", "Smooth"), Instant, Smooth);
+			CVar(ReturnTime, "Freelook return time", 0.2f, VISUAL | SLIDER_CLAMP | SLIDER_PRECISION, 0.05f, 1.f, 0.01f, "%gs");
+		NAMESPACE_END(Freelook)
+		NAMESPACE_BEGIN(OptifineZoom)
+			CVar(Enabled, "OptiFine Zoom", false, VISUAL);
+			CVar(Magnification, "Zoom amount", 4.f, VISUAL | SLIDER_CLAMP | SLIDER_PRECISION, 1.f, 10.f, 0.5f, "%gx");
+			CVar(Smooth, "Smooth zoom", true, VISUAL);
+			CVar(Transition, "Zoom transition time", 0.18f, VISUAL | SLIDER_CLAMP | SLIDER_PRECISION, 0.05f, 0.5f, 0.01f, "%gs");
+			CVar(ScaleSensitivity, "Scale zoom sensitivity", true, VISUAL);
+		NAMESPACE_END(OptifineZoom)
 		NAMESPACE_BEGIN(SkinChanger)
 			CVar(Enabled, "Enable skin changer", false, VISUAL);
 			CVar(Follow, "Follow equipped weapon", true, VISUAL);

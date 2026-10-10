@@ -2689,7 +2689,8 @@ int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeapo
 	m_tInfo = { pLocal, pWeapon, &tTarget };
 	m_tInfo.m_vLocalEye = pLocal->GetShootPos();
 	m_tInfo.m_vTargetEye = tTarget.m_pEntity->As<CTFPlayer>()->GetViewOffset();
-	m_tInfo.m_flLatency = F::Backtrack.GetReal() + TICKS_TO_TIME(F::Backtrack.GetAnticipatedChoke());
+	m_tInfo.m_flLatency = F::Backtrack.ProjectileLead(m_tMoveStorage.m_flSimTime,
+        m_tMoveStorage.m_pPlayer?m_tMoveStorage.m_pPlayer->m_flSimulationTime():0.f);
 	tTarget.m_vPos = tTarget.m_pEntity->m_vecOrigin();
 
 	Vec3 vVelocity = F::ProjSim.GetVelocity();
@@ -2738,7 +2739,7 @@ int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeapo
 		if (!m_tMoveStorage.m_bFailed)
 		{
 			F::MoveSim.RunTick(m_tMoveStorage);
-			tTarget.m_vPos = m_tMoveStorage.m_vPredictedOrigin;
+			tTarget.m_vPos = m_tMoveStorage.m_MoveData.m_vecAbsOrigin;
 		}
 		// A zero-tick solution consumed the point without ever running a collision trace.
 		if (!TargetPolicy::HasFlightTick(i))
@@ -3236,6 +3237,7 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
             // An aim-only alternative must not displace a fire-capable original.
             if (deferredTarget>=0 && !replay) continue;
             ProjectileDiagnostics::Stage("aim_only_no_fire",tTarget.m_pEntity->entindex());
+            if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)) break;
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 			DrawVisuals(iResult, tTarget, m_vPlayerPath, m_vProjectilePath, m_vBoxes);
 			Aim(pCmd, tTarget.m_vAngleTo);
@@ -3286,6 +3288,7 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
             m_vCooldownPreviewBoxes = m_vBoxes;
         }
 		AmmoEvidenceDiagnostics::Selected(pLocal, pWeapon, tTarget.m_pEntity, pCmd);
+        if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)) break;
 		if (Vars::Aimbot::General::AutoShoot.Value)
 		{
 			switch (nWeaponID)

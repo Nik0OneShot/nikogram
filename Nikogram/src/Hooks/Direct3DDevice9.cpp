@@ -3,6 +3,8 @@
 #include "../SDK/SDK.h"
 #include "../Features/ImGui/Render.h"
 #include "../Features/ImGui/Menu/Menu.h"
+#include "../Features/Visuals/RenderAudit.h"
+#include "../Features/ImGui/DeviceStatePolicy.h"
 #include <type_traits>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -13,10 +15,17 @@ MAKE_HOOK(Direct3DDevice9_Present, U::Memory.GetVirtual(I::DirectXDevice, 17), H
 	static_assert(std::is_same_v<FN,Direct3DContract::Present>,"Present hook must match the Windows SDK COM signature");
 	DEBUG_RETURN(Direct3DDevice9_Present, pDevice, pSource, pDestination, hDestinationWindow, pDirtyRegion);
 
-	if (!G::Unload)
-		F::Render.Render(pDevice);
-
-	return Direct3DContract::ForwardPresent(Hook.As<FN>(),pDevice,pSource,pDestination,hDestinationWindow,pDirtyRegion);
+    if(G::Unload)return Direct3DContract::ForwardPresent(Hook.As<FN>(),pDevice,pSource,pDestination,hDestinationWindow,pDirtyRegion);
+    RenderAudit::Sample("present.custom.before",pDevice);
+    F::Render.Render(pDevice);
+    RenderAudit::Sample("present.custom.after",pDevice);
+    DeviceStatePolicy::PresentState<IDirect3DDevice9,D3DRENDERSTATETYPE,DWORD> gammaWrite(pDevice,D3DRS_SRGBWRITEENABLE);
+    const auto result=Direct3DContract::ForwardPresent(Hook.As<FN>(),pDevice,pSource,pDestination,hDestinationWindow,pDirtyRegion);
+    RenderAudit::Sample("present.native.after",pDevice);
+    gammaWrite.Restore(result);
+    RenderAudit::Sample("present.restored.after",pDevice);
+    RenderAudit::Flush();
+    return result;
 }
 
 MAKE_HOOK(Direct3DDevice9_Reset, U::Memory.GetVirtual(I::DirectXDevice, 16), HRESULT,

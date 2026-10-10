@@ -7,21 +7,31 @@
 // the Present hook draws their shared texture, never ImGui from engine Paint.
 namespace MoonlitHud
 {
-    inline bool Enabled() { return MenuMode::Active == MenuMode::Moonlit; }
-    inline const Color_t Panel{33,27,48,245}, Raised{43,36,60,255}, Border{72,59,92,255};
-    inline const Color_t Ink{241,234,250,255}, Muted{187,175,202,255};
-    inline const Color_t Lavender{192,163,243,255}, Gold{242,204,127,255}, Green{168,221,193,255};
+    inline bool Enabled() { return MenuMode::Custom(MenuMode::Hud()); }
+    inline Color_t Panel{33,27,48,245}, Raised{43,36,60,255}, Border{72,59,92,255};
+    inline Color_t Ink{241,234,250,255}, Muted{187,175,202,255};
+    inline Color_t Lavender{192,163,243,255}, Gold{242,204,127,255}, Green{168,221,193,255};
+    inline void Configure()
+    {
+        Panel={33,27,48,245};Raised={43,36,60,255};Border={72,59,92,255};Ink={241,234,250,255};Muted={187,175,202,255};
+        Lavender={192,163,243,255};Gold={242,204,127,255};Green={168,221,193,255};
+        if(!MenuMode::Dapper(MenuMode::Hud()))return;
+        const auto& palette=DapperStyle::Get(MenuMode::Hud()).colours;
+        const auto colour=[&](int role){const auto& c=palette[role];return Color_t{static_cast<unsigned char>(c[0]*255),static_cast<unsigned char>(c[1]*255),static_cast<unsigned char>(c[2]*255),255};};
+        Panel=colour(MenuPalette::Background);Raised=colour(MenuPalette::Panel);Border=colour(MenuPalette::Border);
+        Ink=colour(MenuPalette::Text);Muted=colour(MenuPalette::Muted);Lavender=colour(MenuPalette::Accent);Gold=colour(MenuPalette::Heading);Green=Lavender;
+    }
     inline int S(float value) { return std::max(1, int(H::Draw.Scale(value, Scale_Round))); }
-    bool Badge(int x, int y, int size);
+    bool Badge(int x, int y, int size, bool ready=true, bool watched=false);
     void BeginBadges();
     void EndBadges();
     void DrawBadges();
     void InvalidateBadge();
     void ReleaseBadge();
-    inline int BadgeSpace() { return Workspace::PetEnabled ? S(24) : 0; }
-    inline const Font_t& Label() { return H::Fonts.GetFont(FONT_MOONLIT_LABEL); }
-    inline const Font_t& Detail() { return H::Fonts.GetFont(FONT_MOONLIT_DETAIL); }
-    inline const Font_t& Count() { return H::Fonts.GetFont(FONT_MOONLIT_COUNT); }
+    inline int BadgeSpace() { return (MenuMode::Dapper(MenuMode::Hud())||Workspace::PetEnabled) ? S(24) : 0; }
+    inline const Font_t& Label() { return H::Fonts.GetFont(!MenuMode::Dapper(MenuMode::Hud())?FONT_MOONLIT_LABEL:MenuMode::Hud()==MenuMode::DapperDesktop?FONT_DAPPER_LABEL:FONT_DAPPER_SERIF_LABEL); }
+    inline const Font_t& Detail() { return H::Fonts.GetFont(!MenuMode::Dapper(MenuMode::Hud())?FONT_MOONLIT_DETAIL:MenuMode::Hud()==MenuMode::DapperDesktop?FONT_DAPPER_DETAIL:FONT_DAPPER_SERIF_DETAIL); }
+    inline const Font_t& Count() { return H::Fonts.GetFont(!MenuMode::Dapper(MenuMode::Hud())?FONT_MOONLIT_COUNT:MenuMode::Hud()==MenuMode::DapperDesktop?FONT_DAPPER_COUNT:FONT_DAPPER_SERIF_COUNT); }
     inline int Measure(const std::string& text, const Font_t& font) { return int(std::ceil(H::Draw.GetTextSize(text.c_str(), font).x)); }
     inline std::string Fit(std::string text, const Font_t& font, int width)
     {
@@ -52,6 +62,15 @@ namespace MoonlitHud
     }
     inline void Frame(const Box& box)
     {
+        if(MenuMode::Dapper(MenuMode::Hud()))
+        {
+            H::Draw.FillRect(box.x,box.y,box.w,box.h,Panel);
+            H::Draw.LineRect(box.x,box.y,box.w,box.h,Border);
+            if(MenuMode::Hud()==MenuMode::BankOfDapper)H::Draw.FillRect(box.x,box.y,box.w,S(3),Lavender);
+            if(MenuMode::Hud()==MenuMode::DapperScrapbook)
+                H::Draw.FillRect(box.x+box.w/2-S(16),box.y,S(32),S(4),Border);
+            return;
+        }
         const int radius = std::min({S(12), box.w / 2, box.h / 2});
         H::Draw.FillRoundRect(box.x, box.y, box.w, box.h, radius, Panel);
         H::Draw.LineRoundRect(box.x, box.y, box.w, box.h, radius, Border);
@@ -74,6 +93,37 @@ namespace MoonlitHud
         const std::string& count, const std::string& unit, float ratio, Color_t accent,
         const Rows& rows)
     {
+        if(MenuMode::Dapper(MenuMode::Hud()))
+        {
+            const bool bank=MenuMode::Hud()==MenuMode::BankOfDapper;
+            const int pad=S(12),gap=S(8),photo=S(bank?26:42),gutter=bank?0:photo+gap;
+            std::string caption=title;
+            if(bank){if(title=="ticks")caption="Command balance";else if(title=="crit reserve")caption="Crit account";}
+            int width=std::max(S(252),Measure(caption,Label())+Measure(status,Detail())+pad*2+gap+photo);
+            width=std::max(width,Measure(count,Count())+Measure(unit,Detail())+pad*2+gap+gutter);
+            for(const auto& [a,b]:rows)width=std::max(width,Measure(a,Detail())+Measure(b,Detail())+pad*2+gap+gutter);
+            const int height=pad*2+Label().m_nTall+gap+Count().m_nTall+gap+S(5)+int(rows.size())*(gap+Detail().m_nTall)+(bank?gap+Detail().m_nTall:0);
+            const auto box=Bounds(cx,top,width,height);Frame(box);
+            H::Draw.StartClipping(box.x,box.y,box.w,box.h);
+            Badge(bank?box.x+box.w-pad-photo:box.x+pad,box.y+pad,photo,std::isfinite(ratio)&&ratio>=.999f);
+            const int x=box.x+pad+gutter,inner=std::max(0,box.w-pad*2-gutter);
+            const int statusWidth=bank?0:std::min(Measure(status,Detail()),inner/2);
+            Text(x,box.y+pad,caption,Ink,Label(),inner-statusWidth-gap-(bank?photo+gap:0));
+            if(!bank)Text(box.x+box.w-pad,box.y+pad,status,accent,Detail(),statusWidth,ALIGN_TOPRIGHT);
+            int y=box.y+pad+Label().m_nTall+gap;
+            const int unitWidth=std::min(Measure(unit,Detail()),inner/3);
+            Text(x,y,count,Ink,Count(),inner-unitWidth-gap);
+            Text(box.x+box.w-pad,y+Count().m_nTall-Detail().m_nTall,unit,Muted,Detail(),unitWidth,ALIGN_TOPRIGHT);
+            y+=Count().m_nTall+gap;Bar(x,y,std::max(1,inner),S(5),ratio,accent);y+=S(5)+gap;
+            for(const auto& [a,b]:rows)
+            {
+                const int valueWidth=std::min(Measure(b,Detail()),inner*3/5);
+                Text(x,y,a,Muted,Detail(),inner-valueWidth-gap);
+                Text(box.x+box.w-pad,y,b,Ink,Detail(),valueWidth,ALIGN_TOPRIGHT);y+=gap+Detail().m_nTall;
+            }
+            if(bank){H::Draw.Line(x,y-S(3),box.x+box.w-pad,y-S(3),Border);Text(x,y,status,accent,Detail(),inner);}
+            H::Draw.EndClipping();return {float(box.w),float(box.h)};
+        }
         const int pad = S(14), gap = S(10), bar = S(5);
         int width = std::max(S(232), Measure(title, Label()) + Measure(status, Detail()) + pad * 2 + gap + BadgeSpace());
         width = std::max(width, Measure(count, Count()) + Measure(unit, Detail()) + pad * 2 + gap);

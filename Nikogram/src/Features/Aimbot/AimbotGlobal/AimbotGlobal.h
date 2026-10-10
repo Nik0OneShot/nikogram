@@ -1,6 +1,7 @@
 #pragma once
 #include "../../../SDK/SDK.h"
 #include "../../Backtrack/Backtrack.h"
+#include "../TargetSwitchPolicy.h"
 
 enum BOUNDS_HITBOXES
 {
@@ -27,7 +28,16 @@ struct Target_t
 
 class CAimbotGlobal
 {
+    TargetSwitchPolicy::State m_switch[2];
+    bool m_switchSeen[2] = {};
+    unsigned m_switchWeapon = 0;
+    int m_switchStyle = -1;
+    int m_switchContext = -1;
+    float m_switchSettings[4] = {};
 public:
+    void BeginTargetSwitch(CTFPlayer* local, CTFWeaponBase* weapon, CUserCmd* cmd);
+    bool AllowTargetSwitch(CBaseEntity* target);
+    void EndTargetSwitch();
 	std::vector<Target_t> ManageTargets(std::vector<Target_t>(*GetTargets)(CTFPlayer* pLocal, CTFWeaponBase* pWeapon), CTFPlayer* pLocal, CTFWeaponBase* pWeapon,
 		int iMethod = Vars::Aimbot::General::TargetSelection.Value, int iMaxTargets = Vars::Aimbot::General::MaxTargets.Value);
 	void SortTargetsPre(std::vector<Target_t>& vTargets, int iMethod);

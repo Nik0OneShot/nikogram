@@ -1,6 +1,8 @@
 #pragma once
 #include "TextStyle.h"
 #include "MenuMode.h"
+#include "MenuPalette.h"
+#include "DapperStyle.h"
 #include "../../MenuStartup.h"
 #include <filesystem>
 #include <string>
@@ -17,6 +19,8 @@ namespace Workspace
     inline bool InterfaceColoursOverride = false;
     inline std::string PreferencesPath, LayoutPath;
     inline bool Ready = false;
+    // Captured before the config constructor creates directories/default.json.
+    inline bool ExistingInstall = false;
 	inline bool PetEnabled = true, PetRun = true, PetJump = true, PetClimb = true, PetDrag = true;
 	inline int PetSize = 128, PetRest = 60, PetSleep = 180;
     inline bool PetNiko=true,PetAlula=true,PetCalamus=true,PetWorldMachine=true,PetSocial=true;
@@ -38,7 +42,24 @@ namespace Workspace
             return int(GetPrivateProfileIntA("Workspace", key, fallback, PreferencesPath.c_str()));
         };
         CompactTaskbar = read("CompactTaskbar", 0) != 0;
-        MenuMode::Initialize(read("MenuStyle", 0), MenuStartup::Override);
+        const int preferred = MenuMode::InitialPreference(read("MenuStyle", -1), read("MenuStyleRevision", 0), ExistingInstall);
+        MenuMode::Initialize(preferred, MenuStartup::Override);
+        const int indicator=read("IndicatorStyle",-1);
+        MenuMode::Indicator=MenuMode::Valid(indicator)?indicator:-1;
+        for(int index=0;index<3;++index)
+        {
+            auto& p=DapperStyle::Themes[index];const auto prefix="Dapper"+std::to_string(index);
+            p.photo=read((prefix+"Photo").c_str(),index+1);p.opacity=read((prefix+"PhotoOpacity").c_str(),100);
+            p.reactive=read((prefix+"ReactivePhoto").c_str(),0)!=0;
+            for(int r=0;r<MenuPalette::Count;++r)for(int c=0;c<3;++c)
+                p.colours[r][c]=read((prefix+"Colour"+std::to_string(r)+"_"+std::to_string(c)).c_str(),DapperStyle::Defaults[index][r][c])/255.f;
+            DapperStyle::Normalize(p);
+        }
+        // One-time migration: old installs get Nullcore; later explicit choices survive.
+        WritePrivateProfileStringA("Workspace", "MenuStyle", std::to_string(preferred).c_str(), PreferencesPath.c_str());
+        WritePrivateProfileStringA("Workspace", "MenuStyleRevision", "2", PreferencesPath.c_str());
+        for(int role=0;role<MenuPalette::Count;++role) for(int channel=0;channel<3;++channel)
+            MenuPalette::Colours[role][channel]=std::clamp(read(("NikogramColour"+std::to_string(role)+"_"+std::to_string(channel)).c_str(),MenuPalette::Defaults[role][channel]),0,255)/255.f;
         MenuMode::Animations = read("MoonlitAnimations", 1) != 0;
         MenuMode::SmoothSliders = read("MoonlitSmoothSliders", 1) != 0;
         MenuMode::AnimationSpeed = std::clamp(read("MoonlitAnimationSpeed", 100), 50, 150) / 100.f;
@@ -94,6 +115,18 @@ namespace Workspace
         };
         write("CompactTaskbar", CompactTaskbar);
         write("MenuStyle", MenuMode::Saved); // Startup override is deliberately not persisted.
+        write("MenuStyleRevision", 2);
+        write("IndicatorStyle",MenuMode::Indicator);
+        for(int index=0;index<3;++index)
+        {
+            auto& p=DapperStyle::Themes[index];DapperStyle::Normalize(p);const auto prefix="Dapper"+std::to_string(index);
+            write((prefix+"Photo").c_str(),p.photo);write((prefix+"PhotoOpacity").c_str(),p.opacity);
+            write((prefix+"ReactivePhoto").c_str(),p.reactive);
+            for(int r=0;r<MenuPalette::Count;++r)for(int c=0;c<3;++c)
+                write((prefix+"Colour"+std::to_string(r)+"_"+std::to_string(c)).c_str(),int(p.colours[r][c]*255+.5f));
+        }
+        for(int role=0;role<MenuPalette::Count;++role) for(int channel=0;channel<3;++channel)
+            write(("NikogramColour"+std::to_string(role)+"_"+std::to_string(channel)).c_str(),int(MenuPalette::Colours[role][channel]*255+.5f));
         write("MoonlitAnimations", MenuMode::Animations);
         write("MoonlitSmoothSliders", MenuMode::SmoothSliders);
         write("MoonlitAnimationSpeed", int(MenuMode::AnimationSpeed * 100 + .5f));

@@ -17,6 +17,7 @@ public:
 	ImTextureID LauncherAvatar(bool privacy);
 	ImTextureID NikoLauncherIcon();
 	ImTextureID NikogramLogo();
+    ImTextureID DapperPhoto(int selection);
 	ImTextureID PetTexture(int frame, const unsigned int* pixels, unsigned int width, unsigned int height);
 	void ReleaseLauncherTextures();
 
@@ -25,6 +26,7 @@ private:
 	IDirect3DTexture9* m_pDefaultAvatar = nullptr;
 	IDirect3DTexture9* m_pNikoIcon = nullptr;
 	IDirect3DTexture9* m_pNikogramLogo = nullptr;
+    IDirect3DTexture9* m_pDapperPhotos[3] = {};
 	IDirect3DTexture9* m_pPetTextures[184] = {};
 	IDirect3DTexture9* m_pLocalAvatar = nullptr;
 	uint64_t m_uAvatarOwner = 0;
@@ -55,6 +57,8 @@ public:
 	ImFont* FontMono = nullptr;
 	ImFont* FontMoonlit = nullptr;
 	ImFont* FontMoonlitHeading = nullptr;
+    ImFont* FontDapper[3] = {};
+    ImFont* FontDapperHeading[3] = {};
 
 	ImFont* IconFont = nullptr;
 

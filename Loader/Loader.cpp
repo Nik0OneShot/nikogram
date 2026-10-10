@@ -123,8 +123,8 @@ std::wstring Hash(std::span<const unsigned char> bytes){
  for(auto byte:digest){result+=hex[byte>>4];result+=hex[byte&15];}return result;
 }
 bool VerifyPayloads(){
-    return Hash(Resource(ID_PAYLOAD))==L"D66CB4B49764FAF06A351F675BDADA095196124CD62D31AC01E04A2F99295450"
-        &&Hash(Resource(ID_SOURCE))==L"62E76ACB3BAA92920659563F3C9DE53F0FDC464F635775FD67601CF732DE53D3";
+    return Hash(Resource(ID_PAYLOAD))==L"FA7B6757C227D8255DDC54090BF9D9D6AA4763480778C0F24FBCC1D90E713C7C"
+        &&Hash(Resource(ID_SOURCE))==L"12BB086EFEC613B148176C562FFE900FC6F22D90F16A193701DF0990C389E5F2";
 }
 std::wstring Error(DWORD error){
  wchar_t* message=nullptr;FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,nullptr,error,0,reinterpret_cast<PWSTR>(&message),0,nullptr);
@@ -168,7 +168,7 @@ Result Inject(Target expected,bool confirmLegacyNativeUnload,int startupMenu){
   AttemptGuard attemptGuard(expected);
   if(!attemptGuard.held)return {false,L"Another loader operation is already in progress. No injection attempted."};
   if(!VerifyPayloads())return {false,L"Embedded payload verification failed. No injection attempted."};
-  if(startupMenu < -1 || startupMenu > 1)return {false,L"Invalid startup menu choice. Nothing was injected."};
+  if(startupMenu < -1 || startupMenu > 4)return {false,L"Invalid startup menu choice. Nothing was injected."};
   auto current=Detect();
   if(!current.ready||current.pid!=expected.pid||current.born!=expected.born)return {false,L"TF2 changed or is not ready. No injection attempted."};
   if(current.legacyAttempt&&!confirmLegacyNativeUnload)return {false,L"Confirm that the old loader used native inject and that Nikogram has fully unloaded before retrying."};

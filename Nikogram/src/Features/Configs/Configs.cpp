@@ -1,6 +1,7 @@
 #include "Configs.h"
 #include "BundledDefault.h"
 #include "ConfigColours.h"
+#include "../ImGui/Workspace.h"
 #include "../Aimbot/AimModes.h"
 #include "../ImGui/Menu/MoonlitBinding.h"
 #include "../Aimbot/SplashSearchPolicy.h"
@@ -225,6 +226,8 @@ template <> void CConfigs::LoadJson(const boost::property_tree::ptree& t, const 
 	{
 		LoadJson(*tChild, "Stencil", v.Stencil);
 		LoadJson(*tChild, "Blur", v.Blur);
+        v.Stencil=std::clamp(v.Stencil,0,10);
+        v.Blur=std::isfinite(v.Blur)?std::clamp(v.Blur,0.f,10.f):0.f;
 	}
 }
 
@@ -356,6 +359,7 @@ CConfigs::CConfigs()
 	m_sVisualsPath = m_sConfigPath + "Visuals\\";
 	m_sCorePath = m_sConfigPath + "Core\\";
 	m_sMaterialsPath = m_sConfigPath + "Materials\\";
+    Workspace::ExistingInstall = std::filesystem::exists(m_sConfigPath);
 
 	if (!std::filesystem::exists(m_sConfigPath))
 		std::filesystem::create_directory(m_sConfigPath);

@@ -1,9 +1,20 @@
 #pragma once
 #include <array>
 #include <unordered_map>
+#include <utility>
 
 namespace RenderState
 {
+    template<class Context> class ToneMappingScope
+    {
+        Context* context;
+        decltype(std::declval<Context*>()->GetToneMappingScaleLinear()) scale;
+    public:
+        explicit ToneMappingScope(Context* c) : context(c), scale(c->GetToneMappingScaleLinear()) {}
+        ~ToneMappingScope() { context->SetToneMappingScaleLinear(scale); }
+        ToneMappingScope(const ToneMappingScope&) = delete;
+        ToneMappingScope& operator=(const ToneMappingScope&) = delete;
+    };
     // Restoration must reach the engine even when an enclosing effect draw is
     // protecting its own override from native model callbacks.
     inline thread_local unsigned overrideWrites = 0;

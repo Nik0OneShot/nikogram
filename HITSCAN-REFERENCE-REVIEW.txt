@@ -1,0 +1,69 @@
+Nikogram hitscan review - local Ateris and Rijin reference snapshots
+
+Scope: Silent and Plain aim, selected-point validation, recoil, automatic fire,
+headshots, lag records, weapon timing and candidate ordering. These are local
+provided reference sources, not claims about the latest upstream versions.
+
+References inspected
+Rijin: RijiN-main/src/cheats/tf2_win64/features/raytrace_aimbot.cpp
+  get_best_hitbox_point / get_best_aim_point / run (approximately lines 290-440, 585-750).
+Ateris: ateris-internal/Framework/Features/Aimbot/Aimbot.cpp
+  target selection / FindPoint / HandleHeadshotStuff / HandleDelayShot / Hitscan
+  execution (including approximately lines 530-715).
+Nikogram: Features/Aimbot/AimbotHitscan/AimbotHitscan.cpp,
+  AimbotGlobal, Features/Backtrack and Features/Ticks.
+
+Findings
+1. Shot-time Silent angles: Rijin avoids ordinary Silent selection when the weapon
+   cannot fire; Ateris writes its shot angle inside its attacking check. Nikogram
+   already gates ordinary Silent writes to an actual attack or its explicit timing-
+   uncertain path, preserves burst shoot angles, and fixes movement. Locking is an
+   intentionally different continuous style. Do not collapse Locking into Silent.
+
+2. Plain versus Silent: Nikogram already distinguishes visible engine view updates
+   from command-only Silent updates. Plain currently writes visible angles on a
+   firing/timing-uncertain command. Changing Plain into continuous tracking would
+   change existing behavior, not fix a demonstrated accuracy bug. Retained.
+
+3. Recoil and angle bounds: Ateris subtracts punch and clamps final shot angles.
+   Nikogram already does both before using the solution, with held-shot and
+   region/assist paths handled separately. A blanket replacement would lose those paths.
+
+4. Selected-point FOV / visibility: Rijin checks candidate point FOV and visibility,
+   then falls back to multipoints. Nikogram already checks the solved angle against
+   its configured FOV and validates visibility/range/record hulls. Its visible-guidance
+   destination check is also retained. No reason to reintroduce an entity-centre-only gate.
+
+5. Headshot validation: Rijin nudges a centre point upward if the traced hitgroup
+   differs. Nikogram uses selected hitbox bounds, multipoints and explicit firing
+   checks. An unbounded world-Z nudge is not an equivalent improvement for rotated,
+   crouching or historical hitboxes. Version 0.6.0 instead adds bounded, record-
+   aware head confirmation: the recoil-adjusted ray must enter the selected
+   record's head before any of its other hitboxes, and a separate trace checks
+   world/other-player obstruction without the target's current pose masking it.
+   Overlap ties fail conservatively. No entity relocation or upward point nudge.
+
+6. Lag records: both references associate player shots with a chosen simulation
+   record/time. Nikogram already selects validated records, reports selected rewinds,
+   and uses its configured interpolation. Do not import their tick_count formulas
+   without matching Nikogram's rewind policy.
+
+7. Burst consistency: Rijin retains a target during shifted commands; Nikogram
+   already retains the shoot angle and evaluates compatible record geometry.
+   Target-switch delays must preserve weapon-cooldown history, which this update fixes.
+
+0.6.0 timing follow-up
+Player hitscan requires a validated network record rather than silently falling
+back to currently rendered SetupBones geometry when history is unavailable.
+Existing server rewind limits and channel-latency basis are retained. Projectiles
+use the movement simulation's actual tick origin, subtract already-simulated
+remote ticks, and bound receipt-clock lead by the existing total-channel budget.
+This does not reveal unseen server positions or predict future player inputs.
+The existing projectile redirection path was not blindly given the launch-time
+formula because it also advances an already-flying projectile.
+
+Result
+No wholesale upstream Silent/Plain code was ported. Selected-record head-hit
+confirmation is the additional Rijin-inspired improvement in 0.6.0. Synthetic
+geometry/timing tests and an x64 Release build are bounded evidence, not a live
+accuracy benchmark. High-ping projectile turns and trace cost need gameplay testing.

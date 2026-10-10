@@ -16,6 +16,7 @@
 #include "../Features/Aimbot/AutoHeal/AutoHeal.h"
 #include "../Features/Debug/Debug.h"
 #include "../Features/ImGui/MoonlitHud.h"
+#include "../Features/Visuals/RenderAudit.h"
 
 MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 	void* rcx, int iMode)
@@ -36,6 +37,7 @@ MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 		H::Draw.UpdateScreenSize();
 		H::Draw.UpdateW2SMatrix();
 
+        RenderAudit::Sample("hud.custom.before");
 		H::Draw.Start(true);
 		if (auto pLocal = H::Entities.GetLocal())
 		{
@@ -65,8 +67,11 @@ MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 		}
 		H::Draw.End();
 		MoonlitHud::EndBadges();
+        RenderAudit::Sample("hud.custom.after");
 	}
 
+    RenderAudit::Sample("hud.native.before");
 	CALL_ORIGINAL(rcx, iMode);
+    RenderAudit::Sample("hud.native.after");
 
 }
