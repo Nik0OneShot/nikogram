@@ -387,18 +387,5 @@ PRIVATE-LEARNING.md
 /build/
 /output/
 
-# Publish source and user documentation, not internal development reports.
-*.txt
-*.md
-!README.md
-!README.txt
-!LICENSE
-!LICENSE.*
-!COPYING
-!COPYING.*
-!NOTICE
-!NOTICE.*
-!THIRD-PARTY-NOTICES.txt
-!GPL-3.0.txt
-!lgpl-3.0.txt
-!CMakeLists.txt
+# Nikogram: keep the Debug feature source (the [Dd]ebug/ rule above would skip it)
+!/Nikogram/src/Features/Debug/

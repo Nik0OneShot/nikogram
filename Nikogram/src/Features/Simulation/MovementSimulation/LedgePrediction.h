@@ -4,6 +4,17 @@
 
 namespace LedgePrediction
 {
+    // A drop deeper than this is a ledge worth stopping at (about a crouch-jump:
+    // the player cannot simply step or hop back up). Fixed, not speed-scaled.
+    inline constexpr float DropDepth=72.f;
+    inline constexpr float EdgeMargin=2.f;
+    // Which hypothesis a pass simulates: evidence picks the primary, the second
+    // pass (alternate=true) simulates the other one.
+    inline bool HoldHypothesis(bool evidence,bool alternate){return evidence!=alternate;}
+    // Only supported grounded motion can choose the stay-on-support hypothesis.
+    // Airborne movement is never held at ledge height or given ground friction.
+    inline bool Hold(bool grounded,bool currentSupport,bool aheadSupport,bool impulse)
+    {return grounded && currentSupport && !aheadSupport && !impulse;}
     inline bool Evidence(float speed, float previousSpeed, float directionDot, float age)
     {
         return std::isfinite(speed) && std::isfinite(previousSpeed) && std::isfinite(directionDot)

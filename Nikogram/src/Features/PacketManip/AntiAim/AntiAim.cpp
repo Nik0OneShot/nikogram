@@ -102,6 +102,9 @@ void CAntiAim::FakeShotAngles(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 		return;
 	}
 
+    // Reflection preserves the command ray but not the later punch-added shot.
+    // Omit this cosmetic transformation when that invariant is unavailable.
+    if(!Vars::Aimbot::General::NoSpread.Value&&!pLocal->m_vecPunchAngle().IsZero())return;
 	G::SilentAngles = true;
 	if (!Vars::Aimbot::General::NoSpread.Value)
 	{	// messes with nospread accuracy
@@ -182,11 +185,13 @@ float CAntiAim::EdgeYaw(CTFPlayer* local, CUserCmd* cmd, bool fake)
     const float previousReal=m_flEdgeReal;
     const float previousFake=m_flEdgeFake;
     m_iEdgeCommand=cmd->command_number;
-    const float base=GetBaseYaw(local,cmd,false),fakeBase=GetBaseYaw(local,cmd,true);
-    const bool realEdge=Vars::AntiAim::YawReal.Value==Vars::AntiAim::YawEnum::Edge;
-    const bool fakeEdge=Vars::AntiAim::YawFake.Value==Vars::AntiAim::YawEnum::Edge;
+    const bool legit=UsingLegitAA();
+    const float base=legit?G::OriginalCmd.viewangles.y:GetBaseYaw(local,cmd,false);
+    const float fakeBase=legit?base:GetBaseYaw(local,cmd,true);
+    const bool realEdge=legit||Vars::AntiAim::YawReal.Value==Vars::AntiAim::YawEnum::Edge;
+    const bool fakeEdge=!legit&&Vars::AntiAim::YawFake.Value==Vars::AntiAim::YawEnum::Edge;
     const float configuredReal=base+(realEdge?0.f:GetYawOffset(local,false));
-    const float configuredFake=fakeBase+(fakeEdge?0.f:GetYawOffset(local,true));
+    const float configuredFake=fakeBase+(legit||fakeEdge?0.f:GetYawOffset(local,true));
     const float barrier=fakeEdge&&previousValid?previousFake:configuredFake;
     // These remain simulation-space estimates, NOT cached render bones or a
     // guarantee of exact animated/server head positions.
@@ -429,8 +434,7 @@ float CAntiAim::GetYaw(CTFPlayer* pLocal, CUserCmd* pCmd, bool bFake)
 {
 	if (UsingLegitAA())
 	{
-		const auto preset = LegitPreset();
-		return BodyYawPolicy::Normalize(G::OriginalCmd.viewangles.y + (bFake ? preset.fake : preset.real));
+		return bFake ? BodyYawPolicy::Normalize(G::OriginalCmd.viewangles.y) : EdgeYaw(pLocal,pCmd,false);
 	}
     if((bFake?Vars::AntiAim::YawFake.Value:Vars::AntiAim::YawReal.Value)==Vars::AntiAim::YawEnum::Edge)
         return EdgeYaw(pLocal,pCmd,bFake);
@@ -576,7 +580,7 @@ void CAntiAim::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bo
 			if (!bSendPacket)
 				vSend.y = BodyYawPolicy::Choose(m_tBody, vRealAngles.y, vFakeAngles.y, bMoving,
 						std::max(1, m_iBatchTicks - I::ClientState->chokedcommands), TICK_INTERVAL, m_tPreviousReal,
-                        !UsingLegitAA()&&Vars::AntiAim::YawReal.Value==Vars::AntiAim::YawEnum::Edge,
+                        UsingLegitAA()||Vars::AntiAim::YawReal.Value==Vars::AntiAim::YawEnum::Edge,
                         m_tBatchReal.valid?m_tBatchReal.eye:m_tPreviousReal.eye).yaw;
 			BodyYawPolicy::Step(m_tBody, vSend.y, bMoving, TICK_INTERVAL);
 			if (!bSendPacket)
@@ -659,7 +663,7 @@ void CAntiAim::ResetPacketState()
 void CAntiAim::Draw(CTFPlayer* pLocal)
 {
     if(!pLocal->IsAlive()||pLocal->IsAGhost()||!AntiAimOn())return;
-    if(!I::Input->CAM_IsThirdPerson()&&Vars::AntiAim::FirstPersonRing.Value&&G::AntiAim)
+    if(!I::Input->CAM_IsThirdPerson()&&(Vars::AntiAim::FirstPersonRing.Value||UsingLegitAA())&&G::AntiAim)
     {
         static float real=0,fake=0,last=0;static bool valid=false;
         const float now=I::GlobalVars->realtime,view=I::EngineClient->GetViewAngles().y;

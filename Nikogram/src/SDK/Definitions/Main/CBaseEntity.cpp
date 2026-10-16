@@ -4,7 +4,9 @@
 
 int CBaseEntity::GetIntermediateDataSize()
 {
-	return std::max(GetPredDescMap()->packed_size, 4);
+	auto* map = GetPredDescMap();
+	// Uncomputed packed offsets are not a four-byte valid snapshot.
+	return map && map->packed_offsets_computed && map->packed_size >= 4 && map->packed_size <= 65536 ? map->packed_size : 0;
 }
 
 Vec3 CBaseEntity::GetOrigin(float flCompression)

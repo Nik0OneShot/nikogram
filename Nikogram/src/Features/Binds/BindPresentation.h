@@ -37,9 +37,14 @@ namespace BindPresentation
             active=active&&Vars::ESP::MoonlitMaster.Value;
         else
         {
-            // A bind on a per-mode setting cannot advertise an inactive bank.
+            // Independent auxiliaries/timing can remain active with aim disabled.
             for(const auto& entry:AimModes::Entries())for(int mode=0;mode<2;++mode)
-                if(entry.mode[mode].get()==base)active=active&&nikogram&&AimModes::Active==mode;
+                if(entry.mode[mode].get()==base)
+                {
+                    const bool circle=entry.original==&Vars::Aimbot::General::FOVCircle;
+                    active=active&&nikogram&&(circle?Vars::AimModes::CircleEnabled.Value:AimModes::RuntimeBank(entry.original)==mode);
+                    if(entry.original==&Vars::Aimbot::Projectile::AutoDetonate)active=active&&AimModes::DetonateAllowed();
+                }
         }
         return {eligible&&active,true};
     }

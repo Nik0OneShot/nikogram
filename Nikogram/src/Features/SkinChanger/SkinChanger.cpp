@@ -1,3 +1,4 @@
+#include "../Backtrack/NamedPlayerTraceDiagnostics.h"
 #include "SkinChanger.h"
 #include "../../Core/Core.h"
 #include "Protocol.h"
@@ -2120,7 +2121,7 @@ namespace SkinChanger
     {
         static auto original=U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
         auto draw=[&](const DrawModelState_t& s,const ModelRenderInfo_t& i,matrix3x4* b)
-        {original->Call<void>(I::ModelRender,s,i,b);};
+        {NamedPlayerTraceDiagnostics::ObserveDraw(s,i,b);original->Call<void>(I::ModelRender,s,i,b);};
         const char* path=info.pModel?I::ModelInfoClient->GetModelName(info.pModel):nullptr;
         if(!V::Enabled.Value||G::Unload||SDK::CleanScreenshot()||!bones||!path
             ||(!std::string_view(path).starts_with("models/weapons/")&&!std::string_view(path).starts_with("models/workshop/weapons/")&&!std::string_view(path).starts_with("models/workshop_partner/weapons/")&&!std::string_view(path).starts_with("models/buildables/")))

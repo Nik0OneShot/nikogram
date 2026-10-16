@@ -1,3 +1,4 @@
+#include "../Features/Backtrack/NamedPlayerTraceDiagnostics.h"
 #include "../SDK/SDK.h"
 
 #include "../Features/Visuals/Chams/Chams.h"
@@ -42,12 +43,15 @@ MAKE_HOOK(IVModelRender_DrawModelExecute, U::Memory.GetVirtual(I::ModelRender, 1
 {
 	DEBUG_RETURN(IVModelRender_DrawModelExecute, rcx, pState, pInfo, pBoneToWorld);
 
+    auto diagnosticOriginal=[&](void* self,const DrawModelState_t& state,const ModelRenderInfo_t& info,matrix3x4* bones)
+    {if(!F::CameraWindow.m_bDrawing&&!G::Unload)NamedPlayerTraceDiagnostics::ObserveDraw(state,info,bones);CALL_ORIGINAL(self,state,info,bones);};
+
 	const bool gameUI=I::EngineVGui->IsGameUIVisible();
 	if (SkinRender::BypassMenuCosmetics(gameUI,Vars::Misc::SkinChanger::Enabled.Value) || SDK::CleanScreenshot()
 		|| F::CameraWindow.m_bDrawing || !F::Materials.m_bLoaded || G::Unload)
 	{
 		SkinChanger::ObserveDraw(pInfo, pBoneToWorld, "normal_render_bypassed_ui_screenshot_camera_materials_or_unload");
-		return CALL_ORIGINAL(rcx, pState, pInfo, pBoneToWorld);
+		return diagnosticOriginal(rcx, pState, pInfo, pBoneToWorld);
 	}
 
     std::array<matrix3x4,MAXSTUDIOBONES> corpseBones;
@@ -78,7 +82,7 @@ MAKE_HOOK(IVModelRender_DrawModelExecute, U::Memory.GetVirtual(I::ModelRender, 1
 		return F::Glow.RenderHandler(pState, pInfo, pBoneToWorld, s_bDrawingLocalViewmodel);
 	}
 
-	if (!gameUI && F::Groups.GroupsActive() && F::Chams.m_mEntities.contains(pInfo.entity_index))
+	if (!gameUI && F::Chams.ShouldSuppress(pInfo))
 	{
 		SkinChanger::ObserveDraw(pInfo, pBoneToWorld, "chams_entity_suppressed");
 		return;
@@ -106,7 +110,7 @@ MAKE_HOOK(IVModelRender_DrawModelExecute, U::Memory.GetVirtual(I::ModelRender, 1
 	PhotoRenderPolicy::PropScope<IVModelRender,IMaterial,OverrideType_t> mapPhoto(I::ModelRender,
 		DapperWorld::PropMaterial(gameUI||s_bDrawingViewmodelEffect||!mapModel
 			||!PhotoRenderPolicy::MapProp(mapModel)||corpseMaterial!=nullptr),OVERRIDE_NORMAL);
-	if(mapPhoto.Active()){RenderAudit::WorldPropDraw(true);return CALL_ORIGINAL(rcx,pState,pInfo,pBoneToWorld);}
+	if(mapPhoto.Active()){RenderAudit::WorldPropDraw(true);return diagnosticOriginal(rcx,pState,pInfo,pBoneToWorld);}
 
 	if (Vars::Misc::SkinChanger::Enabled.Value && SkinRender::AllowCosmeticRender(F::Chams.m_bRendering,F::Glow.m_bRendering))
 	{
@@ -120,24 +124,24 @@ MAKE_HOOK(IVModelRender_DrawModelExecute, U::Memory.GetVirtual(I::ModelRender, 1
 		{
 			const bool replaced=SkinChanger::Prepare(pState, pInfo, pBoneToWorld, skinState, skinInfo, skinBones, drawBones, s_bDrawingLocalViewmodel, false, s_bDrawingViewmodelEffect);
 			SkinChanger::PaintDrawScope paintScope(replaced?skinInfo:pInfo,s_bDrawingLocalViewmodel&&!s_bDrawingViewmodelEffect);
-			if(replaced)CALL_ORIGINAL(rcx, skinState, skinInfo, drawBones);
-			else CALL_ORIGINAL(rcx, pState, pInfo, pBoneToWorld);
+			if(replaced)diagnosticOriginal(rcx, skinState, skinInfo, drawBones);
+			else diagnosticOriginal(rcx, pState, pInfo, pBoneToWorld);
 		}
 		// Botkillers are a separate wearable model; drawing only the unchanged
 		// stock weapon model cannot show their head/finish.
 		int accessoryCount=1;
 		for(int index=0;index<accessoryCount&&index<SkinModel::MaxCosmeticAttachments;++index)
 			if (SkinChanger::Prepare(pState, pInfo, pBoneToWorld, skinState, skinInfo, skinBones, drawBones, s_bDrawingLocalViewmodel, true, s_bDrawingViewmodelEffect,index,&accessoryCount))
-				CALL_ORIGINAL(rcx, skinState, skinInfo, drawBones);
+				diagnosticOriginal(rcx, skinState, skinInfo, drawBones);
         if(SkinChanger::PreparePipBoyDraw(pState,pInfo,pBoneToWorld,skinState,skinInfo,skinBones,s_bDrawingLocalViewmodel))
-            CALL_ORIGINAL(rcx,skinState,skinInfo,skinBones.data());
+            diagnosticOriginal(rcx,skinState,skinInfo,skinBones.data());
 		return;
 	}
-	CALL_ORIGINAL(rcx, pState, pInfo, pBoneToWorld);
+	diagnosticOriginal(rcx, pState, pInfo, pBoneToWorld);
     DrawModelState_t pipState{};ModelRenderInfo_t pipInfo{};std::array<matrix3x4,MAXSTUDIOBONES> pipBones;
     SkinRender::ModelCacheScope<IMDLCache> pipCache(static_cast<IMDLCache*>(I::MDLCache));
     if(SkinChanger::PreparePipBoyDraw(pState,pInfo,pBoneToWorld,pipState,pipInfo,pipBones,s_bDrawingLocalViewmodel))
-        CALL_ORIGINAL(rcx,pipState,pipInfo,pipBones.data());
+        diagnosticOriginal(rcx,pipState,pipInfo,pipBones.data());
 }
 
 MAKE_HOOK(CBaseAnimating_InternalDrawModel, S::CBaseAnimating_InternalDrawModel(), int,

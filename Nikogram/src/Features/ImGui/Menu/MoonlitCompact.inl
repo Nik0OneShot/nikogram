@@ -1,8 +1,16 @@
-// The eight-page Nikogram layout. This file does not replace Nullcore's pages.
+﻿// The eight-page Nikogram layout. This file does not replace Nullcore's pages.
 namespace MoonlitUI
 {
     enum class Editor { None, Aim, Visuals, Groups, Misc, Binds, Materials, Interface, Logs, Statistics, Players, Developer, AimDraw };
     inline Editor RequestedEditor=Editor::None, ActiveEditor=Editor::None;
+    inline int TimingProfile=AimModes::Rage;
+    inline void OpenHUDSettings(bool inEditor=false)
+    {
+        VisualPage=3;
+        if(inEditor)ActiveEditor=Editor::Visuals;
+        else RequestedEditor=Editor::Visuals;
+        CancelCapture();
+    }
     inline bool ResetCompactLayout=false;
     inline void More(const char* label,Editor editor,int tab=-1)
     {
@@ -153,6 +161,15 @@ void CMenu::MoonlitAim(bool legit)
             SettingChoice(A::General::TargetSelection);
             SettingChoice(A::Hitscan::Hitboxes);SettingChoice(A::Hitscan::MultipointHitboxes);
             Heading("Automatic firing");Setting(A::General::AutoShoot,nullptr,true);
+            if(legit)
+            {
+                Heading("Projectile guidance");
+        Setting(Vars::AimModes::ProjectileMarker,"Outlined ring: aim here for the selected target, including lead and gravity. Outer ticks indicate alignment, not a guaranteed hit. A broken outer rim indicates a less certain prediction. You still aim and fire.");
+        SettingSlider(Vars::AimModes::ProjectileRingSize);
+        SettingColour(Vars::AimModes::ProjectileRingColour);
+        Setting(Vars::AimModes::ProjectileImpact,"Gold diamond: predicted first collision of a shot along your CURRENT aim. Separate from the recommended aim ring. Hidden if no collision is found within the preview horizon; stops at the first bounce.");
+        Setting(Vars::AimModes::ProjectileTrajectory,"Optional outlined path along your current aim, using the current charge. Gold matches the current-shot impact marker. This is a preview, not a guarantee against future enemy movement.");
+            }
             Heading("Advanced targeting");SettingChoice(A::General::Target);SettingChoice(A::General::Ignore);
             SettingChoice(A::General::LeadAndRestrict);SettingSlider(A::General::MaxTargets);
             SettingSlider(Vars::Backtrack::Window,"Backtrack window for this aim mode. Legitbot defaults to zero.","Backtrack (ms)");
@@ -165,17 +182,21 @@ void CMenu::MoonlitAim(bool legit)
             {CompactPanel p{"Triggerbot",split};if(p)
             {
                 ActivationRow(Vars::Triggerbot::Enabled,Vars::Triggerbot::Activation,"Enabled");
-                SettingChoice(Vars::Triggerbot::Hitboxes,"Off disables Triggerbot. It operates independently of aim assistance.");
-                SettingSlider(Vars::Triggerbot::Delay);Setting(Vars::Triggerbot::DynamicDelay);
+                {AimModes::EditScope globalDiagnostics(AimModes::None);Setting(Vars::Triggerbot::Diagnostics,"Global Trigger-only logging, unaffected by Rage/Legit aim modes or their activation. Records bounded denial and native trace details; does not change aiming or firing. Saved with this config. The older projectile diagnostic option can also enable Trigger logs.");}
+                SettingChoice(Vars::Triggerbot::Hitboxes,"Off disables Triggerbot. Pistols, SMGs and miniguns fire while Triggerbot activation is active, even without a crosshair target, then finish 3-6 discharges after release. Other weapons require a valid target. Independent of aim assistance.");
+                SettingSlider(Vars::Triggerbot::Delay,"For other weapons, a valid hitbox starts the static/dynamic delay. Once armed, it fires along your current view when the delay ends, even if you leave or change targets. Automatic held fire and its release tail do not use this delay.");Setting(Vars::Triggerbot::DynamicDelay);
                 if(FGet(Vars::Triggerbot::DynamicDelay)){SettingSlider(Vars::Triggerbot::DelayMin);SettingSlider(Vars::Triggerbot::DelayMax);}
+                PendingModes.try_emplace(&Vars::Triggerbot::DisableDelay,BindEnum::KeyEnum::Hold);
+                Setting(Vars::Triggerbot::DisableDelay,"Bypass static and dynamic delays for target-based Triggerbot; requires a current valid hit. Changing this override clears its pending delayed-shot commitment. Automatic held fire and its release tail are already immediate. New binds use Hold. Saved delays and weapon checks remain unchanged.",true);
                 SettingChoice(Vars::Triggerbot::Backtrack);Setting(Vars::Triggerbot::BacktrackToCursor);
             }}
             {CompactPanel p{"Other"};if(p)
             {
                 SettingActivation(Vars::AntiAim::LegitEnabled,MoonlitBinding::OnLethal,"On threat");
                 TextDisabled("Automatic class / weapon rules");
-                Tip("Independent of the aimbot key. Overrides regular AA while enabled. No Minwalk or pitch changes. Fake Forward, Real Left by default; Sniper rifles use Real Right. Off for Medic Mediguns, Sniper SMGs, Spy revolvers/sappers, and unlisted Sniper/Spy weapons. Right-click the bind for On threat: any enemy Sniper with clear line of sight, or other estimated lethal danger.");
-                SettingChoice(A::Hitscan::Modifiers);Setting(A::General::FOVCircle);SettingColour(Vars::Colors::FOVCircle);SettingSlider(A::General::IgnoreInvisible);SettingSlider(A::General::TickTolerance);
+                Tip("Independent of the aimbot key. Overrides regular AA while enabled. Real Edge, Fake Forward, using the existing edge solver. First-person AA ring is automatically shown while AA is active. No Minwalk or pitch changes. Off for Medic Mediguns, Sniper SMGs, Spy revolvers/sappers, and unlisted Sniper/Spy weapons. Right-click the bind for On threat: any enemy Sniper with clear line of sight, or other estimated lethal danger.");
+                SettingChoice(A::Hitscan::Modifiers);Setting(A::General::FOVCircle,"Shows this mode's circle even while its aimbot is off.");SettingColour(Vars::Colors::FOVCircle);SettingSlider(A::General::IgnoreInvisible);SettingSlider(A::General::TickTolerance);
+                TextDisabled("Auto detonate is blocked while Legitbot is active.");
             }}
         }
         else
@@ -189,10 +210,10 @@ void CMenu::MoonlitAim(bool legit)
             }}
             {CompactPanel p{"Other"};if(p)
             {
+                TextDisabled("Independent of the Ragebot master");
                 Setting(A::General::NoSpread);Setting(Vars::CritHack::ForceCrits,nullptr,true);Setting(Vars::CritHack::AvoidRandomCrits);
-                Setting(Vars::Doubletap::Doubletap,nullptr,true);Setting(Vars::Doubletap::Warp,nullptr,true);Setting(Vars::Doubletap::RechargeTicks,nullptr,true);
-                SettingChoice(A::Projectile::AutoDetonate);SettingChoice(A::Projectile::AutoAirblast);
-                Setting(A::General::FOVCircle);SettingColour(Vars::Colors::FOVCircle);
+                SettingChoice(A::Projectile::AutoDetonate,"Uses this Rage setting with aim off; blocked while Legitbot is active.");SettingChoice(A::Projectile::AutoAirblast);
+                Setting(A::General::FOVCircle,"Shows this mode's circle even while its aimbot is off.");SettingColour(Vars::Colors::FOVCircle);
             }}
         }
     }
@@ -201,17 +222,22 @@ void CMenu::MoonlitAim(bool legit)
 void CMenu::MoonlitAntiAim()
 {
     using namespace ImGui;using namespace MoonlitUI;namespace A=Vars::AntiAim;
+    SetNextItemWidth(170*Vars::Menu::Scale.Value);
+    Combo("Tick / latency profile",&TimingProfile,"Ragebot\0Legitbot\0");
+    Tip("Edits this profile's doubletap, warp and latency settings. Tick controls use the active aim profile, or Rage when both aimbots are off. Their own toggles and binds still apply. Latency remains mode-specific. Does not activate an aimbot. Anti-aim, fakelag and resolver settings remain shared.");
+    AimModes::EditScope editing(TimingProfile);
     if(CompactColumns c{"Anti aim columns"};c)
     {
         {CompactPanel p{"Anti-aim angles"};if(p)
         {
             SettingActivation(A::Enabled,MoonlitBinding::OnLethal);SettingChoice(A::PitchReal);SettingChoice(A::PitchFake);
             SettingChoice(A::RealYawBase);SettingChoice(A::YawReal);SettingSlider(A::RealYawOffset);
-            if(FGet(A::YawReal,true)==A::YawEnum::Jitter)SettingSlider(A::RealYawValue);
+            if(FGet(A::YawReal)==A::YawEnum::Jitter)SettingSlider(A::RealYawValue);
             SettingChoice(A::FakeYawBase);SettingChoice(A::YawFake);SettingSlider(A::FakeYawOffset);
-            if(FGet(A::YawFake,true)==A::YawEnum::Jitter)SettingSlider(A::FakeYawValue);
+            if(FGet(A::YawFake)==A::YawEnum::Jitter)SettingSlider(A::FakeYawValue);
             SettingSlider(A::SpinSpeed);Setting(A::MinWalk);Setting(A::HidePitchOnShot);
-            Setting(A::FirstPersonRing);if(FGet(A::FirstPersonRing,true))SettingSlider(A::RingOffset);
+            Setting(A::FirstPersonRing);if(FGet(A::FirstPersonRing))SettingSlider(A::RingOffset);
+            if(Vars::Debug::Options.Value){Heading("Anti-aim debug");Setting(A::AntiAimLines);}
         }}
         c.Next();
         {CompactPanel p{"Fake lag",c.height*.48f};if(p)
@@ -222,12 +248,31 @@ void CMenu::MoonlitAntiAim()
             TextUnformatted("Random maximum");if(Numeric("maximum",ticks.Max,1,22,"%i",SLIDER_CLAMP))ticks.Min=std::min(ticks.Min,ticks.Max);
             EndDisabled();FSet(Vars::Fakelag::RandomTicks,ticks);
             Setting(Vars::Fakelag::UnchokeOnAttack);Setting(Vars::Fakelag::RetainBlastJump);
+            if(Vars::Debug::Options.Value)Setting(Vars::Fakelag::RetainSoldierOnly);
+            Heading("Latency - selected profile");
+            SettingSlider(Vars::Backtrack::Latency);SettingSlider(Vars::Backtrack::Interp);
+            SettingSlider(Vars::Backtrack::RealLag);
+            if(FGet(AimModes::Resolve(Vars::Backtrack::RealLag))>0)
+            {
+                TextDisabled("Current runtime status");
+                TextWrapped("%s",RealLag::Status().c_str());
+                TextWrapped("Log: %s",RealLag::DiagnosticPath().c_str());
+            }
         }}
         {CompactPanel p{"Other"};if(p)
         {
-            Setting(Vars::AutoPeek::Enabled,nullptr,true);Setting(Vars::Doubletap::AntiWarp);SettingSlider(Vars::Doubletap::TickLimit);
+		Setting(Vars::AutoPeek::Enabled,nullptr,true,"Auto Peek");
+		SettingSlider(Vars::Doubletap::TickLimit);
+            SettingSlider(Vars::Doubletap::WarpRate);SettingSlider(Vars::Doubletap::RechargeLimit);SettingSlider(Vars::Doubletap::PassiveRecharge);
+		Setting(Vars::Doubletap::Warp,nullptr,true);Setting(Vars::Doubletap::Doubletap,nullptr,true);Setting(Vars::Doubletap::RechargeTicks,nullptr,true);
+		Setting(Vars::Doubletap::AntiWarp);
+            Heading("Resolver");
             Setting(Vars::Resolver::Enabled);Setting(Vars::Resolver::AutoResolve);Setting(Vars::Resolver::AutoResolveCheatersOnly);
+            Setting(Vars::Resolver::AutoResolveHeadshotOnly);
             SettingSlider(Vars::Resolver::AutoResolveYawAmount);SettingSlider(Vars::Resolver::AutoResolvePitchAmount);
+            SettingSlider(Vars::Resolver::CycleYaw);SettingSlider(Vars::Resolver::CyclePitch);
+            Setting(Vars::Resolver::CycleView);Setting(Vars::Resolver::CycleMinwalk);
+            Heading("Speedhack");SettingSlider(Vars::Speedhack::Scale);
         }}
     }
 }
@@ -320,7 +365,7 @@ void CMenu::MoonlitMisc()
             Heading("OptiFine Zoom");
             PendingModes.try_emplace(&M::OptifineZoom::Enabled,BindEnum::KeyEnum::Hold);
             Setting(M::OptifineZoom::Enabled,"Assign a key; Hold is the default. Release restores the current normal or scoped view.",true);
-            SettingSlider(M::OptifineZoom::Magnification);
+            SettingSlider(M::OptifineZoom::Magnification,"Starting magnification. While zoom is active, wheel up/down adjusts by 0.5x without executing TF2 wheel bindings. The adjusted value lasts for this session; changing this setting resets it.");
             More("Zoom settings...",Editor::Misc,1);
             Heading("Utilities");
             if(Button("Console",{-1,0}))I::EngineClient->ClientCmd_Unrestricted("toggleconsole");
@@ -427,6 +472,11 @@ void CMenu::MoonlitConfigs()
             if(Checkbox("Visual-only configs",&visual)){selected.clear();name.clear();}
             const auto& path=visual?F::Configs.m_sVisualsPath:F::Configs.m_sConfigPath;
             const auto& current=visual?F::Configs.m_sCurrentVisuals:F::Configs.m_sCurrentConfig;
+            if(Button(visual?"Open visual-config folder":"Open config folder",{-1,0}))
+            {
+                const auto result=reinterpret_cast<INT_PTR>(ShellExecuteA(nullptr,"open",path.c_str(),nullptr,nullptr,SW_SHOWNORMAL));
+                status=result>32?"Folder opened.":"Could not open config folder.";
+            }
             TextDisabled("Current: %s",current.c_str());
             if(BeginListBox("##configs",{-1,std::max(110.f,c.height*.37f)}))
             {
@@ -442,6 +492,7 @@ void CMenu::MoonlitConfigs()
             BeginDisabled(selected.empty());
             if(Button("Load",{-1,0}))
             {CancelCapture();const bool ok=visual?F::Configs.LoadVisual(selected):F::Configs.LoadConfig(selected);CurrentBind=DEFAULT_BIND;status=ok?"Loaded.":"Load failed.";}
+            Tip("Hold Shift when loading to also load normally unsaved settings.");
             EndDisabled();BeginDisabled(!ConfigNameOK(name));
             if(Button("Save",{-1,0}))
             {
@@ -465,6 +516,7 @@ void CMenu::MoonlitConfigs()
                 }
                 SameLine();if(Button("Cancel"))CloseCurrentPopup();EndPopup();
             }
+            Help("Hold Shift when saving (including overwrite confirmation) to include normally unsaved settings.");
             TextWrapped("%s",status.c_str());
         }}
         c.Next();
@@ -479,6 +531,7 @@ void CMenu::MoonlitConfigs()
             }
             Separator();More("Edit binds...",Editor::Binds);More("Material editor...",Editor::Materials);
             if(Vars::Debug::Options.Value)More("Developer tools...",Editor::Developer);
+            Separator();TextWrapped("Built @ " __DATE__ ", " __TIME__ ", " __CONFIGURATION__);
         }}
     }
 }
@@ -511,7 +564,7 @@ void CMenu::MoonlitEditor()
         case Editor::Misc:Combo("Section",&MiscPage,MiscNames,5);MenuMoonlitMisc();break;
         case Editor::Binds:MenuSettings(1);break;
         case Editor::Materials:MenuSettings(2);break;
-        case Editor::Interface:DrawInterfacePreferences();break;
+        case Editor::Interface:if(DrawInterfacePreferences())OpenHUDSettings(true);break;
         case Editor::Logs:MenuLogs(2);break;
         case Editor::Statistics:Statistics::Draw();break;
         case Editor::Players:MenuLogs(0);break;

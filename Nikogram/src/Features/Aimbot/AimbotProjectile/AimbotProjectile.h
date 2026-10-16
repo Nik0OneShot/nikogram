@@ -3,8 +3,11 @@
 
 #include "../AimbotGlobal/AimbotGlobal.h"
 #include "../ProjectilePerformancePolicy.h"
+#include "../BowReleasePolicy.h"
+#include "../BowChargePlan.h"
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
 #include "../../Simulation/ProjectileSimulation/ProjectileSimulation.h"
+#include <mutex>
 
 Enum(PointFlags, None = 0, Regular = 1 << 0, Lob = 1 << 1)
 Enum(PointType, Direct, Geometry, Air)
@@ -34,8 +37,11 @@ struct Info_t
 	float m_flOffsetTime = 0.f;
 	int m_iSplashRestrict = 0;
 	int m_iArmTime = 0;
+    float m_flAirArmTime = 0.f; // Physical minimum, independent of ground-placement timing preference.
 	float m_flNormalOffset = 0.f;
 	bool m_bIgnoreTiming = false;
+    bool m_bLegitGuide = false;
+    int m_iSelectedSplash=0;
 };
 
 #pragma pack(1)
@@ -65,6 +71,7 @@ struct Offset_t
 {
 	Vec3 m_vOffset;
 	uint8_t m_iFlags;
+    bool m_bDeferred = false; // Additional feet sample never precedes original generation.
 };
 using Directs_t = std::unordered_map<uint8_t, Offset_t>;
 using Splashes_t = std::vector<uint8_t>;
@@ -75,6 +82,7 @@ struct History_t
 	int m_iSimtime;
     float m_flObservationTime=0.f;
     bool m_bObservationGround=false;
+    bool m_bNeural=false;
 #ifdef NIKOGRAM_PRIVATE_LEARNING
     float m_flDiagnosticSim=0, m_flDiagnosticNetworkSim=0;
     bool m_bDiagnosticGround=false;
@@ -106,7 +114,7 @@ private:
 	void CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& tOut, uint8_t iFlags = CalculateFlagsEnum::Accuracy, int iTolerance = -1);
 	bool TestAngle(const Vec3& vPoint, const Vec3& vAngles, int iSimTime, uint8_t iType, uint8_t iFlags, bool bSecondTest = false);
 
-	bool HandlePoint(const Vec3& vOrigin, int iSimTime, float flPitch, float flYaw, float flTime, const Vec3& vPoint, uint8_t iType = PointTypeEnum::Direct, uint8_t iFlags = PointFlagsEnum::Regular);
+	bool HandlePoint(const Vec3& vOrigin, int iSimTime, float flPitch, float flYaw, float flTime, const Vec3& vPoint, uint8_t iType = PointTypeEnum::Direct, uint8_t iFlags = PointFlagsEnum::Regular, bool learned = false);
 	bool HandleDirect(DirectHistory_t& vDirectHistory, size_t* diagnosticTests = nullptr);
 	bool HandleSplash(SplashHistory_t& vSplashHistory);
 #ifdef NIKOGRAM_PRIVATE_LEARNING
@@ -125,11 +133,23 @@ private:
 #endif
 
 	int CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate = true);
+    bool m_bNeuralSelected=false;
+    bool m_bNeuralForced=false;
+    std::vector<Vec3> m_vNeuralPath;
+    std::vector<int> m_vNeuralFlightTicks;
+    int CanHitSelected(Target_t&,CTFPlayer*,CTFWeaponBase*,bool);
+    int CanHitForced(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate);
+    int CanHitOrdinary(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate);
+    int CanHitOrdinaryBase(Target_t&,CTFPlayer*,CTFWeaponBase*,bool);
+    bool m_bImpactConsidered=false,m_bImpactPass=false;
+    float m_flImpactReserve=0;
+    std::optional<Vec3> m_ImpactFixedAngle;
     int CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate);
     bool CandidateAngleAllowed(const Vec3& angle,const Vec3& point,const Vec3& origin);
     bool m_bAdaptivePass=false, m_bAdaptiveRetained=false;
     bool m_bReuseCooldownPreview=false;
     std::optional<Vec3> m_vCooldownPreviewPoint;
+    AimPoint_t m_CooldownDisplayPoint;
     std::vector<DrawBox_t> m_vCooldownPreviewBoxes;
     float m_flAdaptiveTargetFov=180.f,m_flAdaptiveDistance=10000.f;
     int m_iAdaptiveEntity=-1,m_iAdaptiveTick=-1000;
@@ -151,6 +171,13 @@ private:
     std::vector<float> m_vSplashDistances;
 
 	bool m_bLastTickHeld = false;
+    BowReleasePolicy::Ownership m_BowOwnership;
+    BowChargePlan::Plan m_BowPlan;
+    bool m_bBowPlanValidated=false;
+    BowReleasePolicy::ReleaseCommit m_BowReleaseCommit;
+    bool m_bBowValidated = false;
+    BowReleasePolicy::Ownership m_NeuralChargeOwnership;
+    bool m_bNeuralChargeValidated = false;
 
 	float m_flTimeTo = std::numeric_limits<float>::max();
 	std::vector<Vec3> m_vPlayerPath = {};
@@ -164,6 +191,32 @@ private:
 	int m_iResult = false;
 	bool m_bUpdate = true;
 	bool m_bPreviewOnly = false;
+    bool m_bLegitGuide = false;
+    struct Guide
+    {
+        float realtime=-1,chargeBegin=0;
+        int spawn=-1,server=-1,targetSpawn=-1;
+        const model_t* targetModel=nullptr;
+        Vec3 focusOffset;
+        unsigned target=0, weapon=0, owner=0;
+        Vec3 marker, targetCue, impact, launchAngles;
+        float markerDistance=128;
+        bool valid=false, uncertain=false, aligned=false, impactValid=false;
+        std::vector<Vec3> path;
+    };
+    Guide m_guide;
+    Guide m_renderPath;
+    struct GuideDisplay
+    {
+        Vec3 direction;
+        unsigned target=0,owner=0,weapon=0;
+        int frame=-1,spawn=-1,server=-1;
+        float realtime=-1,chargeBegin=0;
+    } m_guideDisplay;
+    int m_guidePathFrame=-1;
+    Vec3 m_vGuideOffset;
+    void RefreshGuidePath(CTFPlayer* local,CTFWeaponBase* weapon);
+    std::mutex m_guideMutex;
     bool m_bSearchedThisCommand = false;
     bool m_bWorldBlocked=false;
     float m_flObservationFlight=0.f;
@@ -174,6 +227,10 @@ private:
     int m_iObservationEntity=-1;
 
 public:
+    void FinalizeBowCharge(CTFPlayer*,CTFWeaponBase*,CUserCmd*);
+	void MaintainBowCharge(CTFPlayer* local, CTFWeaponBase* weapon, CUserCmd* cmd);
+	void UpdateLegitGuide(CTFPlayer* local, CTFWeaponBase* weapon, const CUserCmd* cmd);
+	void DrawLegitGuide(CTFPlayer* local);
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
     bool ManageViewmodel(CTFPlayer* pLocal,CTFWeaponBase* pWeapon,CUserCmd* pCmd,bool noTargets=false);
 	float GetSplashRadius(CTFWeaponBase* pWeapon, CTFPlayer* pPlayer, float flScale = 1.f);

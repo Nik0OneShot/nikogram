@@ -1,3 +1,4 @@
+#include "../Aimbot/AimObserver.h"
 #include "Render.h"
 #include "Workspace.h"
 #include "Fonts/OneShotFont.h"
@@ -5,6 +6,8 @@
 #include "NikogramLogo.h"
 #include "MoonlitHud.h"
 #include "DeviceStatePolicy.h"
+#include "IndicatorOverlay.h"
+#include "../Visuals/PostProcessing/Renderer.h"
 #include "../Visuals/Dapper/PhotoAssetPolicy.h"
 #include <mutex>
 
@@ -21,7 +24,7 @@
 void CRender::Render(IDirect3DDevice9* pDevice)
 {
 	if (!pDevice || pDevice->TestCooperativeLevel() != D3D_OK) return;
-    if (SDK::CleanScreenshot()) { MoonlitHud::InvalidateBadge(); return; }
+    if (SDK::CleanScreenshot()) { MoonlitHud::InvalidateBadge(); IndicatorOverlay::Invalidate(); return; }
 	if (m_pLauncherDevice != pDevice)
 	{
 		ReleaseLauncherTextures();
@@ -47,12 +50,20 @@ void CRender::Render(IDirect3DDevice9* pDevice)
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
 
-	MoonlitHud::DrawBadges();
+	if(I::EngineClient->IsInGame()&&H::Entities.GetLocal())
+	{
+		const auto size=ImGui::GetIO().DisplaySize;
+		if(IndicatorOverlay::Draw(pDevice,int(size.x),int(size.y),IndicatorOverlay::Visibility(Vars::Menu::Indicators.Value,
+			MenuMode::Hud(),Vars::Menu::Scale.Value,F::Menu.m_bIsOpen,I::EngineVGui->IsGameUIVisible())))MoonlitHud::DrawBadges();
+	}
+	else {IndicatorOverlay::Invalidate();MoonlitHud::InvalidateBadge();}
+    AimObserver::DrawHud();
 	F::Menu.Render();
 
 	ImGui::EndFrame();
 	ImGui::Render();
-	ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    DeviceStatePolicy::Scene<IDirect3DDevice9> scene(pDevice);
+    if(scene.Ready())ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
 }
 
 void CRender::LoadColors()
@@ -66,13 +77,8 @@ void CRender::LoadColors()
 	Background1p5 = ColorByteToFloat(Vars::Menu::Theme::Background.Value.Lerp({ 127, 127, 127 }, 1.5f / 9, LerpEnum::NoAlpha));
 	Background1p5L = { Background1p5.Value.x * 1.1f, Background1p5.Value.y * 1.1f, Background1p5.Value.z * 1.1f, Background1p5.Value.w };
 	Background2 = ColorByteToFloat(Vars::Menu::Theme::Background.Value.Lerp({ 127, 127, 127 }, 2.f / 9, LerpEnum::NoAlpha));
-	Inactive = ColorByteToFloat(Vars::Menu::Theme::Inactive.Value);
-	Active = ColorByteToFloat(Vars::Menu::Theme::Active.Value);
 	Active = ImColor(Workspace::TextChannel(0), Workspace::TextChannel(1), Workspace::TextChannel(2), 1.f);
 	Inactive = ImColor(Workspace::InactiveTextChannel(0), Workspace::InactiveTextChannel(1), Workspace::InactiveTextChannel(2), 1.f);
-	// Legacy HUD callers read these effective colours; config defaults live separately.
-	Vars::Menu::Theme::Active.Value = Color_t(int(Workspace::TextChannel(0)*255),int(Workspace::TextChannel(1)*255),int(Workspace::TextChannel(2)*255),255);
-	Vars::Menu::Theme::Inactive.Value = Color_t(int(Workspace::InactiveTextChannel(0)*255),int(Workspace::InactiveTextChannel(1)*255),int(Workspace::InactiveTextChannel(2)*255),255);
 	Accent = ImColor(Workspace::Accent[0], Workspace::Accent[1], Workspace::Accent[2], 1.f);
 	Background0 = ImColor(Workspace::Background[0], Workspace::Background[1], Workspace::Background[2], 1.f);
 	Background0p5 = Background1 = Background1p5 = Background0;
@@ -222,6 +228,7 @@ void CRender::Initialize(IDirect3DDevice9* pDevice)
 
 void CRender::Unload()
 {
+	PostFX::renderer.Reset();
 	ReleaseLauncherTextures();
 	MoonlitHud::ReleaseBadge();
 	m_pLauncherDevice = nullptr;
@@ -288,6 +295,10 @@ namespace MoonlitHud
 		if (!Enabled() || (!MenuMode::Dapper(MenuMode::Hud()) && !Workspace::PetEnabled) || size <= 0) return false;
 		int left, top, right, bottom; bool clippingDisabled;
 		I::MatSystemSurface->GetClippingRect(left, top, right, bottom, clippingDisabled);
+		if(IndicatorOverlay::Active())
+		{
+			const auto c=IndicatorOverlay::clip;left=int(c.x);top=int(c.y);right=int(c.z);bottom=int(c.w);clippingDisabled=false;
+		}
 		if (clippingDisabled) { left = top = 0; right = H::Draw.m_nScreenW; bottom = H::Draw.m_nScreenH; }
 		if (x >= right || y >= bottom || x + size <= left || y + size <= top) return false;
 		std::lock_guard lock(badgeMutex);
@@ -337,6 +348,7 @@ ImTextureID CRender::NikoLauncherIcon()
 
 void CRender::ReleaseLauncherTextures()
 {
+	IndicatorOverlay::ReleaseTextures();
 	MoonlitHud::InvalidateBadge();
 	if (m_pNikogramLogo) { m_pNikogramLogo->Release(); m_pNikogramLogo = nullptr; }
     for(auto& texture:m_pDapperPhotos){if(texture)texture->Release();texture=nullptr;}

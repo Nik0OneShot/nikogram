@@ -42,6 +42,8 @@ private:
 	bool m_bStoredDefaultFOV = false, m_bStoredCamIdealLag = false;
 	float m_flOriginalDefaultFOV = 0.f, m_flOriginalCamIdealLag = 0.f;
 	OptifineZoom::State m_tOptifineZoom;
+	OptifineZoom::Wheel m_tOptifineWheel;
+	OptifineZoom::Level m_tOptifineLevel;
 	int m_iOptifineFrame = -1;
 	float m_flOptifineMouseScale = 1.f;
 	bool CanOptifineZoom() const;
@@ -72,11 +74,13 @@ public:
 	void ResetFreelook() { m_tFreelook.Reset(); m_iFreelookOwner = m_iFreelookFrame = -1; }
 	void ApplyOptifineZoom(CTFPlayer* pLocal, CViewSetup* pView);
 	float OptifineMouseScale() const;
+	bool OptifineWheel(int steps);
 	void ThirdPerson(CTFPlayer* pLocal, CViewSetup* pView);
 
 	void OverrideWorldTextures();
 	void Modulate();
 	void RestoreWorldModulation();
+	void ReleaseDeferredWorldMaterials(); // only once queued material calls have drained
 	void RestoreConVars();
 
 	void CreateMove(CTFPlayer* pLocal, CTFWeaponBase* pWeapon);

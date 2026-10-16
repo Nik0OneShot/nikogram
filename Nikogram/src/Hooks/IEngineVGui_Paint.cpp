@@ -17,6 +17,8 @@
 #include "../Features/Debug/Debug.h"
 #include "../Features/ImGui/MoonlitHud.h"
 #include "../Features/Visuals/RenderAudit.h"
+#include "../Features/ImGui/IndicatorOverlay.h"
+#include "../Features/ImGui/Menu/Menu.h"
 
 MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 	void* rcx, int iMode)
@@ -25,7 +27,7 @@ MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 
 	if (G::Unload)
 		return CALL_ORIGINAL(rcx, iMode);
-	if (SDK::CleanScreenshot()) MoonlitHud::InvalidateBadge();
+	if (SDK::CleanScreenshot()) { MoonlitHud::InvalidateBadge(); IndicatorOverlay::Invalidate(); }
 
 	if (iMode & PAINT_UIPANELS)
 	{
@@ -39,15 +41,19 @@ MAKE_HOOK(IEngineVGui_Paint, U::Memory.GetVirtual(I::EngineVGui, 14), void,
 
         RenderAudit::Sample("hud.custom.before");
 		H::Draw.Start(true);
+		IndicatorOverlay::Capture indicators(H::Draw.m_nScreenW,H::Draw.m_nScreenH,
+			IndicatorOverlay::Visibility(Vars::Menu::Indicators.Value,MenuMode::Hud(),Vars::Menu::Scale.Value,F::Menu.m_bIsOpen,I::EngineVGui->IsGameUIVisible()));
 		if (auto pLocal = H::Entities.GetLocal())
 		{
-			F::CameraWindow.Draw();
+			{ IndicatorOverlay::Pause native; F::CameraWindow.Draw(); }
 
 			F::AntiAim.Draw(pLocal);
+			{ IndicatorOverlay::Pause native;
 			F::Visuals.DrawPickupTimers();
 			F::ESP.Draw();
 			F::Visuals.DrawExtrapolationGuide();
 			F::OffscreenArrows.Draw(pLocal);
+			}
 			F::Aimbot.Draw(pLocal);
 
 #ifdef DEBUG_VACCINATOR

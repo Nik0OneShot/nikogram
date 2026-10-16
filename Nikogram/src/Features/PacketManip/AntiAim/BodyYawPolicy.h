@@ -21,7 +21,8 @@ namespace BodyYawPolicy
     }
     inline float Distance(float a,float b){return std::abs(Normalize(a-b));}
     inline bool Valid(State s){return std::isfinite(s.feet)&&std::isfinite(s.goal);}
-    inline int Budget(bool moving){return moving?2:5;}
+    // Keep storage, packet reservation and the body planner on the same two-command budget.
+    inline int Budget(bool /*moving*/){return 2;}
     inline float Yaw(float base,float offset,float mode){return Normalize(base+offset+mode);}
     inline void Step(State& s,float eye,bool moving,float interval)
     {

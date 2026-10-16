@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../../SDK/SDK.h"
 
 struct Sequence_t
@@ -26,6 +26,9 @@ struct CursorHit_t
 	int hitbox=-1;
 	int tested=0;
 	double distance=0;
+    // Diagnostic metadata only; no extra trace or change to hit selection.
+    const char* rejection="cursor_no_intersection";
+    int rejectedEntity=-1,rejectedHitbox=-1;
 };
 
 class CBacktrack
@@ -34,8 +37,15 @@ private:
 	void UpdateDatagram();
 	void MakeRecords();
 	void CleanRecords();
+	void CheckRecordIdentity(CBaseEntity* entity);
 
 	std::unordered_map<CBaseEntity*, std::deque<TickRecord>> m_mRecords = {};
+	struct RecordIdentity
+	{
+		int handle = -1, spawn = -1, model = -1;
+		bool operator==(const RecordIdentity&) const = default;
+	};
+	std::unordered_map<CBaseEntity*, RecordIdentity> m_mRecordIdentity;
 	std::unordered_map<int, bool> m_mDidShoot = {};
 
 	std::deque<Sequence_t> m_dSequences;
@@ -45,6 +55,8 @@ private:
 	int m_nLastInSequenceNr = 0;
 	int m_nOldTickBase = 0;
 	float m_flMaxUnlag = 1.f;
+	CNetChannel* m_pSequenceChannel = nullptr;
+	float m_flSequenceRealtime = 0.f;
 
 	float m_flFakeLatency = 0.f;
     float m_flFakeInterp = 0.015f;
@@ -59,7 +71,7 @@ public:
 	void CreateMove(CUserCmd* pCmd);
 	void ToCursor(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, const Vec3& shotAngles);
 	CursorHit_t FindCursorHit(CTFPlayer* local, CTFWeaponBase* weapon, const Vec3& angles,
-		int hitboxes, int historyMode, bool currentPose, bool respectFilters);
+		int hitboxes, int historyMode, bool currentPose, bool respectFilters, CUserCmd* diagnosticCommand = nullptr);
 	void SendLerp();
 	void Draw(CTFPlayer* pLocal);
 	void Reset();

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../SDK/Definitions/Types.h"
 #include "../Utils/Macros/Macros.h"
 #include <windows.h>
@@ -167,6 +167,17 @@ public:
 #define DROPDOWN_AUTOUPDATE (1 << 3)
 
 NAMESPACE_BEGIN(Vars)
+    NAMESPACE_BEGIN(NeuralMovement)
+        CVar(SplashObjective, "Learned splash objective", 1, NOBIND);
+        CVar(MinimumPathProbability, "Minimum path probability", 20.f, NOBIND, 0.f, 100.f, 1.f, "%.0f%%");
+        CVar(MaximumPathUncertainty, "Maximum path uncertainty", 96.f, NOBIND, 1.f, 512.f, 1.f, "%.0f units");
+        CVar(Collect, "Collect / train", false, NOBIND);
+        CVar(Use, "Use learned movement", false, NOBIND);
+        CVar(Force, "Experimental force neural (no MoveSim)", false, NOBIND);
+        CVar(AllSamples, "All training examples", false, NOBIND);
+        CVar(TrainingSamples, "Training examples", 8192, NOBIND, 1024, 1000000, 1024);
+        CVar(IncludeBots, "Include bots in training", false, NOBIND);
+    NAMESPACE_END(NeuralMovement)
 	NAMESPACE_BEGIN(Menu)
 		CVar(CheatTitle, "Cheat title", std::string("Nikogram"), VISUAL | DROPDOWN_AUTOUPDATE);
 		CVar(CheatTag, "Cheat tag", std::string("[Nikogram]"), VISUAL);
@@ -343,12 +354,12 @@ NAMESPACE_BEGIN(Vars)
 			CVar(PrioritizeUbered, "Prioritize ubered players", false);
 			CVar(PrioritizeOnFire, "Prioritize on fire", false);
 			CVar(AutoFlarePunch, "Auto flare punch", false);
-			CVarEnum(StrafePrediction, VA_LIST("Predict", "Strafe prediction"), 0b11, DROPDOWN_MULTI, "Off",
-				VA_LIST("Air strafing", "Ground strafing", "Counter strafe predict", "Ledge aware prediction"),
-				Air = 1 << 0, Ground = 1 << 1, CounterStrafe = 1 << 2, LedgeAware = 1 << 3);
+			CVarEnum(StrafePrediction, VA_LIST("Predict", "Strafe prediction"), 0b11111, DROPDOWN_MULTI, "Off",
+				VA_LIST("Air strafing", "Ground strafing", "Counter strafe predict", "Ledge aware prediction", "Snake prediction", "Knockback prediction"),
+				Air = 1 << 0, Ground = 1 << 1, CounterStrafe = 1 << 2, LedgeAware = 1 << 3, Snake = 1 << 4, Knockback = 1 << 5);
 			CVarEnum(SplashPrediction, VA_LIST("Splash", "Splash prediction"), 0, NONE, nullptr,
-				VA_LIST("Off", "Include", "Prefer", "Only"),
-				Off, Include, Prefer, Only);
+				VA_LIST("Off", "Include", "Prefer", "Only", "Learned / Auto"),
+				Off, Include, Prefer, Only, Learned);
 			CVarEnum(AutoDetonate, "Auto detonate", 0b00, DROPDOWN_MULTI, "Off",
 				VA_LIST("Stickies", "Flares", "##Divider", "Prevent self damage", "Ignore invisible"),
 				Stickies = 1 << 0, Flares = 1 << 1, PreventSelfDamage = 1 << 2, IgnoreInvisible = 1 << 3);
@@ -370,6 +381,8 @@ NAMESPACE_BEGIN(Vars)
 			CVar(SelfDamageDiagnostics, "Projectile / self damage diagnostics", true);
 			CVar(AmmoEvidenceDiagnostics, "Ammo conservation diagnostics (no gameplay changes)", false);
 			CVar(AmmoConservation, "Ammo conservation / smart switching (experimental)", false);
+			// Legacy saved-config key only. Live conservation now rechecks lethal
+			// evidence each command; neither old fallback selection controls it.
 			CVarEnum(AmmoConservationFallback, "When no alternative is available", 0, 0, nullptr,
 				VA_LIST("Briefly wait", "Shoot anyway"), BrieflyWait = 0, ShootAnyway = 1);
 			CVarEnum(AmmoEvidenceSources, "Diagnostic explosive sources", 3, DROPDOWN_MULTI, nullptr,
@@ -475,6 +488,7 @@ NAMESPACE_BEGIN(Vars)
 
 	NAMESPACE_BEGIN(Triggerbot)
 		CVar(Enabled, "Triggerbot enabled", true);
+        CVar(Diagnostics, "Trigger diagnostics", false, NOBIND);
 		CVar(Activation, "Triggerbot activation", true);
 		CVar(BacktrackToCursor, "Backtrack to Cursor", false);
 		CVarEnum(Hitboxes, "Trigger hitboxes", 0, DROPDOWN_MULTI, "Off",
@@ -482,6 +496,7 @@ NAMESPACE_BEGIN(Vars)
 			Head=1<<0, Body=1<<1, Pelvis=1<<2, Arms=1<<3, Legs=1<<4);
 		CVar(Delay, "Trigger delay", 0.f, SLIDER_PRECISION, 0.f, .5f, .05f, "%gs");
 		CVar(DynamicDelay, "Dynamic trigger delay", false);
+        CVar(DisableDelay, "Disable delay", false);
 		CVar(DelayMin, "Minimum trigger delay", .05f, SLIDER_CLAMP | SLIDER_PRECISION, .05f, .5f, .05f, "%gs");
 		CVar(DelayMax, "Maximum trigger delay", .15f, SLIDER_CLAMP | SLIDER_PRECISION, .05f, .5f, .05f, "%gs");
 		CVarEnum(Backtrack, "Trigger backtrack", 0, NONE, nullptr,
@@ -591,6 +606,55 @@ NAMESPACE_BEGIN(Vars)
 	NAMESPACE_END(ESP)
 
 	NAMESPACE_BEGIN(Visuals)
+		NAMESPACE_BEGIN(PostProcessing)
+			CVar(Enabled, "Post processing enabled", false, VISUAL);
+			CVar(Bloom, "Bloom", false, VISUAL);
+			CVar(BloomStrength, "Bloom strength", .25f, VISUAL | SLIDER_CLAMP, 0.f, 2.f, .05f);
+			CVar(BloomRadius, "Bloom spread", 2.f, VISUAL | SLIDER_CLAMP, .5f, 8.f, .5f);
+			CVar(BloomThreshold, "Bloom threshold", .7f, VISUAL | SLIDER_CLAMP, 0.f, .99f, .01f);
+			CVar(MotionBlur, "Motion blur", false, VISUAL);
+			CVar(TurnBlur, "Turning blur", .5f, VISUAL | SLIDER_CLAMP, 0.f, 2.f, .05f);
+			CVar(ForwardBlur, "Forward motion blur", .3f, VISUAL | SLIDER_CLAMP, 0.f, 2.f, .05f);
+			CVar(AntiAliasing, "Post-process anti aliasing (FXAA)", false, VISUAL);
+			CVar(AAStrength, "FXAA strength", 1.f, VISUAL | SLIDER_CLAMP, 0.f, 1.f, .05f);
+			CVar(DepthOfField, "Depth of field", false, VISUAL);
+			CVar(Autofocus, "Crosshair autofocus", false, VISUAL);
+			CVar(FocusDistance, "Focus distance", 500.f, VISUAL | SLIDER_CLAMP, 1.f, 10000.f, 25.f);
+			CVar(FocusRange, "Focus range", 300.f, VISUAL | SLIDER_CLAMP, 1.f, 3000.f, 25.f);
+			CVar(BlurRadius, "Defocus radius", 6.f, VISUAL | SLIDER_CLAMP, 0.f, 20.f, .5f);
+			CVar(ColourGrading, "Colour grading", false, VISUAL);
+			CVar(Saturation, "Saturation", 1.f, VISUAL | SLIDER_CLAMP, 0.f, 2.f, .05f);
+			CVar(Contrast, "Contrast", 1.f, VISUAL | SLIDER_CLAMP, .25f, 2.f, .05f);
+			CVar(Warmth, "Warmth", 0.f, VISUAL | SLIDER_CLAMP, -1.f, 1.f, .05f);
+			CVar(Tint, "Tint", 0.f, VISUAL | SLIDER_CLAMP, -1.f, 1.f, .05f);
+			CVar(Shadows, "Shadow lift", 0.f, VISUAL | SLIDER_CLAMP, -.5f, .5f, .02f);
+			CVar(Highlights, "Highlight lift", 0.f, VISUAL | SLIDER_CLAMP, -.5f, .5f, .02f);
+			CVar(GradeMix, "Colour grading intensity", 1.f, VISUAL | SLIDER_CLAMP, 0.f, 1.f, .05f);
+			CVarEnum(Preset, "Colour preset", 0, VISUAL, nullptr, VA_LIST("Custom", "Sepia", "Cool", "Warm"), Custom, Sepia, Cool, Warm);
+			CVar(PresetMix, "Preset intensity", .5f, VISUAL | SLIDER_CLAMP, 0.f, 1.f, .05f);
+			CVar(Sharpening, "Sharpening", false, VISUAL);
+			CVar(Sharpness, "Sharpening strength", .5f, VISUAL | SLIDER_CLAMP, 0.f, 2.f, .05f);
+			CVar(Exposure, "Exposure / highlight control", false, VISUAL);
+			CVar(ExposureEV, "Exposure compensation (EV)", 0.f, VISUAL | SLIDER_CLAMP, -3.f, 3.f, .1f);
+			CVar(HighlightCompression, "Highlight compression", .2f, VISUAL | SLIDER_CLAMP, 0.f, 1.f, .05f);
+			CVar(Vignette, "Vignette", false, VISUAL);
+			CVar(VignetteStrength, "Vignette strength", .3f, VISUAL | SLIDER_CLAMP, 0.f, 1.f, .05f);
+			CVar(Posterisation, "Posterisation", false, VISUAL);
+			CVar(PosterLevels, "Posterisation levels", 8.f, VISUAL | SLIDER_CLAMP, 2.f, 32.f, 1.f);
+			CVar(Halftone, "Halftone", false, VISUAL);
+			CVar(DotSize, "Halftone dot size", 5.f, VISUAL | SLIDER_CLAMP, 2.f, 16.f, 1.f);
+			CVar(DotStrength, "Halftone strength", .7f, VISUAL | SLIDER_CLAMP, 0.f, 1.f, .05f);
+			CVar(ComicOutlines, "Comic outlines", false, VISUAL);
+			CVar(InkStrength, "Comic ink strength", .8f, VISUAL | SLIDER_CLAMP, 0.f, 1.f, .05f);
+			CVar(FilmGrain, "Film grain", false, VISUAL);
+			CVar(GrainStrength, "Film grain strength", .04f, VISUAL | SLIDER_CLAMP, 0.f, .2f, .01f);
+			CVar(LensDirt, "Lens dirt", false, VISUAL);
+			CVar(DirtStrength, "Lens dirt strength", .4f, VISUAL | SLIDER_CLAMP, 0.f, 2.f, .05f);
+			CVar(ChromaticAberration, "Chromatic aberration", false, VISUAL);
+			CVar(ChromaticStrength, "Chromatic aberration strength", .2f, VISUAL | SLIDER_CLAMP, 0.f, 1.f, .05f);
+			CVar(Letterboxing, "Letterboxing", false, VISUAL);
+			CVar(BarSize, "Letterbox bar size", .1f, VISUAL | SLIDER_CLAMP, 0.f, .3f, .01f);
+		NAMESPACE_END(PostProcessing)
 		NAMESPACE_BEGIN(UI)
 			CVarEnum(StreamerMode, "Streamer mode", 0, VISUAL, nullptr,
 				VA_LIST("Off", "Local", "Friends", "Party", "All"),
@@ -782,6 +846,8 @@ NAMESPACE_BEGIN(Vars)
 			CVar(PlayerDrawDuration, VA_LIST("Draw duration", "Player path draw duration"), 5.f, VISUAL | SLIDER_MIN | SLIDER_PRECISION, 0.f, 10.f);
 			CVar(ProjectileDrawDuration, VA_LIST("Draw duration", "Projectile path draw duration"), 5.f, VISUAL | SLIDER_MIN | SLIDER_PRECISION, 0.f, 10.f);
 
+			CVar(FireReason, "Why didn't it fire?", false, VISUAL);
+			CVar(Comparison, "Prediction comparison", false, VISUAL);
 			CVarValues(RealPath, "Real path", 0, NOSAVE | DEBUGVAR, nullptr,
 				"Off", "Line", "Separators", "Spaced", "Arrows", "Boxes");
 		NAMESPACE_END(Prediction)
@@ -1078,6 +1144,11 @@ NAMESPACE_BEGIN(Vars)
 		CVar(DrawHitboxes, "Show hitboxes", false, NOSAVE);
 	NAMESPACE_END(Debug)
 	NAMESPACE_BEGIN(AimModes)
+		CVar(ProjectileMarker, "Projectile focus ring", true, VISUAL);
+		CVar(ProjectileImpact, "Current-shot impact marker", true, VISUAL);
+		CVar(ProjectileRingSize, "Focus ring size", 17.f, VISUAL | SLIDER_CLAMP | SLIDER_PRECISION, 8.f, 32.f, 1.f, "%gpx");
+		CVar(ProjectileRingColour, "Focus ring colour", Color_t(101,223,220,255), VISUAL);
+		CVar(ProjectileTrajectory, "Current-aim projectile path", false, VISUAL);
 		CVar(Schema, "Aim mode schema", 2, NOBIND);
 		CVar(RageEnabled, "Ragebot enabled", false);
 		CVar(LegitEnabled, "Legitbot enabled", false);

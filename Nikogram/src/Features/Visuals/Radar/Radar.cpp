@@ -9,6 +9,7 @@
 #include "../../Players/PlayerUtils.h"
 #include "../../ImGui/Workspace.h"
 #include "../../ImGui/MoonlitHud.h"
+#include "../../ImGui/IndicatorOverlay.h"
 
 namespace
 {
@@ -70,6 +71,7 @@ void CRadar::Draw(CTFPlayer* local)
     auto label=[&](int lx,int ly,Color_t color,const std::string& value,EAlign align=ALIGN_CENTER) {H::Draw.String(font,lx,ly,color,align,value.c_str());};
     if (body)
     {
+        IndicatorOverlay::Pause nativeMap; // Only attached indicators move above the game HUD.
         const auto background=themed && R::Background.Value==R::Background.Default?MoonlitHud::Panel:R::Background.Value;
         const auto bg=background.Alpha(byte(background.a*std::clamp(R::Opacity.Value,0,100)/100));
         if (bg.a) {if(square) H::Draw.FillRect(x-radius,y-radius,size,size,bg);else H::Draw.FillCircle(x,y,float(radius),96,bg);}

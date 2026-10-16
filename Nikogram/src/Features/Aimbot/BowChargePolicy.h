@@ -4,6 +4,11 @@
 
 namespace BowChargePolicy
 {
+    inline float RefireTime(float reloaded,int master,bool haste)
+    {
+        if (master) return reloaded*(0.6f-0.3f*std::clamp(float(master)-1.f,0.f,1.f));
+        return haste?reloaded*0.4f:reloaded;
+    }
     inline float Fraction(float now, float begin, float maxTime=1.f)
     {
         if (!std::isfinite(now) || !std::isfinite(begin) || begin <= 0.f)

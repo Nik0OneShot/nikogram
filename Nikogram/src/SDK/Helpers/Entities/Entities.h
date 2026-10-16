@@ -28,6 +28,7 @@ class CEntities
 {
 private:
 	bool ManageDormancy(CBaseEntity* pEntity);
+    bool ValidateVelocityHistory(uint16_t index);
 
 	CTFPlayer* m_pLocal = nullptr;
 	CTFWeaponBase* m_pLocalWeapon = nullptr;
@@ -40,6 +41,10 @@ private:
 	std::array<Vec3, MAX_PLAYERS> m_aOldAngles = {}, m_aEyeAngles = {};
 	std::array<bool, MAX_PLAYERS> m_aLagCompensation = {};
 	std::array<Vec3, MAX_PLAYERS> m_aAvgVelocities = {};
+    struct AverageVelocityStamp {
+        bool valid=false; unsigned long handle=0; int spawn=0,server=0; float simulation=0;
+    };
+    std::array<AverageVelocityStamp, MAX_PLAYERS> m_aAvgVelocityStamps = {}, m_aOriginStamps = {};
 	std::array<std::deque<VelFixRecord>, MAX_PLAYERS> m_aOrigins = {};
 	std::array<uint32_t, MAX_EDICTS> m_aModels = {};
 

@@ -2,6 +2,7 @@
 #include <array>
 #include <unordered_map>
 #include <utility>
+#include <unordered_set>
 
 namespace RenderState
 {
@@ -68,6 +69,7 @@ namespace RenderState
     template<class Material> class MaterialModulation
     {
         std::unordered_map<Material*, std::array<float, 3>> originals;
+        std::unordered_set<Material*> pendingRelease;
     public:
         bool Empty() const { return originals.empty(); }
         void Apply(Material* material, float r, float g, float b)
@@ -81,14 +83,29 @@ namespace RenderState
             const auto& color = it->second;
             material->ColorModulate(color[0] * r, color[1] * g, color[2] * b);
         }
+        // With the queued material system (multicore rendering), ColorModulate
+        // is recorded and replayed later. Dropping our reference in the same
+        // breath let a disconnect free the material before that replay, so
+        // CMaterialVar::SetVecValue ran on a dead material (friend's .21
+        // disconnect crash, materialsystem+0x23558). Keep the reference until
+        // ReleaseDeferred runs at a point where the queue has been drained.
         void Restore()
         {
             for(const auto& [material, color] : originals)
             {
                 material->ColorModulate(color[0], color[1], color[2]);
-                material->DecrementReferenceCount();
+                // One deferred reference per material is enough to keep it
+                // alive; extra ones (per-frame Apply/Restore cycles) release now.
+                if(!pendingRelease.insert(material).second)
+                    material->DecrementReferenceCount();
             }
             originals.clear();
+        }
+        void ReleaseDeferred()
+        {
+            for(auto* material : pendingRelease)
+                material->DecrementReferenceCount();
+            pendingRelease.clear();
         }
         MaterialModulation() = default;
         MaterialModulation(const MaterialModulation&) = delete;

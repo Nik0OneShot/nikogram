@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../../SDK/SDK.h"
 #include <filesystem>
 #include <fstream>
@@ -12,9 +12,11 @@ namespace SelfDamageDiagnostics
     inline int LastShotCommand=-1;
     inline int LastProjectileSampleCommand=-1;
     inline bool Enabled() { return Vars::Aimbot::Projectile::SelfDamageDiagnostics.Value; }
-    inline void Write(const char* event,const std::string& message,bool detail=false) noexcept
+    inline bool TriggerEnabled() { return Vars::Triggerbot::Diagnostics.Value || Enabled(); }
+    namespace Detail
     {
-        if(!Enabled()) return;
+    inline void WriteEnabled(const char* event,const std::string& message,bool detail) noexcept
+    {
         try
         {
             static std::mutex mutex; std::lock_guard lock(mutex);
@@ -66,6 +68,17 @@ namespace SelfDamageDiagnostics
             if(flush.Due(now,line.size()+1)) file.flush();
         }
         catch(...) {} // Diagnostics must not interfere with commands or crash handling.
+    }
+    } // namespace Detail: one shared sink, rotation and flush state.
+    inline void Write(const char* event,const std::string& message,bool detail=false) noexcept
+    {
+        if (!Enabled()) return;
+        Detail::WriteEnabled(event,message,detail);
+    }
+    inline void WriteTrigger(const char* event,const std::string& message,bool detail=false) noexcept
+    {
+        if (!TriggerEnabled()) return;
+        Detail::WriteEnabled(event,message,detail);
     }
     inline void Snapshot(const char* stage,CTFPlayer* local,CTFWeaponBase* weapon,CUserCmd* cmd)
     {

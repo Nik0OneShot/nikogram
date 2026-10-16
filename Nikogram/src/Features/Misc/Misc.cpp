@@ -1,4 +1,5 @@
 #include "Misc.h"
+#include "MovementControlPolicy.h"
 #include "../Blockbot/Blockbot.h"
 
 #include "../Backtrack/Backtrack.h"
@@ -32,6 +33,8 @@ void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
 	AutoPeek(pLocal, pCmd);
 	MovementLock(pLocal, pCmd);
 	BreakJump(pLocal, pCmd);
+	// Prediction and aiming must see the braking command that will be sent.
+	FastStop(pLocal, pCmd);
 }
 
 void CMisc::RunPost(CTFPlayer* pLocal, CUserCmd* pCmd)
@@ -144,7 +147,9 @@ void CMisc::AutoStrafe(CTFPlayer* pLocal, CUserCmd* pCmd)
 	case Vars::Misc::Movement::AutoStrafeEnum::Legit:
 	{
 		static auto cl_sidespeed = H::ConVars.FindVar("cl_sidespeed");
+		if (!cl_sidespeed) break;
 		const float flSideSpeed = cl_sidespeed->GetFloat();
+		if (!std::isfinite(flSideSpeed) || flSideSpeed <= 0.f) break;
 
 		if (pCmd->mousedx)
 		{
@@ -160,6 +165,16 @@ void CMisc::AutoStrafe(CTFPlayer* pLocal, CUserCmd* pCmd)
 			break;
 
 		float flForward = pCmd->forwardmove, flSide = pCmd->sidemove;
+		// A standing/falling player has no horizontal heading to steer around.
+		// Keep the user's initial direction until movement supplies one.
+		const auto& velocity = pLocal->m_vecVelocity();
+		if (!MovementControlPolicy::HasDirection(velocity.x, velocity.y)
+			|| !MovementControlPolicy::HasDirection(flForward, flSide)
+			|| !MovementControlPolicy::Finite(pCmd->viewangles.x, pCmd->viewangles.y)
+			|| !std::isfinite(pCmd->viewangles.z)
+			|| !MovementControlPolicy::Finite(Vars::Misc::Movement::AutoStrafeMaxDelta.Value,
+				Vars::Misc::Movement::AutoStrafeTurnScale.Value))
+			break;
 		Vec3 vForward, vRight; Math::AngleVectors(pCmd->viewangles, &vForward, &vRight, nullptr);
 		vForward.Normalize2D(), vRight.Normalize2D();
 
@@ -369,6 +384,49 @@ void CMisc::TauntKartControl(CTFPlayer* pLocal, CUserCmd* pCmd)
 	}
 }
 
+void CMisc::FastStop(CTFPlayer* pLocal, CUserCmd* pCmd)
+{
+	// RunPre already excludes death, swimming, ladders, taunts, kart and charge.
+	// Respect both command movement and raw button intent, including opposing
+	// keys whose net movement is zero. A requested jump must keep its momentum.
+	if (!Vars::Misc::Movement::FastStop.Value || !pLocal->m_hGroundEntity()
+		|| pCmd->forwardmove || pCmd->sidemove
+		|| G::OriginalCmd.forwardmove || G::OriginalCmd.sidemove
+		|| (pCmd->buttons | G::OriginalCmd.buttons) & (IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT | IN_JUMP)
+		|| pLocal->m_flWaterJumpTime() || pLocal->InCond(TF_COND_STUNNED)
+		|| pLocal->InCond(TF_COND_GRAPPLINGHOOK))
+		return;
+	const auto velocity = pLocal->m_vecVelocity();
+	const float speed = velocity.Length2D();
+	if (!MovementControlPolicy::HasDirection(velocity.x, velocity.y)
+		|| !std::isfinite(pCmd->viewangles.y)) return;
+	static auto sv_accelerate = H::ConVars.FindVar("sv_accelerate");
+	static auto sv_friction = H::ConVars.FindVar("sv_friction");
+	static auto sv_stopspeed = H::ConVars.FindVar("sv_stopspeed");
+	static auto cl_forwardspeed = H::ConVars.FindVar("cl_forwardspeed");
+	static auto cl_backspeed = H::ConVars.FindVar("cl_backspeed");
+	static auto cl_sidespeed = H::ConVars.FindVar("cl_sidespeed");
+	if (!sv_accelerate || !sv_friction || !sv_stopspeed || !cl_forwardspeed || !cl_backspeed || !cl_sidespeed)
+		return;
+	const float yaw = Math::Deg2Rad(pCmd->viewangles.y);
+	const float forward = -(cosf(yaw) * velocity.x + sinf(yaw) * velocity.y) / speed;
+	const float side = -(sinf(yaw) * velocity.x - cosf(yaw) * velocity.y) / speed;
+	const float forwardLimit = (forward < 0.f ? cl_backspeed : cl_forwardspeed)->GetFloat();
+	const float sideLimit = cl_sidespeed->GetFloat();
+	const float maxSpeed = pLocal->m_flMaxspeed();
+	if (!MovementControlPolicy::Finite(forwardLimit, sideLimit) || !std::isfinite(maxSpeed)
+		|| forwardLimit <= 0.f || sideLimit <= 0.f || maxSpeed <= 0.f) return;
+	float commandLimit = maxSpeed; // CheckParameters caps before duck cropping.
+	if (fabsf(forward) > 0.f) commandLimit = std::min(commandLimit, forwardLimit / fabsf(forward));
+	if (fabsf(side) > 0.f) commandLimit = std::min(commandLimit, sideLimit / fabsf(side));
+	const float crop = pLocal->IsDucking() ? 1.f / 3.f : 1.f;
+	const float wish = MovementControlPolicy::StopWishSpeed(speed, commandLimit * crop,
+		sv_accelerate->GetFloat(), sv_friction->GetFloat(), sv_stopspeed->GetFloat(),
+		pLocal->m_surfaceFriction(), TICK_INTERVAL, pLocal->InCond(TF_COND_LOST_FOOTING));
+	pCmd->forwardmove = forward * (wish / crop);
+	pCmd->sidemove = side * (wish / crop);
+}
+
 void CMisc::FastMovement(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
 	if (!pLocal->m_hGroundEntity() || pLocal->InCond(TF_COND_HALLOWEEN_KART))
@@ -380,19 +438,6 @@ void CMisc::FastMovement(CTFPlayer* pLocal, CUserCmd* pCmd)
 
 	switch (iRun)
 	{
-	case 0:
-	{
-		if (!Vars::Misc::Movement::FastStop.Value || !flSpeed)
-			return;
-
-		Vec3 vDirection = pLocal->m_vecVelocity().ToAngle();
-		vDirection.y = pCmd->viewangles.y - vDirection.y;
-		Vec3 vNegatedDirection = vDirection.FromAngle() * -flSpeed;
-		pCmd->forwardmove = vNegatedDirection.x;
-		pCmd->sidemove = vNegatedDirection.y;
-
-		break;
-	}
 	case 1:
 	{
 		if ((pLocal->IsDucking() ? !Vars::Misc::Movement::DuckSpeed.Value : !Vars::Misc::Movement::FastAccelerate.Value)

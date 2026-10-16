@@ -28,6 +28,16 @@ struct AnimFrame_t
 		float m_flCycle = 0.f;
 	};
 
+	struct FakePose_t
+	{
+		bool m_bValid = false;
+		uint64_t m_uGeneration = 0;
+		std::array<float, 24> m_aPoseParameters = {};
+		std::array<bool, 24> m_aOrientation = {};
+		Vec3 m_vRenderAngles = {};
+		Vec3 m_vEyeAngles = {};
+	} m_tFake;
+
 	int m_iTick = 0;
 	const void* m_pModel = nullptr; // sequences and pose parameters only make sense for the model they came from
 
@@ -76,8 +86,6 @@ private:
 	bool m_bBuildingFake = false;
 
 	matrix3x4 m_aFakeBones[MAXSTUDIOBONES] = {};
-	matrix3x4 m_aOriginalFakeBones[MAXSTUDIOBONES] = {};
-	bool m_bFakeApplied = false;
 
 	// Latest local real-command pose also serves the non-interpolated renderer.
 	CTFPlayer* m_pLocalPose = nullptr;
@@ -101,6 +109,7 @@ public:
 		FakeBuildScope(const FakeBuildScope&) = delete;
 		FakeBuildScope& operator=(const FakeBuildScope&) = delete;
 	};
+	bool IsBuildingFake() const { return m_bBuildingFake; }
 	void Forget(CTFPlayer* pPlayer);
 	bool ShouldRebuildBones(CBaseEntity* pEntity);
 	void BonesRebuilt(CBaseEntity* pEntity);
@@ -110,7 +119,7 @@ public:
 	// the untouched final simulation state. Elapsed batch ticks remain preserved.
 	bool CaptureFrame(CTFPlayer* pPlayer, AnimFrame_t& tFrame);
 	const AnimFrame_t* LocalRealFrame(CTFPlayer* pPlayer) const;
-	void Record(CTFPlayer* pPlayer, int iElapsedTicks = 1, bool bBatchEndpoint = false, const AnimFrame_t* pDisplayFrame = nullptr);
+	void Record(CTFPlayer* pPlayer, int iElapsedTicks = 1, bool bBatchEndpoint = false, const AnimFrame_t* pDisplayFrame = nullptr, const AnimFrame_t* pFakeFrame = nullptr);
 	void EndBurst(CTFPlayer* pPlayer);
 
 	// render side

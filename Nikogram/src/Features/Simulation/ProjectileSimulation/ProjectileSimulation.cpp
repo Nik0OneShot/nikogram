@@ -1,5 +1,7 @@
 #include "ProjectileSimulation.h"
 #include "../../Aimbot/BowChargePolicy.h"
+#include "../../Aimbot/BowCharge.h"
+#include "../../Aimbot/BowChargePlan.h"
 
 #include "../../EnginePrediction/EnginePrediction.h"
 #include "../../NoSpread/NoSpreadProjectile/NoSpreadProjectile.h"
@@ -167,7 +169,7 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 	}
 	case TF_WEAPON_COMPOUND_BOW:
 	{
-		if (!bInterp && G::CurrentUserCmd && pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() > 0.f
+		if (!bInterp && !(iFlags & ProjSimEnum::DiagnosticDeterministic) && G::CurrentUserCmd && pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() > 0.f
 			&& I::GlobalVars->curtime - pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() >= TF_ARROW_MAX_CHARGE_TIME)
 		{
 			float flAddX = float(SDK::RandomInt()) / VALVE_RAND_MAX * 12.f - 6.f;
@@ -182,8 +184,8 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 			SDK::GetProjectileFireSetup(pPlayer, vAngles, { 23.5f, 8.f, -3.f }, vPos, vAngle, bRedirect ? 2000.f : 0.f, 0.1f, bInterp);
 
 		auto uType = FNV1A::Hash32Const("models/weapons/w_models/w_arrow.mdl");
-        const float flCharge=BowChargePolicy::Fraction(I::GlobalVars->curtime,
-            pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),pWeapon->ApplyFireDelay(1.f));
+        const float flCharge=BowChargePlan::Fraction(BowChargePolicy::Fraction(I::GlobalVars->curtime,
+            pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),BowCharge::MaximumTime(pWeapon,pPlayer)));
 		float flSpeed = bMaxSpeed ? 2600.f : Math::RemapVal(flCharge, 0.f, 1.f, 1800.f, 2600.f);
 		flGravity = Math::RemapVal(flCharge, 0.f, 1.f, 0.5f, 0.1f) * flGravity;
 		tProjInfo = { pPlayer, pWeapon, uType, vPos, vAngle, { 1.f, 1.f, 1.f }, flSpeed, flGravity, 10.f };

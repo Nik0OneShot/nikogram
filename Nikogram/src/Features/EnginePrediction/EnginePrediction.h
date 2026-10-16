@@ -1,5 +1,6 @@
 #pragma once
 #include "../../SDK/SDK.h"
+#include "../Simulation/PredictionRestore.h"
 
 struct DatamapRestore_t
 {
@@ -21,6 +22,9 @@ private:
 
 	CMoveData m_tMoveData = {};
 	DatamapRestore_t m_tLocal = {};
+    PredictionRestore::Snapshot m_RestoreSnapshot;
+    CTFPlayer* m_pRestorePlayer=nullptr;
+    bool m_bRestorePending=false;
 	std::unordered_map<CTFPlayer*, RestoreInfo_t> m_mRestore = {};
 
 public:

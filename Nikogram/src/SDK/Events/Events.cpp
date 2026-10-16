@@ -1,4 +1,6 @@
 #include "Events.h"
+#include "../../Features/NeuralMovement/ClientOutcomeBinding.h"
+#include "../../Features/Backtrack/NativeBulletDiagnostics.h"
 #include "../../Features/Aimbot/SelfDamageDiagnostics.h"
 #include "../../Features/Aimbot/AutoFlarePunch.h"
 #include "../../Features/SkinChanger/SkinChanger.h"
@@ -53,6 +55,7 @@ void CEventListener::FireGameEvent(IGameEvent* pEvent)
 	SkinChanger::KillstreakEvent(pEvent);
 	SkinChanger::SessionEvent(pEvent);
 	PrivateLearning::Event(pEvent);
+    NeuralMovement::ClientOutcomes::Event(pEvent);
 
 	auto pLocal = H::Entities.GetLocal();
 	auto uHash = FNV1A::Hash32(pEvent->GetName());
@@ -70,6 +73,7 @@ void CEventListener::FireGameEvent(IGameEvent* pEvent)
 	{
 	case FNV1A::Hash32Const("player_hurt"):
 	{
+		NativeBulletDiagnostics::Hurt(pEvent);
 		if(SelfDamageDiagnostics::Enabled() && I::EngineClient->GetPlayerForUserID(pEvent->GetInt("userid"))==I::EngineClient->GetLocalPlayer())
 			SelfDamageDiagnostics::Write("local_hurt",std::format("damage={} health={} self={} weaponid={} crit={}",pEvent->GetInt("damageamount"),pEvent->GetInt("health"),pEvent->GetInt("attacker")==pEvent->GetInt("userid"),pEvent->GetInt("weaponid"),pEvent->GetBool("crit")));
 		F::Resolver.PlayerHurt(pEvent);

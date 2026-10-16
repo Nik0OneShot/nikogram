@@ -1,7 +1,12 @@
+#include "../Features/Aimbot/AimbotProjectile/AimbotProjectile.h"
+#include "../Features/Aimbot/AimObserver.h"
+#include "../SDK/Helpers/ProjectileDisplay.h"
+#include "../Features/Aimbot/AimbotHitscan/AimbotHitscan.h"
 #include "../SDK/SDK.h"
 #include "../Features/Aimbot/SelfDamageDiagnostics.h"
 #include "../Features/Aimbot/AmmoLifetimeDiagnostics.h"
 #include "../Features/Aimbot/AmmoConservationPolicy.h"
+#include "../Features/Aimbot/ProjectileCommandDiagnostics.h"
 
 #include "../Features/Aimbot/Aimbot.h"
 #include "../Features/Backtrack/Backtrack.h"
@@ -29,7 +34,8 @@ static no_inline void UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUse
 	G::OriginalCmd = *pCmd;
 	// Observe raw input on every command, including weapon switches and aim-off
 	// commands. A manually started charge must not become an automated one on release.
-	if (pLocal && pWeapon && pLocal->IsAlive() && pWeapon->GetWeaponID()==TF_WEAPON_PIPEBOMBLAUNCHER)
+	if (pLocal && pWeapon && pLocal->IsAlive() && (pWeapon->GetWeaponID()==TF_WEAPON_PIPEBOMBLAUNCHER
+		|| pWeapon->GetWeaponID()==TF_WEAPON_COMPOUND_BOW))
 		AmmoConservationPolicy::chargeOwnership.Observe(pLocal->As<IHandleEntity>()->GetRefEHandle().ToInt(),
 			pWeapon->As<IHandleEntity>()->GetRefEHandle().ToInt(),pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),
 			bool(pCmd->buttons&(IN_ATTACK|IN_ATTACK2|IN_USE)));
@@ -174,24 +180,43 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 		F::Backtrack.CreateMove(pCmd);
 		F::Misc.RunPre(pLocal, pCmd);
 	F::Ticks.Start(pLocal, pCmd);
+	ProjectileCommandDiagnostics::Command projectileCommand(pLocal,pWeapon,pCmd,sequence_number);
 		F::Aimbot.Run(pLocal, pWeapon, pCmd);
+	projectileCommand.Sample("aim",pCmd);
 	F::Ticks.End(pLocal, pCmd);
+	projectileCommand.Sample("ticks_end",pCmd);
 		F::Triggerbot.Run(pLocal, pWeapon, pCmd);
+	projectileCommand.Sample("trigger",pCmd);
 		F::CritHack.Run(pLocal, pWeapon, pCmd);
+	projectileCommand.Sample("crit",pCmd);
 	const Vec3 beforeSpreadCorrection=pCmd->viewangles;
 		F::NoSpread.Run(pLocal, pWeapon, pCmd);
+	projectileCommand.Sample("spread",pCmd);
 	const Vec3 spreadCorrection=pCmd->viewangles-beforeSpreadCorrection;
 		F::Misc.RunPost(pLocal, pCmd);
+	projectileCommand.Sample("misc",pCmd);
 		F::PacketManip.Run(pLocal, pWeapon, pCmd, pSendPacket);
+	projectileCommand.Sample("packet",pCmd);
 		F::Ticks.CreateMove(pLocal, pWeapon, pCmd, pSendPacket);
+	projectileCommand.Sample("ticks_move",pCmd);
+		const bool attackBeforeCompatibility = bool(pCmd->buttons & IN_ATTACK);
 		const bool compatibilityOwnsCommand = F::AntiCheatCompatibility.CreateMove(pCmd, pSendPacket);
+	projectileCommand.Sample("compatibility",pCmd);
+		const bool compatibilityAddedAttack = !attackBeforeCompatibility && bool(pCmd->buttons & IN_ATTACK);
 		F::AntiAim.Run(pLocal, pWeapon, pCmd, *pSendPacket, s_iVerified == 1, compatibilityOwnsCommand);
+	projectileCommand.Sample("aa",pCmd);
+		F::Triggerbot.Finalize(pLocal,pWeapon,pCmd,pCmd->viewangles-spreadCorrection,compatibilityAddedAttack,attackBeforeCompatibility);
+        F::AimbotHitscan.FinalizeEstimate(pLocal,pWeapon,pCmd);
+        F::Aimbot.FinalizeAutoFire(pLocal,pWeapon,pCmd,compatibilityAddedAttack,attackBeforeCompatibility);
+	projectileCommand.Sample("finalize_fire",pCmd);
 		// Spread correction counter-rotates the command, not the intended cursor
 		// direction. Keep later angle changes, but undo that rotation for matching.
 		F::Backtrack.ToCursor(pLocal, pWeapon, pCmd, pCmd->viewangles-spreadCorrection);
 		F::Visuals.CreateMove(pLocal, pWeapon);
 		F::Visuals.LocalAnimations(pLocal, pWeapon, pCmd, *pSendPacket);
+	projectileCommand.Sample("animations",pCmd);
 	F::EnginePrediction.End(pLocal, pCmd);
+	projectileCommand.Sample("prediction_end",pCmd);
 		F::Resolver.CreateMove();
 		F::NoSpreadHitscan.AskForPlayerPerf();
 	G::Choking = !*pSendPacket, G::LastUserCmd = pCmd;
@@ -200,5 +225,13 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 	if (s_iVerified != 1)
 		s_bSendPacket = bEngineSendPacket, G::Choking = false; // can't choke safely, hand the engine back its own value
 	F::AntiAim.SealCommand(sequence_number, pCmd, *pSendPacket);
+	projectileCommand.Sample("sealed",pCmd);
+	F::Triggerbot.CommitAutomatic(pLocal,pWeapon,pCmd,sequence_number);
 	I::Input->CommitUserCmd(sequence_number);
+    ProjectileDisplay::Commit(pLocal,pWeapon,pCmd,spreadCorrection);
+    F::AimbotProjectile.FinalizeBowCharge(pLocal,pWeapon,pCmd);
+    AimObserver::Seal(pLocal,pWeapon,pCmd);
+    AimObserver::FinishComparison(pWeapon);
+	projectileCommand.Sample("committed",pCmd);
+	if(projectileCommand.Active())projectileCommand.Finish(pCmd,*pSendPacket,F::AntiAim.AntiAimOn(),F::AntiCheatCompatibility.Active());
 }

@@ -1,3 +1,4 @@
+#include "../Features/Aimbot/AimObserver.h"
 #include "../SDK/SDK.h"
 #include "../Core/Core.h"
 
@@ -7,6 +8,8 @@
 #include "../Features/Statistics/Statistics.h"
 #include "../Features/SkinChanger/SkinChanger.h"
 #include "../Features/LearningAccess.h"
+#include "../Features/NeuralMovement/NeuralMovement.h"
+#include "../Features/NeuralMovement/ClientOutcomeBinding.h"
 #include "../Features/Binds/Binds.h"
 #include "../Features/CheatDetection/CheatDetection.h"
 #include "../Features/CritHack/CritHack.h"
@@ -38,7 +41,7 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 	}
 
 	// Restore before engine callbacks can consume animation data or apply network updates.
-	if (curStage == FRAME_START) { RealLag::Update(); Statistics::Tick(); PrivateLearning::Pulse(); SkinChanger::Tick(); }
+	if (curStage == FRAME_START) { NeuralMovement::Frame(); RealLag::Update(); Statistics::Tick(); PrivateLearning::Pulse(); SkinChanger::Tick(); }
 	if (curStage == FRAME_NET_UPDATE_START || curStage == FRAME_RENDER_START || curStage == FRAME_RENDER_END)
 		F::AnimInterp.Restore();
 	CALL_ORIGINAL(rcx, curStage);
@@ -55,7 +58,10 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 	}
 	case FRAME_NET_UPDATE_END:
 	{
+        AimObserver::Network();
+        NeuralMovement::ObserveNetwork(); // Before entity/resolver/movesim mutation.
 		H::Entities.Store();
+        NeuralMovement::ClientOutcomes::Network();
 		F::PlayerUtils.Store();
 
 		F::Backtrack.Store();

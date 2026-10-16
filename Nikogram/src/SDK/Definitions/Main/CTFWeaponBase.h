@@ -213,7 +213,7 @@ public:
 	VIRTUAL(AreRandomCritsEnabled, bool, 405, this);
 	VIRTUAL(GetWeaponSpread, float, 470, this);
 	VIRTUAL(GetSwingRange, int, 458, this);
-	VIRTUAL_ARGS(ApplyFireDelay, float, 410, (float flDelay), this, flDelay);
+	VIRTUAL_ARGS(ApplyFireDelay, float, 412, (float flDelay), this, flDelay); // 410 is CanDrop; 412 reads mult_postfiredelay (verified 2026-10-17 x64 client)
 	
 	SIGNATURE(IncrementAmmo, void, CTFWeaponBase, this);
 	SIGNATURE(CalcIsAttackCritical, bool, CTFWeaponBase, this);

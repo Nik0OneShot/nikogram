@@ -908,6 +908,7 @@
     <ClCompile Include="src\Features\Statistics\Statistics.cpp" />
     <ClCompile Include="src\DllMain.cpp" />
     <ClCompile Include="src\Features\Aimbot\Aimbot.cpp" />
+    <ClCompile Include="src\Features\Aimbot\AimObserver.cpp" />
     <ClCompile Include="src\Features\Aimbot\AimbotGlobal\AimbotGlobal.cpp" />
     <ClCompile Include="src\Features\Aimbot\AimbotHitscan\AimbotHitscan.cpp" />
     <ClCompile Include="src\Features\Aimbot\AimbotMelee\AimbotMelee.cpp" />
@@ -1010,6 +1011,7 @@
     <ClCompile Include="src\Hooks\CBaseViewModel_ShouldFlipViewModel.cpp" />
     <ClCompile Include="src\Hooks\Cbuf_ExecuteCommand.cpp" />
     <ClCompile Include="src\Hooks\CHLClient_CreateMove.cpp" />
+    <ClCompile Include="src\Hooks\CHLClient_IN_KeyEvent.cpp" />
     <ClCompile Include="src\Hooks\CClientModeShared_DoPostScreenSpaceEffects.cpp" />
     <ClCompile Include="src\Hooks\CClientModeShared_OverrideView.cpp" />
     <ClCompile Include="src\Hooks\CClientModeShared_ShouldDrawViewModel.cpp" />
@@ -1424,6 +1426,7 @@
     <ClInclude Include="src\Features\ImGui\Workspace.h" />
     <ClInclude Include="src\MenuStartup.h" />
     <ClInclude Include="src\Features\ImGui\MenuMode.h" />
+    <ClInclude Include="src\Features\ImGui\HudTextStyle.h" />
     <ClInclude Include="src\Features\ImGui\MoonlitHud.h" />
     <ClInclude Include="src\Features\ImGui\NikogramLogo.h" />
     <ClInclude Include="src\Features\ImGui\Menu\Moonlit.inl" />
@@ -1575,6 +1578,20 @@
   <ItemGroup>
     <Library Include="include\freetype\freetype.lib" />
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\NeuralCore\movement.cpp" />
+    <ClCompile Include="src\NeuralCore\zstd\zstd.c"><PrecompiledHeader>NotUsing</PrecompiledHeader><CompileAs>CompileAsC</CompileAs><WarningLevel>TurnOffAllWarnings</WarningLevel></ClCompile>
+    <ClCompile Include="src\NeuralCore\trajectory.cpp" />
+    <ClCompile Include="src\NeuralCore\strafe.cpp" />
+    <ClCompile Include="src\NeuralCore\outcome_tracker.cpp" />
+    <ClCompile Include="src\Features\NeuralMovement\ClientOutcomeBinding.cpp" />
+    <ClCompile Include="src\Features\NeuralMovement\ExplosionObserver.cpp" />
+    <ClInclude Include="src\NeuralCore\trajectory.h" />
+    <ClInclude Include="src\NeuralCore\strafe.h" />
+    <ClCompile Include="src\Features\NeuralMovement\NeuralMovement.cpp" />
+    <ClInclude Include="src\NeuralCore\movement.h" />
+    <ClInclude Include="src\Features\NeuralMovement\NeuralMovement.h" />
+  </ItemGroup>
   <!-- Public is the safe default. Private implementation is opt-in at compile time. -->
   <PropertyGroup>
     <NikogramFlavor Condition="'$(NikogramFlavor)'==''">Public</NikogramFlavor>
@@ -1594,7 +1611,12 @@
   <ItemGroup>
     <ResourceCompile Include="DapperAssets.rc" />
     <ClInclude Include="src\Features\Visuals\RenderState.h" />
+    <ClInclude Include="src\Features\Visuals\PostProcessing\Shader.h" />
+    <ClInclude Include="src\Features\Visuals\PostProcessing\Renderer.h" />
+    <ClInclude Include="src\Features\Visuals\PostProcessing\PostProcessing.h" />
+    <ClInclude Include="src\Features\ImGui\Menu\PostProcessing.inl" />
     <ClInclude Include="src\Features\Visuals\ZoomPolicy.h" />
+    <ClInclude Include="src\Features\Aimbot\ProjectileGuidePolicy.h" />
     <ClInclude Include="src\Features\Visuals\CapturePolicy.h" />
     <ClInclude Include="src\Features\Visuals\Dapper\WorldPhoto.h" />
     <ClInclude Include="src\Features\Visuals\Dapper\SkyPhoto.h" />

@@ -1,3 +1,5 @@
+#include "../Aimbot/AimObserver.h"
+#include "../../SDK/Helpers/ProjectileDisplay.h"
 #include "Visuals.h"
 #include "RenderState.h"
 #include "Dapper/WorldPhoto.h"
@@ -417,6 +419,7 @@ void CVisuals::DrawExtrapolationGuide()
 
 void CVisuals::DrawEffects()
 {
+    AimObserver::DrawWorld();
 	for (auto& tLine : G::LineStorage)
 	{
 		if (tLine.m_flTime < I::GlobalVars->curtime)
@@ -426,6 +429,7 @@ void CVisuals::DrawEffects()
 	}
 	for (auto& tPath : G::PathStorage)
 	{
+        if(tPath.m_iProjectileDisplaySerial && !tPath.m_bProjectileDisplayShot && tPath.m_iProjectileDisplaySerial!=ProjectileDisplay::serial)continue;
 		bool bTimed = tPath.m_flTime < 0.f;
 		if (!bTimed && tPath.m_flTime < I::GlobalVars->curtime)
 			continue;
@@ -434,6 +438,7 @@ void CVisuals::DrawEffects()
 	}
 	for (auto& tBox : G::BoxStorage)
 	{
+        if(tBox.m_iProjectileDisplaySerial && !tBox.m_bProjectileDisplayShot && tBox.m_iProjectileDisplaySerial!=ProjectileDisplay::serial)continue;
 		if (tBox.m_flTime < I::GlobalVars->curtime)
 			continue;
 
@@ -444,7 +449,7 @@ void CVisuals::DrawEffects()
 		&& (Vars::Visuals::Hitbox::BoundsEnabled.Value & Vars::Visuals::Hitbox::BoundsEnabledEnum::PredictDuringCooldown))
 		for (const auto& box : G::CooldownBoxStorage)
 		{
-			if (box.m_flTime < I::GlobalVars->curtime) continue;
+			if (box.m_flTime < I::GlobalVars->curtime || (box.m_iProjectileDisplaySerial && box.m_iProjectileDisplaySerial!=ProjectileDisplay::serial)) continue;
 			H::Draw.RenderBox(box.m_vOrigin, box.m_vMins, box.m_vMaxs, box.m_vAngles, box.m_tColorFace, box.m_bZBuffer);
 			H::Draw.RenderWireframeBox(box.m_vOrigin, box.m_vMins, box.m_vMaxs, box.m_vAngles, box.m_tColorEdge, box.m_bZBuffer);
 		}
@@ -731,25 +736,35 @@ void CVisuals::ApplyOptifineZoom(CTFPlayer* pLocal, CViewSetup* pView)
 	if (F::CameraWindow.m_bDrawing) return;
 	if (!pLocal || !pView || !CanOptifineZoom() || !std::isfinite(pView->fov) || pView->fov <= 0.f || pView->fov >= 179.f)
 	{
-		m_tOptifineZoom.Reset(); m_iOptifineFrame = -1; m_flOptifineMouseScale = 1.f;
+		m_tOptifineZoom.Reset(); m_tOptifineLevel.Reset(); m_iOptifineFrame = -1; m_flOptifineMouseScale = 1.f;
 		return;
 	}
 	namespace Z = Vars::Misc::OptifineZoom;
 	if (m_iOptifineFrame != I::GlobalVars->framecount)
 	{
 		m_iOptifineFrame = I::GlobalVars->framecount;
+		m_tOptifineLevel.Update(m_tOptifineWheel.Effective(Z::Magnification.Value), Z::Smooth.Value,
+			Z::Transition.Value, I::GlobalVars->absoluteframetime, m_tOptifineZoom.amount > 0.f);
 		m_tOptifineZoom.Update(Z::Enabled.Value, true, Z::Smooth.Value, Z::Transition.Value, I::GlobalVars->absoluteframetime);
 	}
-	m_flOptifineMouseScale = m_tOptifineZoom.Scale(Z::Magnification.Value);
+	const float magnification = m_tOptifineLevel.Magnification();
+	m_flOptifineMouseScale = m_tOptifineZoom.Scale(magnification);
 	// Compose after ordinary FOV handling. Never write extra zoom into m_iFOV:
 	// doing that would feed it into the next frame and cause cumulative zoom.
-	pView->fov = m_tOptifineZoom.Fov(pView->fov, Z::Magnification.Value);
+	pView->fov = m_tOptifineZoom.Fov(pView->fov, magnification);
 	G::FOV = pView->fov;
 }
 
 float CVisuals::OptifineMouseScale() const
 {
 	return Vars::Misc::OptifineZoom::ScaleSensitivity.Value && CanOptifineZoom() ? m_flOptifineMouseScale : 1.f;
+}
+
+bool CVisuals::OptifineWheel(int steps)
+{
+	if (!Vars::Misc::OptifineZoom::Enabled.Value || !CanOptifineZoom()) return false;
+	m_tOptifineWheel.Adjust(Vars::Misc::OptifineZoom::Magnification.Value, steps);
+	return true; // Consume even at a limit; never write the saved configuration.
 }
 
 void CVisuals::ThirdPerson(CTFPlayer* pLocal, CViewSetup* pView)
@@ -1235,6 +1250,12 @@ void CVisuals::RestoreWorldModulation()
 	skyModulation.Restore();
 }
 
+void CVisuals::ReleaseDeferredWorldMaterials()
+{
+	worldModulation.ReleaseDeferred();
+	skyModulation.ReleaseDeferred();
+}
+
 #ifdef WORLD_DEBUG
 class CEntityEnumerator : public IPartitionEnumerator
 {
@@ -1396,13 +1417,14 @@ void CVisuals::LocalAnimations(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserC
 	// Simulation retains EVERY outgoing command, including the final fake. Only
 	// the local display gets the last actual real-command pose, not the fake's
 	// eye/torso overwrite. No desired-yaw pose is manufactured here.
-	F::AnimInterp.Record(pLocal, int(m_vAngles.size()), true, G::AntiAim && bRealFrame ? &tRealFrame : nullptr);
+	AnimFrame_t tFakeFrame = {};
+	const bool fakeFrame = F::FakeAngle.Run(pLocal, &tFakeFrame);
+	F::AnimInterp.Record(pLocal, int(m_vAngles.size()), true, G::AntiAim && bRealFrame ? &tRealFrame : nullptr, fakeFrame ? &tFakeFrame : nullptr);
 	I::GlobalVars->frametime = flOldFrametime;
 	I::GlobalVars->curtime = flOldCurtime;
 	m_vAngles.clear();
 
 	F::AnimInterp.EndBurst(pLocal);
-	F::FakeAngle.Run(pLocal);
 }
 
 void CVisuals::ResetLocalAnimationQueue()
@@ -1412,5 +1434,5 @@ void CVisuals::ResetLocalAnimationQueue()
 	m_vAngles.clear();
 	m_pQueuedLocal = nullptr;
 	m_pQueuedModel = nullptr;
-	F::FakeAngle.bBonesSetup = false;
+	F::FakeAngle.Invalidate();
 }

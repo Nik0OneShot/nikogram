@@ -1,11 +1,16 @@
 #pragma once
 #include "../../SDK/SDK.h"
+#include "TickbaseCorrectionPolicy.h"
 
 class CTicks
 {
 private:
 	void MoveFunc(float accumulated_extra_samples, bool bFinalTick);
 	void MoveManage();
+	bool ObserveSession();
+	TickbaseCorrectionPolicy::Context m_ReserveContext{};
+	bool m_bReserveContext=false;
+	int m_iReserveAck=0,m_iReserveOutgoing=0;
 
 	void Recharge(CTFPlayer* pLocal);
 	void Warp();
@@ -21,6 +26,10 @@ private:
 
 	bool m_bPredictAntiwarp = false;
 	bool m_bTimingUnsure = false; // we aren't sure when we'll actually fire, hold aim
+	float m_flPassiveTime = 0.f;
+	Vec3 m_vAntiWarpVelocity = {};
+	int m_iAntiWarpMaxTicks = 0;
+	bool m_bPSilentPending = false;
 
 public:
 	void Move(float accumulated_extra_samples, bool bFinalTick);

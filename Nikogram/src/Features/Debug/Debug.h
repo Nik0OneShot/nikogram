@@ -1,4 +1,5 @@
 #pragma once
+#include "../ImGui/HudTextStyle.h"
 #include "../../SDK/SDK.h"
 
 #define DEBUG_INFO
@@ -34,18 +35,18 @@ public:
 	void PopText(uint32_t uType = 0);
 	void AddText(const DebugText_t& sText);
 	void AddText(const DebugText_t& sText, uint32_t uType);
-	void AddText(const std::string& sString, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, const Vec2& vPosition, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, const Vec3& vPosition, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, uint32_t uType, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, uint32_t uType, const Vec2& vPosition, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, uint32_t uType, const Vec3& vPosition, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, float flTime, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, float flTime, const Vec2& vPosition, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, float flTime, const Vec3& vPosition, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, float flTime, uint32_t uType, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, float flTime, uint32_t uType, const Vec2& vPosition, Color_t tColor = Vars::Menu::Theme::Active.Value);
-	void AddText(const std::string& sString, float flTime, uint32_t uType, const Vec3& vPosition, Color_t tColor = Vars::Menu::Theme::Active.Value);
+	void AddText(const std::string& sString, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, const Vec2& vPosition, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, const Vec3& vPosition, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, uint32_t uType, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, uint32_t uType, const Vec2& vPosition, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, uint32_t uType, const Vec3& vPosition, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, float flTime, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, float flTime, const Vec2& vPosition, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, float flTime, const Vec3& vPosition, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, float flTime, uint32_t uType, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, float flTime, uint32_t uType, const Vec2& vPosition, Color_t tColor = Workspace::HudTextColour());
+	void AddText(const std::string& sString, float flTime, uint32_t uType, const Vec3& vPosition, Color_t tColor = Workspace::HudTextColour());
 #endif
 };
 

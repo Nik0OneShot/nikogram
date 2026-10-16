@@ -179,6 +179,7 @@ void CCore::Loop()
 }
 
 #include "../Features/LearningAccess.h"
+#include "../Features/NeuralMovement/NeuralMovement.h"
 void CCore::Unload()
 {
 	if(m_bFailed2&&!StartupPolicy::gate.Ready())
@@ -205,6 +206,7 @@ void CCore::Unload()
 	RealLag::Shutdown();
 	Statistics::Shutdown();
 	PrivateLearning::Shutdown();
+    NeuralMovement::Shutdown();
 	if(!U::Hooks.Unload())
 	{
 		m_bFailed2=true;m_bCanDetach=false;
@@ -238,6 +240,7 @@ void CCore::CleanupGameResources()
 	if (auto cl_wpn_sway_scale = H::ConVars.FindVar("cl_wpn_sway_scale"))
 		cl_wpn_sway_scale->SetValue(0.f);
 	F::Visuals.RestoreWorldModulation();
+	F::Visuals.ReleaseDeferredWorldMaterials(); // unload keeps the previous immediate release
 	F::Visuals.RestoreConVars();
 	if (auto pLocal = H::Entities.GetLocal())
 	{

@@ -39,7 +39,7 @@ public:
     bool AllowTargetSwitch(CBaseEntity* target);
     void EndTargetSwitch();
 	std::vector<Target_t> ManageTargets(std::vector<Target_t>(*GetTargets)(CTFPlayer* pLocal, CTFWeaponBase* pWeapon), CTFPlayer* pLocal, CTFWeaponBase* pWeapon,
-		int iMethod = Vars::Aimbot::General::TargetSelection.Value, int iMaxTargets = Vars::Aimbot::General::MaxTargets.Value);
+		int iMethod = Vars::Aimbot::General::TargetSelection.Value, int iMaxTargets = Vars::Aimbot::General::MaxTargets.Value, bool enforceAimFOV = true);
 	void SortTargetsPre(std::vector<Target_t>& vTargets, int iMethod);
 	void SortTargetsPost(std::vector<Target_t>& vTargets, int iMethod);
 

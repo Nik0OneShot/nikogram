@@ -10,9 +10,12 @@ private:
 	const char* m_sSignature;
 	int8_t m_nOffset;
 	const char* m_sName;
+	const char* m_sReference = nullptr; // optional: string a RIP-relative operand must point at
+	int m_nReferenceOffset = -1;
 
 public:
 	CSignature(const char* sDLLName, const char* sSignature, int8_t nOffset, const char* sName);
+	CSignature(const char* sDLLName, const char* sSignature, int8_t nOffset, const char* sName, int nReferenceOffset, const char* sReference);
 
 	bool Initialize();
 
@@ -35,6 +38,9 @@ public:
 };
 
 #define MAKE_SIGNATURE(name, dll, sig, offset) namespace S { inline CSignature name(dll, sig, offset, #name); }
+// Wildcard the RIP-relative displacement in the pattern and name the string it must reference.
+// Use this instead of hard-coding the displacement: those bytes change on every game update.
+#define MAKE_SIGNATURE_REF(name, dll, sig, offset, referenceOffset, reference) namespace S { inline CSignature name(dll, sig, offset, #name, referenceOffset, reference); }
 
 class CSignatures
 {

@@ -254,14 +254,15 @@ void CMenu::MenuMoonlitVisuals()
             TableNextColumn();
             if(Card c{"World atmosphere"};c){SettingChoice(V::World::Modulations,"Enable the surfaces you want to tint. Darker colours also reduce brightness.");SettingColour(Vars::Colors::WorldModulation);SettingColour(Vars::Colors::SkyModulation);SettingColour(Vars::Colors::PropModulation);SettingString(V::World::SkyboxChanger);SettingString(V::World::WorldTexture);
                 SettingChoice(V::World::DapperSky,"Full-bright repeating photos on the six sky faces. Independent of world photos; takes priority over Skybox changer. 3D sky scenery stays native. Clean screenshots use the normal sky.");
-                if(FGet(V::World::DapperSky,true))SettingSlider(V::World::DapperSkyRepeat);
+                if(FGet(V::World::DapperSky))SettingSlider(V::World::DapperSkyRepeat);
                 SettingChoice(V::World::DapperPhoto,"Full-bright repeating photos on opaque world surfaces, including ordinary proxy-backed walls. Water, sky and transparent/cutout surfaces are preserved.");
-                if(FGet(V::World::DapperPhoto,true)){Setting(V::World::DapperProps);SettingSlider(V::World::DapperRepeat);}}
+                if(FGet(V::World::DapperPhoto)){Setting(V::World::DapperProps);SettingSlider(V::World::DapperRepeat);}}
             if(Card c{"Particles, fog & props",true};c){SettingColour(Vars::Colors::ParticleModulation);SettingColour(Vars::Colors::FogModulation);Setting(V::World::NearPropFade);Setting(V::World::NoPropFade);}
             if(Card c{"Weapon & player effects",true};c){SettingString(V::Effects::BulletTracer);SettingString(V::Effects::CritTracer);SettingString(V::Effects::MedigunBeam);SettingString(V::Effects::MedigunCharge);SettingString(V::Effects::ProjectileTrail);SettingChoice(V::Effects::SpellFootsteps);SettingColour(Vars::Colors::SpellFootstep);SettingChoice(V::Effects::RagdollEffects);Setting(V::Effects::DrawIconsThroughWalls);Setting(V::Effects::DrawDamageNumbersThroughWalls);}
         }
         else if(VisualPage==3)
         {
+            if(Card c{"Aim observation"};c){Setting(V::Prediction::FireReason);Setting(V::Prediction::Comparison);Help("Primary aim decisions and target-position forecasts. Blue ordinary, purple neural, green later observed. Requested commands are not confirmed server fire.");}
             if(Card c{"HUD panels"};c){SettingChoice(Vars::Menu::Indicators);Setting(Vars::Menu::BindWindow);Setting(Vars::Menu::BindWindowTitle);Setting(Vars::Menu::BindWindowHorizontal);Help("Move the panels with the menu open. Radar can hide the corresponding standalone indicators.");}
             if(Card c{"Spectator panel",true};c){SettingChoice(Vars::Menu::SpectatorScope);SettingChoice(Vars::Menu::SpectatorLayout);Setting(Vars::Menu::SpectatorGroup);SettingChoice(Vars::Menu::SpectatorStates);SettingChoice(Vars::Menu::SpectatorViews);Setting(Vars::Menu::SpectatorTargets);Setting(Vars::Menu::SpectatorLabels);Setting(Vars::Menu::SpectatorRespawn);SettingSlider(Vars::Menu::SpectatorPage);if(Button("Reset spectator size")){FSet(Vars::Menu::SpectatorWidth,0);FSet(Vars::Menu::SpectatorHeight,0);}Help("Drag a spectator-panel corner to resize it.");}
             if(Card c{"Privacy & scoreboard",true};c){SettingChoice(V::UI::StreamerMode);SettingChoice(V::UI::ChatTags);SettingColour(Vars::Colors::Local);Setting(V::UI::RevealScoreboard);Setting(V::UI::ScoreboardUtility);Setting(V::UI::ScoreboardColors);Setting(V::UI::CleanScreenshots);}
@@ -275,7 +276,7 @@ void CMenu::MenuMoonlitVisuals()
         }
         else if(VisualPage==4)
         {
-            if(Card c{"Camera"};c){SettingSlider(V::UI::FieldOfView,"Zero keeps the game's field of view.");SettingSlider(V::UI::ZoomFieldOfView);Setting(V::Thirdperson::Enabled,nullptr,true);Setting(V::Thirdperson::Crosshair,nullptr,false,"Thirdperson Crosshair");SettingSlider(V::Thirdperson::Distance);SettingSlider(V::Thirdperson::Right);SettingSlider(V::Thirdperson::Up);}
+            if(Card c{"Camera"};c){SettingSlider(V::UI::FieldOfView,"Zero keeps the game's field of view.");SettingSlider(V::UI::ZoomFieldOfView);SettingSlider(V::UI::AspectRatio,"Zero keeps the game's aspect ratio.");Setting(V::Thirdperson::Enabled,nullptr,true);Setting(V::Thirdperson::Crosshair,nullptr,false,"Thirdperson Crosshair");SettingSlider(V::Thirdperson::Distance);SettingSlider(V::Thirdperson::Right);SettingSlider(V::Thirdperson::Up);}
             if(Vars::Debug::Options.Value)if(Card c{"Camera debug",true};c){Setting(V::Thirdperson::Scale);Setting(V::Thirdperson::Collide);}
             TableNextColumn();
             if(Card c{"Weapon position"};c){SettingSlider(V::Viewmodel::OffsetX);SettingSlider(V::Viewmodel::OffsetY);SettingSlider(V::Viewmodel::OffsetZ);}
@@ -292,6 +293,7 @@ void CMenu::MenuMoonlitVisuals()
         EndTable();
     }
     if(VisualPage==4&&CollapsingHeader("Aimbot visualizers - draw settings"))MenuAimbot(1);
+    if(VisualPage==2&&CollapsingHeader("Post processing"))MenuVisuals(3);
     if(VisualPage==3 && CollapsingHeader("Advanced interface & log controls"))
     {
         Help("Complete existing interface editor, including scale, fonts, menu keys, colours and logging. These are shared preferences.");

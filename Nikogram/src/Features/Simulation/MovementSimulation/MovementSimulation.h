@@ -2,7 +2,9 @@
 #include "../../../SDK/SDK.h"
 #include <functional>
 #include <array>
+#include <chrono>
 #include "CounterStrafe.h"
+#include "../PredictionRestore.h"
 
 namespace MoveSimulationHost { inline CBasePlayer* Current = nullptr; }
 // Scoped, diagnostic-only replay controls; never used to select an aim point.
@@ -18,15 +20,29 @@ struct MoveStorage
 	CMoveData m_MoveData = {};
 	byte* m_pData = nullptr;
 	CUserCmd* m_pOriginalCommand = nullptr;
+    PredictionRestore::Snapshot m_RestoreSnapshot;
 
 	float m_flAverageYaw = 0.f;
 	CounterStrafe::Estimate m_CounterStrafe;
 	float m_flCounterTime = 0.f;
+    // Learned strafe timing (Auto): movesim keeps the corridor physics and native
+    // acceleration; only the lateral reversal times come from the learned model.
+    bool m_bLearnedTiming=false;float m_flTimingFirst=0.f,m_flTimingLeg=0.f;int m_iTimingSign=0;
+    float m_flTimingBraking=0.f; // native time from reversed wish to the lateral zero crossing
+    Vec3 m_vObservedWish={};
+    bool m_bObservedWish=false;
     Vec3 m_vDiagnosticStartOrigin={},m_vDiagnosticStartVelocity={};
     bool m_bDiagnosticStartGrounded=false;
 	bool m_bLedgeAware = false;
 	bool m_bLedgeBraking = false;
+    bool m_bLedgeImpulse = false;
+    int m_iLedgeLanding = 0; // Native contacts: 1 grounded/landed, -1 airborne, 0 not evaluated
 	float m_flLedgeStartTime = 0.f;
+    // Ledge hypotheses: hold (actively brake and stay at the edge) or walk off.
+    // m_bLedgeEvidence: received slowdown/turn before the edge; m_bLedgeHold: the
+    // hypothesis this pass simulates; m_bLedgeSeen: this pass reached an edge.
+    bool m_bLedgeEvidence = false, m_bLedgeHold = false, m_bLedgeStopped = false, m_bLedgeSeen = false;
+    bool m_bLedgeAheadSupport = true; int m_iLedgeProbeAge = 0; Vec3 m_vLedgeProbeDirection = {};
 	bool m_bBunnyHop = false;
 
 	float m_flSimTime = 0.f;
@@ -86,10 +102,13 @@ private:
     void EndReuse();
 	bool Store(MoveStorage& tMoveStorage);
 	bool AcceptRecord(CTFPlayer* player, float time, const Vec3& origin, const Vec3& velocity);
-    void StoreCounterHistory(int index);
+    bool HistoryCurrent(CTFPlayer* player) const;
+    bool PatternHistoryFresh(CTFPlayer* player) const;
+    void StoreCounterHistory(int index,bool continuing);
+    bool LedgeEvidence(CTFPlayer* player);
 	void Reset(MoveStorage& tMoveStorage);
 
-	void SetupMoveData(MoveStorage& tMoveStorage);
+	void SetupMoveData(MoveStorage& tMoveStorage, bool observedPattern = false);
 	bool CheckStuck(MoveStorage& tMoveStorage);
 	void PredictLedge(MoveStorage& storage);
 	void GetAverageYaw(MoveStorage& tMoveStorage, int iSamples);
@@ -101,10 +120,24 @@ private:
 	std::unordered_map<int, std::deque<MoveData>> m_mRecords = {};
     std::unordered_map<int, std::deque<MoveData>> m_mCounterRecords;
 	std::unordered_map<int, std::deque<float>> m_mSimTimes = {};
-	std::unordered_map<int, unsigned long> m_mIdentities;
+	struct HistoryIdentity {
+        unsigned long handle=0; int spawn=0,server=0;
+        bool operator==(const HistoryIdentity&) const = default;
+    };
+    std::unordered_map<int, HistoryIdentity> m_mIdentities;
+    struct MotionReceipt { std::chrono::steady_clock::time_point received{}; Vec3 velocity{}; float time=0; bool valid=false,impulse=false; };
+    std::unordered_map<int,MotionReceipt> m_mMotionReceipts;
 	std::vector<std::array<Vec3, 4>> m_vBounds;
 
 public:
+    // 0 = median learned reversal time, 1 = later guess. Set by the projectile aimbot around a pass.
+    int m_iReversalHypothesis=0;bool m_bReversalPlanned=false,m_bAllowLearnedTiming=false;float m_flPlannedFirst=0.f;
+    // 0 = ledge hypothesis backed by received evidence (hold only with evidence), 1 = the other one.
+    // m_bLedgeEncountered: a pass reached an edge, so the other hypothesis is worth a try.
+    int m_iLedgeHypothesis=0;bool m_bLedgeEncountered=false;
+    // Hypotheses the ordinary (non-impact) pass actually used; knockback impact and
+    // verification passes re-simulate the same world instead of resetting to 0.
+    int m_iChosenReversal=0,m_iChosenLedge=0;
     struct ReuseScope
     {
         CMovementSimulation& owner;

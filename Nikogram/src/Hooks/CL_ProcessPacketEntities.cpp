@@ -1,4 +1,5 @@
 #include "../SDK/SDK.h"
+#include "../Features/NeuralMovement/ClientOutcomeBinding.h"
 
 MAKE_SIGNATURE(CL_ProcessPacketEntities, "engine.dll", "48 89 7C 24 ? 4C 89 64 24 ? 55 41 56 41 57 48 8D AC 24 ? ? ? ? B8 ? ? ? ? E8 ? ? ? ? 48 2B E0 4C 8B F9", 0x0);
 
@@ -15,14 +16,22 @@ MAKE_HOOK(CL_ProcessPacketEntities, S::CL_ProcessPacketEntities(), bool,
 {
 	DEBUG_RETURN(CL_ProcessPacketEntities, entmsg);
 
+    // Full updates recreate entities and must never look like a terminal rocket.
+    if (!entmsg->m_bIsDelta) NeuralMovement::ClientOutcomes::Reset();
+    const auto process = [&]() {
+        const bool result = CALL_ORIGINAL(entmsg);
+        if (!result) NeuralMovement::ClientOutcomes::Reset();
+        return result;
+    };
+
 	if (entmsg->m_bIsDelta || I::EngineClient->IsPlayingDemo()) // we won't need to restore
-		return CALL_ORIGINAL(entmsg);
+		return process();
 
 	auto pLocal = H::Entities.GetLocal();
 	if (!pLocal || !pLocal->m_hMyWeapons())
 	{
 		SDK::Output("ProcessPacketEntities", "Failed to restore weapon crit data! (1)", { 255, 100, 100 }, Vars::Debug::Logging.Value);
-		return CALL_ORIGINAL(entmsg);
+		return process();
 	}
 
 	std::unordered_map<int, CriticalStorage_t> mCriticalStorage = {};
@@ -44,7 +53,7 @@ MAKE_HOOK(CL_ProcessPacketEntities, S::CL_ProcessPacketEntities(), bool,
 		SDK::Output("ProcessPacketEntities", std::format("{} ({:#x}): mCriticalStorage[i].m_nCritSeedRequests = {}", i, uintptr_t(pWeapon), pWeapon->m_nCritSeedRequests()).c_str(), { 100, 150, 255 }, Vars::Debug::Logging.Value);
 	}
 
-	bool bReturn = CALL_ORIGINAL(entmsg);
+	bool bReturn = process();
 
 	pLocal = H::Entities.GetLocal();
 	if (!pLocal || !pLocal->m_hMyWeapons())

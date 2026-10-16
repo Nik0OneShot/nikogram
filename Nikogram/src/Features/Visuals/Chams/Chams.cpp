@@ -1,3 +1,4 @@
+#include "../../Backtrack/NamedPlayerTraceDiagnostics.h"
 #include "Chams.h"
 #include "../RenderState.h"
 
@@ -8,11 +9,89 @@ using ModelStateScope = RenderState::ModelScope<IVRenderView, IVModelRender, IMa
 #include "../FakeAngle/FakeAngle.h"
 #include "../../Backtrack/Backtrack.h"
 #include "../../SkinChanger/SkinChanger.h"
+#include "../../SkinChanger/RenderPolicy.h"
+
+namespace
+{
+    bool IntentionallyHidden(const Chams_t& chams)
+    {
+        return std::all_of(chams.Visible.begin(), chams.Visible.end(), [](const auto& layer)
+        { return layer.first == "None" || layer.second.a == 0; });
+    }
+}
+
+bool CChams::ValidEntity(const ChamsInfo_t& info) const
+{
+    if (info.m_iServer != I::ClientState->m_nServerCount) return false;
+    auto client = I::ClientEntityList->GetClientEntity(info.m_iIndex);
+    auto entity = client ? client->As<CBaseEntity>() : nullptr;
+    return entity && entity == info.m_pEntity
+        && uint32_t(entity->GetRefEHandle().ToInt()) == info.m_uHandle
+        && entity->GetModel() == info.m_pModel && entity->GetClientRenderable() == info.m_pRenderable && !entity->IsDormant();
+}
+
+bool CChams::Eligible(CBaseEntity* entity, const Chams_t& chams) const
+{
+    auto local = H::Entities.GetLocal(); Group_t* group = nullptr;
+    // Resolve against the current group vector, not cached group pointers that
+    // a menu edit may have invalidated since the last network update.
+    return local && entity->ShouldDraw() && F::Groups.GetGroup(entity, local, group, true)
+        && group->m_tChams() && group->m_tChams == chams;
+}
+
+void CChams::Commit(CBaseEntity* entity, const Chams_t& chams, const Attempt_t* attempt)
+{
+    if (attempt)
+    {
+        auto client = I::ClientEntityList->GetClientEntity(attempt->index);
+        auto current = client ? client->As<CBaseEntity>() : nullptr;
+        if (!current || current != entity || current != attempt->entity
+            || I::ClientState->m_nServerCount != attempt->server
+            || uint32_t(current->GetRefEHandle().ToInt()) != attempt->handle
+            || current->GetModel() != attempt->model || current->GetClientRenderable() != attempt->renderable) return;
+    }
+    m_mReplacements.insert_or_assign(entity->entindex(), Replacement_t{
+        ChamsInfo_t(entity, &chams), I::GlobalVars->framecount, IntentionallyHidden(chams) });
+}
+
+void CChams::Acknowledge(const ModelRenderInfo_t& info)
+{
+    if (!m_pAttempt || m_iFlags || info.entity_index != m_pAttempt->index
+        || info.pModel != m_pAttempt->model || info.pRenderable != m_pAttempt->renderable) return;
+    auto client = I::ClientEntityList->GetClientEntity(info.entity_index);
+    auto entity = client ? client->As<CBaseEntity>() : nullptr;
+    if (entity && entity == m_pAttempt->entity && uint32_t(entity->GetRefEHandle().ToInt()) == m_pAttempt->handle
+        && entity->GetModel() == m_pAttempt->model && entity->GetClientRenderable() == m_pAttempt->renderable)
+        m_pAttempt->forwarded = true;
+}
+
+bool CChams::ShouldSuppress(const ModelRenderInfo_t& info)
+{
+    auto found = m_mReplacements.find(info.entity_index);
+    if (found == m_mReplacements.end()) return false;
+    const auto& replacement = found->second;
+    const auto age = int64_t(I::GlobalVars->framecount) - replacement.frame;
+    // The ordinary scene precedes post-effects replacement. Keep the preceding
+    // frame's acknowledgement, never an unbounded or recycled-entity marker.
+    if (!F::Groups.GroupsActive() || age < 0 || age > 1 || !ValidEntity(replacement.info)
+        || info.pModel != replacement.info.m_pModel
+        || info.pRenderable != replacement.info.m_pRenderable
+        || !Eligible(replacement.info.m_pEntity, replacement.info.m_tChams))
+    { m_mReplacements.erase(found); return false; }
+    return true;
+}
+
+void CChams::Reset()
+{
+    m_mReplacements.clear(); m_vEntities.clear();
+    m_pAttempt = nullptr; m_iFlags = 0; m_bRendering = false;
+}
 
 void CChams::DrawModel(CBaseEntity* pEntity, const Chams_t& tChams, IMatRenderContext* pRenderContext, int iModel, bool bTwoModel)
 {
-	if (!m_iFlags && iModel == ModelEnum::Visible)
-		m_mEntities[pEntity->entindex()];
+    NamedPlayerTraceDiagnostics::RenderScope diagnosticRoute(m_iFlags?3:1,iModel==ModelEnum::Occluded);
+	if (!m_iFlags && iModel == ModelEnum::Visible && IntentionallyHidden(tChams))
+		Commit(pEntity, tChams);
 
 	bool bOccluded = !tChams.Occluded.empty();
 	bool bSame = tChams.Visible == tChams.Occluded;
@@ -57,7 +136,11 @@ void CChams::DrawModel(CBaseEntity* pEntity, const Chams_t& tChams, IMatRenderCo
 
 			{
 				SkinRender::ViewmodelDrawScope drawScope(m_bRendering, true);
-				pEntity->DrawModel(STUDIO_RENDER);
+				Attempt_t attempt{pEntity, pEntity->entindex(), uint32_t(pEntity->GetRefEHandle().ToInt()), pEntity->GetModel(), pEntity->GetClientRenderable(), I::ClientState->m_nServerCount};
+				SkinRender::DrawStateScope attemptScope(m_pAttempt, &attempt);
+				const int drawn = pEntity->DrawModel(STUDIO_RENDER);
+				if (!m_iFlags && drawn > 0 && attempt.forwarded && sName != "None" && tColor.a > 0)
+					Commit(pEntity, tChams, &attempt);
 			}
 
 			if (pMaterial)
@@ -105,7 +188,11 @@ void CChams::DrawModel(CBaseEntity* pEntity, const Chams_t& tChams, IMatRenderCo
 
 			{
 				SkinRender::ViewmodelDrawScope drawScope(m_bRendering, true);
-				pEntity->DrawModel(STUDIO_RENDER);
+				Attempt_t attempt{pEntity, pEntity->entindex(), uint32_t(pEntity->GetRefEHandle().ToInt()), pEntity->GetModel(), pEntity->GetClientRenderable(), I::ClientState->m_nServerCount};
+				SkinRender::DrawStateScope attemptScope(m_pAttempt, &attempt);
+				const int drawn = pEntity->DrawModel(STUDIO_RENDER);
+				if (!m_iFlags && drawn > 0 && attempt.forwarded && sName != "None" && tColor.a > 0)
+					Commit(pEntity, tChams, &attempt);
 			}
 
 			if (pMaterial && pMaterial->m_bInvertCull)
@@ -164,7 +251,7 @@ void CChams::Store(CTFPlayer* pLocal)
 
 void CChams::RenderMain()
 {
-	m_mEntities.clear();
+	m_mReplacements.clear();
 	if (!F::Groups.GroupsActive()) return;
 	RenderState::ContextScope context(I::MaterialSystem->GetRenderContext());
 	auto pRenderContext = context.Get();
@@ -174,12 +261,28 @@ void CChams::RenderMain()
 	if (m_vEntities.empty())
 		return;
 
+	// Store runs on network updates. Keep its entity identities, but refresh the
+	// owned policy for this render frame so menu edits do not skip chams until
+	// another network update. Both passes use the same safe snapshot.
+	auto frameEntities = m_vEntities;
+	std::erase_if(frameEntities, [&](ChamsInfo_t& info)
+	{
+		if (!ValidEntity(info)) return true;
+		if (info.m_iFlags) return false;
+		auto local = H::Entities.GetLocal(); Group_t* group = nullptr;
+		if (!local || !info.m_pEntity->ShouldDraw()
+			|| !F::Groups.GetGroup(info.m_pEntity, local, group, true) || !group->m_tChams()) return true;
+		info.m_tChams = group->m_tChams;
+		return false;
+	});
+
 	pRenderContext->ClearBuffers(false, false, true);
 
-	for (auto& tInfo : m_vEntities)
+	for (auto& tInfo : frameEntities)
 	{
+		if (!ValidEntity(tInfo) || (!tInfo.m_iFlags && !Eligible(tInfo.m_pEntity, tInfo.m_tChams))) continue;
 		if (!tInfo.m_iFlags)
-			DrawModel(tInfo.m_pEntity, *tInfo.m_pChams, pRenderContext, ModelEnum::Visible, true);
+			DrawModel(tInfo.m_pEntity, tInfo.m_tChams, pRenderContext, ModelEnum::Visible, true);
 		else
 		{
 			m_iFlags = tInfo.m_iFlags;
@@ -187,16 +290,17 @@ void CChams::RenderMain()
 			auto pPlayer = tInfo.m_pEntity->As<CTFPlayer>();
 			const float flOldInvisibility = pPlayer->m_flInvisibility();
 			pPlayer->m_flInvisibility() = 0.f;
-			DrawModel(tInfo.m_pEntity, *tInfo.m_pChams, pRenderContext, ModelEnum::Visible, true);
+			DrawModel(tInfo.m_pEntity, tInfo.m_tChams, pRenderContext, ModelEnum::Visible, true);
 			pPlayer->m_flInvisibility() = flOldInvisibility;
 
 			m_iFlags = false;
 		}
 	}
-	for (auto& tInfo : m_vEntities)
+	for (auto& tInfo : frameEntities)
 	{
+		if (!ValidEntity(tInfo) || (!tInfo.m_iFlags && !Eligible(tInfo.m_pEntity, tInfo.m_tChams))) continue;
 		if (!tInfo.m_iFlags)
-			DrawModel(tInfo.m_pEntity, *tInfo.m_pChams, pRenderContext, ModelEnum::Occluded, true);
+			DrawModel(tInfo.m_pEntity, tInfo.m_tChams, pRenderContext, ModelEnum::Occluded, true);
 		else
 		{
 			m_iFlags = tInfo.m_iFlags;
@@ -204,7 +308,7 @@ void CChams::RenderMain()
 			auto pPlayer = tInfo.m_pEntity->As<CTFPlayer>();
 			const float flOldInvisibility = pPlayer->m_flInvisibility();
 			pPlayer->m_flInvisibility() = 0.f;
-			DrawModel(tInfo.m_pEntity, *tInfo.m_pChams, pRenderContext, ModelEnum::Occluded, true);
+			DrawModel(tInfo.m_pEntity, tInfo.m_tChams, pRenderContext, ModelEnum::Occluded, true);
 			pPlayer->m_flInvisibility() = flOldInvisibility;
 
 			m_iFlags = false;
@@ -243,6 +347,7 @@ void CChams::RenderBacktrack(const DrawModelState_t& pState, const ModelRenderIn
 
 		I::RenderView->SetBlend(flBlend * flOriginalBlend);
 		static auto IVModelRender_DrawModelExecute = U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
+		NamedPlayerTraceDiagnostics::ObserveDraw(pState,pInfo,pBoneToWorld);
 		IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, pBoneToWorld);
 	};
 	if (!bDrawLast && !bDrawFirst)
@@ -273,13 +378,15 @@ void CChams::RenderBacktrack(const DrawModelState_t& pState, const ModelRenderIn
 void CChams::RenderFakeAngle(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo)
 {
 	static auto IVModelRender_DrawModelExecute = U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
-	IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, F::FakeAngle.aBones);
+	if (auto bones = F::FakeAngle.RenderBones(pInfo.pModel))
+		IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, bones);
 }
 void CChams::RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel)
 {
 	if (!m_iFlags)
 	{
 		SkinChanger::DrawEffectGeometry(pState,pInfo,pBoneToWorld,localViewmodel,"chams_cosmetic_geometry");
+		Acknowledge(pInfo);
 	}
 	else
 	{

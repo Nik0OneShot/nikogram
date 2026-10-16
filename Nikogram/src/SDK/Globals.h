@@ -23,6 +23,9 @@ struct DrawPath_t
 	Color_t m_tColor;
 	int m_iStyle;
 	bool m_bZBuffer = false;
+    int m_iProjectileDisplaySerial=0;
+    bool m_bProjectileDisplayShot=false; // Only final committed shots may persist as history.
+
 };
 
 struct DrawBox_t
@@ -35,6 +38,9 @@ struct DrawBox_t
 	Color_t m_tColorEdge;
 	Color_t m_tColorFace;
 	bool m_bZBuffer = false;
+    int m_iProjectileDisplaySerial=0;
+    bool m_bProjectileDisplayShot=false; // Only final committed shots may persist as history.
+
 };
 
 struct DrawSphere_t
@@ -80,6 +86,12 @@ struct AimPoint_t
 	Vec3 m_vOrigin = {};
 	int m_iTickCount = 0;
 	int m_iDuration = 32;
+    bool m_bProjectileDisplay=false,m_bDisplayShot=false;
+    uint32_t m_nDisplayTarget=0,m_nDisplayWeapon=0;
+    int m_iDisplayServer=0,m_iDisplaySpawn=0,m_iDisplayTargetSpawn=0,m_iDisplaySerial=0;
+    Vec3 m_vDisplayLaunchAngle={};
+    float m_flDisplayCharge=0.f;
+
 };
 
 namespace G

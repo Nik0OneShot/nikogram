@@ -1,6 +1,8 @@
 #include "../SDK/SDK.h"
 
 #include "../Features/Visuals/Visuals.h"
+#include "../Features/Aimbot/ProjectileGuideCamera.h"
+#include "../Features/Visuals/CameraWindow/CameraWindow.h"
 
 MAKE_HOOK(CClientModeShared_OverrideView, U::Memory.GetVirtual(I::ClientModeShared, 16), void,
 	void* rcx, CViewSetup* pView)
@@ -16,4 +18,5 @@ MAKE_HOOK(CClientModeShared_OverrideView, U::Memory.GetVirtual(I::ClientModeShar
 		F::Visuals.ThirdPerson(pLocal, pView);
 	}
 	F::Visuals.ApplyOptifineZoom(H::Entities.GetLocal(), pView);
+    if(!F::CameraWindow.m_bDrawing)ProjectileGuideCamera::Capture(H::Entities.GetLocal(),pView);
 }

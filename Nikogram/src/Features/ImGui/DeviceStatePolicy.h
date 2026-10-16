@@ -1,6 +1,19 @@
 #pragma once
 namespace DeviceStatePolicy
 {
+    // Present is outside the game's scene. Own only a successfully opened scene;
+    // a failed BeginScene must never close a scene owned by another renderer.
+    template<class Device> class Scene
+    {
+        Device* device;
+        bool active;
+    public:
+        explicit Scene(Device* value):device(value),active(value&&value->BeginScene()>=0){}
+        ~Scene(){if(active)device->EndScene();}
+        bool Ready()const{return active;}
+        Scene(const Scene&)=delete;
+        Scene& operator=(const Scene&)=delete;
+    };
     // Native/overlay Present must not leave Source's cached gamma-write state
     // out of sync with the device. Preserve its exact value, not forced TRUE.
     // Only repair a changed state after successful presentation/readback.

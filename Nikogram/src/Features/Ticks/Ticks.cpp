@@ -1,6 +1,7 @@
 #include "Ticks.h"
 #include "../ImGui/MoonlitHud.h"
 #include "TickIndicatorStyle.h"
+#include "TickBudgetPolicy.h"
 #include "../ImGui/Workspace.h"
 #include "../ImGui/Menu/Menu.h"
 #include "../ImGui/Menu/BindLayout.h"
@@ -14,8 +15,10 @@
 
 void CTicks::Reset()
 {
-	m_bSpeedhack = m_bDoubletap = m_bRecharge = m_bWarp = false;
-	m_iShiftedTicks = m_iShiftedGoal = 0;
+	// Session state includes held angles and the packet/antiwarp caches, not only reserve.
+	const Vec2 indicatorSize = m_vIndicatorSize;
+	*this = CTicks{};
+	m_vIndicatorSize = indicatorSize;
 }
 
 void CTicks::Recharge(CTFPlayer* pLocal)
@@ -25,12 +28,11 @@ void CTicks::Recharge(CTFPlayer* pLocal)
 
 	bool bPassive = m_bRecharge = false;
 
-	static float flPassiveTime = 0.f;
-	flPassiveTime = std::max(flPassiveTime - TICK_INTERVAL, -TICK_INTERVAL);
-	if (Vars::Doubletap::PassiveRecharge.Value && 0.f >= flPassiveTime)
+	m_flPassiveTime = std::max(m_flPassiveTime - TICK_INTERVAL, -TICK_INTERVAL);
+	if (Vars::Doubletap::PassiveRecharge.Value && 0.f >= m_flPassiveTime)
 	{
 		bPassive = true;
-		flPassiveTime += 1.f / Vars::Doubletap::PassiveRecharge.Value;
+		m_flPassiveTime += 1.f / Vars::Doubletap::PassiveRecharge.Value;
 	}
 
 	if (m_iDeficit)
@@ -54,11 +56,11 @@ void CTicks::Warp()
 
 	m_bWarp = false;
 	if (!Vars::Doubletap::Warp.Value
-		|| !m_iShiftedTicks || m_bDoubletap || m_bRecharge || m_bSpeedhack)
+		|| !m_iShiftedTicks || m_iMaxShift<=1 || m_bDoubletap || m_bRecharge || m_bSpeedhack)
 		return;
 
 	m_bWarp = true;
-	m_iShiftedGoal = std::max(m_iShiftedTicks - Vars::Doubletap::WarpRate.Value + 1, 0);
+	m_iShiftedGoal = std::max(m_iShiftedTicks - std::min(Vars::Doubletap::WarpRate.Value,m_iMaxShift) + 1, 0);
 }
 
 void CTicks::Doubletap(CTFPlayer* pLocal, CUserCmd* pCmd)
@@ -67,10 +69,10 @@ void CTicks::Doubletap(CTFPlayer* pLocal, CUserCmd* pCmd)
 		return;
 
 	if (!Vars::Doubletap::Doubletap.Value
-		|| m_iWait || m_bWarp || m_bRecharge || m_bSpeedhack)
+		|| m_iMaxShift<=1 || m_iWait || m_bWarp || m_bRecharge || m_bSpeedhack)
 		return;
 
-	int iTicks = std::min(m_iShiftedTicks + 1, 22);
+	int iTicks = std::min({m_iShiftedTicks + 1, 22, m_iMaxShift});
 	auto pWeapon = H::Entities.GetWeapon();
 	if (!(iTicks >= Vars::Doubletap::TickLimit.Value || pWeapon && GetShotsWithinPacket(pWeapon, iTicks) > 1))
 		return;
@@ -80,7 +82,7 @@ void CTicks::Doubletap(CTFPlayer* pLocal, CUserCmd* pCmd)
 		return;
 
 	m_bDoubletap = true;
-	m_iShiftedGoal = std::max(m_iShiftedTicks - Vars::Doubletap::TickLimit.Value + 1, 0);
+	m_iShiftedGoal = std::max(m_iShiftedTicks - std::min(Vars::Doubletap::TickLimit.Value,m_iMaxShift) + 1, 0);
 	if (Vars::Doubletap::AntiWarp.Value)
 		m_bAntiWarp = pLocal->m_hGroundEntity();
 }
@@ -94,18 +96,16 @@ void CTicks::Speedhack()
 	m_bDoubletap = m_bWarp = m_bRecharge = false;
 }
 
-static Vec3 s_vVelocity = {};
-static int s_iMaxTicks = 0;
 void CTicks::AntiWarp(CTFPlayer* pLocal, float flYaw, float& flForwardMove, float& flSideMove, int iTicks)
 {
-	s_iMaxTicks = std::max(iTicks + 1, s_iMaxTicks);
+	m_iAntiWarpMaxTicks = std::max(iTicks + 1, m_iAntiWarpMaxTicks);
 
-	Vec3 vAngles; Math::VectorAngles(s_vVelocity, vAngles);
+	Vec3 vAngles; Math::VectorAngles(m_vAntiWarpVelocity, vAngles);
 	vAngles.y = flYaw - vAngles.y;
 	Vec3 vForward; Math::AngleVectors(vAngles, &vForward);
-	vForward *= s_vVelocity.Length2D();
+	vForward *= m_vAntiWarpVelocity.Length2D();
 
-	if (iTicks > std::max(s_iMaxTicks - 8, 3))
+	if (iTicks > std::max(m_iAntiWarpMaxTicks - 8, 3))
 		flForwardMove = -vForward.x, flSideMove = -vForward.y;
 	else if (iTicks > 3)
 		flForwardMove = flSideMove = 0.f;
@@ -122,8 +122,8 @@ void CTicks::AntiWarp(CTFPlayer* pLocal, CUserCmd* pCmd)
 		AntiWarp(pLocal, pCmd->viewangles.y, pCmd->forwardmove, pCmd->sidemove);
 	else
 	{
-		s_vVelocity = pLocal->m_vecVelocity();
-		s_iMaxTicks = 0;
+		m_vAntiWarpVelocity = pLocal->m_vecVelocity();
+		m_iAntiWarpMaxTicks = 0;
 	}
 }
 
@@ -163,7 +163,7 @@ void CTicks::MoveFunc(float accumulated_extra_samples, bool bFinalTick)
 	if (m_iWait > 0)
 		m_iWait--;
 
-	int iTicks = std::min(m_iShiftedTicks + 1, 22);
+	int iTicks = std::min({m_iShiftedTicks + 1, 22, m_iMaxShift});
 	auto pWeapon = H::Entities.GetWeapon();
 	if (!(iTicks >= Vars::Doubletap::TickLimit.Value || pWeapon && GetShotsWithinPacket(pWeapon, iTicks) > 1))
 		m_iWait = -1;
@@ -178,8 +178,8 @@ void CTicks::Move(float accumulated_extra_samples, bool bFinalTick)
 {
 	MoveManage();
 
-	while (m_iShiftedTicks > m_iMaxShift)
-		MoveFunc(accumulated_extra_samples, false);
+	// Excess local credit is reconciled before selecting a burst, never emitted as moves.
+	m_iShiftedTicks=std::clamp(m_iShiftedTicks,0,m_iMaxShift);
 	m_iShiftedTicks = std::max(m_iShiftedTicks, 0) + 1;
 
 	if (m_bSpeedhack)
@@ -213,12 +213,40 @@ void CTicks::Move(float accumulated_extra_samples, bool bFinalTick)
 	}
 }
 
+bool CTicks::ObserveSession()
+{
+    auto local=H::Entities.GetLocal();auto channel=I::EngineClient->GetNetChannelInfo();
+    const bool valid=local&&local->IsAlive()&&channel&&I::Input&&I::Input->m_pCommands
+        &&I::ClientEntityList->GetClientEntityFromHandle(local->GetRefEHandle())==local
+        &&I::ClientState->m_nDeltaTick>=0;
+    if(!valid){Reset();return false;}
+    const TickbaseCorrectionPolicy::Context context{reinterpret_cast<uintptr_t>(local),reinterpret_cast<uintptr_t>(channel),
+        reinterpret_cast<uintptr_t>(I::Input->m_pCommands),local->GetRefEHandle().ToInt(),local->m_iSpawnCounter(),I::ClientState->m_nServerCount};
+    const int ack=I::ClientState->last_command_ack,outgoing=I::ClientState->lastoutgoingcommand;
+    if(ack<0||outgoing<0){Reset();return false;}
+    if(m_bReserveContext&&(context!=m_ReserveContext||ack<m_iReserveAck||outgoing<m_iReserveOutgoing))Reset();
+    m_ReserveContext=context;m_bReserveContext=true;m_iReserveAck=ack;m_iReserveOutgoing=outgoing;
+    return true;
+}
+
 void CTicks::MoveManage()
 {
-	auto pLocal = H::Entities.GetLocal();
-	if (!pLocal)
-		return;
+    if(!ObserveSession())return;
+    auto pLocal=H::Entities.GetLocal();
+	static auto sv_maxusrcmdprocessticks = H::ConVars.FindVar("sv_maxusrcmdprocessticks");
+	m_iMaxUsrCmdProcessTicks = sv_maxusrcmdprocessticks?std::max(sv_maxusrcmdprocessticks->GetInt(),1):1;
+	if (F::AntiCheatCompatibility.Active())
+		m_iMaxUsrCmdProcessTicks = std::min(m_iMaxUsrCmdProcessTicks, 8);
+	m_iMaxShift = m_iMaxUsrCmdProcessTicks - std::max(m_iMaxUsrCmdProcessTicks - Vars::Doubletap::RechargeLimit.Value, 0) - (F::AntiAim.YawOn() ? F::AntiAim.AntiAimTicks() : 0);
+	m_iMaxShift = std::max(m_iMaxShift, 0);
 
+    const int reconciled=std::clamp(m_iShiftedTicks,0,m_iMaxShift);
+    if(reconciled!=m_iShiftedTicks){
+        m_iShiftedTicks=reconciled;m_iShiftedGoal=reconciled;m_iShiftStart=0;
+        m_bGoalReached=true;m_bDoubletap=m_bWarp=m_bRecharge=m_bAntiWarp=m_bShifting=m_bShifted=false;
+        m_bTimingUnsure=m_bPSilentPending=m_bPredictAntiwarp=false;
+        m_vShootAngle.reset();m_iAntiWarpMaxTicks=0;m_vAntiWarpVelocity={};m_iDeficit=0;
+    }
 	Recharge(pLocal);
 	Warp();
 	Speedhack();
@@ -244,12 +272,6 @@ void CTicks::MoveManage()
 	else
 		m_iWait = -1;
 
-	static auto sv_maxusrcmdprocessticks = H::ConVars.FindVar("sv_maxusrcmdprocessticks");
-	m_iMaxUsrCmdProcessTicks = sv_maxusrcmdprocessticks->GetInt();
-	if (F::AntiCheatCompatibility.Active())
-		m_iMaxUsrCmdProcessTicks = std::min(m_iMaxUsrCmdProcessTicks, 8);
-	m_iMaxShift = m_iMaxUsrCmdProcessTicks - std::max(m_iMaxUsrCmdProcessTicks - Vars::Doubletap::RechargeLimit.Value, 0) - (F::AntiAim.YawOn() ? F::AntiAim.AntiAimTicks() : 0);
-	m_iMaxShift = std::max(m_iMaxShift, 1);
 }
 
 void CTicks::CreateMove(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool* pSendPacket)
@@ -269,12 +291,11 @@ void CTicks::ManagePacket(CUserCmd* pCmd, bool* pSendPacket)
 {
 	if (!m_bDoubletap && !m_bWarp && !m_bSpeedhack)
 	{
-		static bool bWasSet = false;
 		bool bCanChoke = CanChoke(true); // failsafe
 		if (G::PSilentAngles && bCanChoke)
-			*pSendPacket = false, bWasSet = true;
-		else if (bWasSet || !bCanChoke)
-			*pSendPacket = true, bWasSet = false;
+			*pSendPacket = false, m_bPSilentPending = true;
+		else if (m_bPSilentPending || !bCanChoke)
+			*pSendPacket = true, m_bPSilentPending = false;
 
 		bool bShouldShift = m_iShiftedTicks && m_iShiftedTicks + I::ClientState->chokedcommands >= m_iMaxUsrCmdProcessTicks;
 		if (!*pSendPacket && bShouldShift)
@@ -344,16 +365,16 @@ int CTicks::GetTicks(CTFWeaponBase* pWeapon)
 		|| m_iWait || m_bWarp || m_bRecharge || m_bSpeedhack || F::AutoRocketJump.IsRunning())
 		return 0;
 
-	int iTicks = std::min(m_iShiftedTicks + 1, 22);
+	int iTicks = std::min({m_iShiftedTicks + 1, 22, m_iMaxShift});
 	if (!(iTicks >= Vars::Doubletap::TickLimit.Value || pWeapon && GetShotsWithinPacket(pWeapon, iTicks) > 1))
 		return 0;
 	
-	return std::min(Vars::Doubletap::TickLimit.Value - 1, m_iMaxShift);
+	return TickBudgetPolicy::Available(std::min(Vars::Doubletap::TickLimit.Value,m_iMaxShift), m_iMaxShift, m_iShiftedTicks);
 }
 
 int CTicks::GetShotsWithinPacket(CTFWeaponBase* pWeapon, int iTicks)
 {
-	iTicks = std::min(m_iMaxShift + 1, iTicks);
+	iTicks = std::max(0,std::min(m_iMaxShift, iTicks));
 
 	int iDelay = 1;
 	switch (pWeapon->GetWeaponID())
@@ -364,7 +385,7 @@ int CTicks::GetShotsWithinPacket(CTFWeaponBase* pWeapon, int iTicks)
 		iDelay = 2;
 	}
 
-	return 1 + (iTicks - iDelay) / std::max(std::ceilf(pWeapon->GetFireRate() / TICK_INTERVAL), 1.f);
+	return TickBudgetPolicy::Shots(iTicks, iDelay, TickBudgetPolicy::Interval(pWeapon->GetFireRate(), TICK_INTERVAL));
 }
 
 int CTicks::GetMinimumTicksNeeded(CTFWeaponBase* pWeapon)
@@ -378,7 +399,9 @@ int CTicks::GetMinimumTicksNeeded(CTFWeaponBase* pWeapon)
 		iDelay = 2;
 	}
 
-	return (GetShotsWithinPacket(pWeapon) - 1) * std::ceilf(pWeapon->GetFireRate() / TICK_INTERVAL) + iDelay;
+	const int shots = GetShotsWithinPacket(pWeapon);
+	const int interval = TickBudgetPolicy::Interval(pWeapon->GetFireRate(), TICK_INTERVAL);
+	return shots > 0 && interval > 0 ? (shots - 1) * interval + iDelay : 0;
 }
 
 void CTicks::SaveShootPos(CTFPlayer* pLocal)
@@ -417,9 +440,8 @@ void CTicks::Draw(CTFPlayer* pLocal)
 	if (!(Vars::Menu::Indicators.Value & Vars::Menu::IndicatorsEnum::Ticks) || !pLocal || !pLocal->IsAlive())
 		return;
 
-	const int antiAimTicks = F::AntiAim.YawOn() ? F::AntiAim.AntiAimTicks() : 0;
-	const int maximum = std::max(m_iMaxUsrCmdProcessTicks - antiAimTicks, 0);
-	const int ticks = std::clamp(m_iShiftedTicks + std::max(I::ClientState->chokedcommands - antiAimTicks, 0), 0, maximum);
+	const int maximum = std::max(m_iMaxShift,0);
+	const int ticks = std::clamp(m_iShiftedTicks,0,maximum);
 	const char* status = TickIndicatorStyle::Status(ticks, maximum, m_bSpeedhack, m_bWarp);
 	const std::string count = m_bSpeedhack ? std::format("x{}", Vars::Speedhack::Scale.Value) : std::format("{:02} / {:02}", ticks, maximum);
 	const char* countLabel = m_bSpeedhack ? "SCALE" : "STORED";

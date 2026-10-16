@@ -1,5 +1,6 @@
 #include "../SDK/SDK.h"
 #include "../Features/Visuals/AnimInterp/AnimInterp.h"
+#include "../Features/Visuals/FakeAngle/FakeAngle.h"
 #include "../Features/SkinChanger/RenderPolicy.h"
 #include "../Features/SkinChanger/SkinChanger.h"
 
@@ -27,12 +28,41 @@ namespace
         std::array<CAnimationLayer,64> layers{};
     };
     thread_local std::map<uint32_t,CosmeticHistory> histories;
+    using FakeIdentity=std::tuple<uint32_t,uintptr_t,uint32_t,int,int,int,uint64_t>;
+    struct FakeHistory
+    {
+        FakeIdentity identity{};double last=-1;int count=0,parity=0;
+        std::array<CAnimationLayer,64> layers{};
+    };
+    // One local preview per render thread. Never share the real or cosmetic queue.
+    thread_local FakeHistory fakeHistory;
 }
 
 MAKE_HOOK(CBaseAnimating_MaintainSequenceTransitions, S::CBaseAnimating_MaintainSequenceTransitions(), void,
 	void* rcx, void* boneSetup, float flCycle, Vec3 pos[], Vector4D q[])
 {
 	DEBUG_RETURN(CBaseAnimating_MaintainSequenceTransitions, rcx, boneSetup, flCycle, pos, q);
+	if (F::AnimInterp.IsBuildingFake())
+	{
+		auto player=reinterpret_cast<CTFPlayer*>(rcx);
+		if (!F::AnimInterp.ShouldTransition(player)||!S::SkinNative_TransitionLayout()
+			||!I::GlobalVars||!I::ClientState) return;
+		const FakeIdentity identity{uint32_t(player->GetRefEHandle().ToInt()),uintptr_t(player->GetModel()),
+			uint32_t(player->m_hActiveWeapon().ToInt()),player->m_iClass(),player->m_iTeamNum(),
+			I::ClientState->m_nServerCount,uint64_t(F::FakeAngle.Generation())};
+		auto& history=fakeHistory;
+		const double now=I::GlobalVars->curtime;
+		if(!SkinRender::BlendHistoryFresh(now,history.last,history.identity==identity)||history.count<0||history.count>=32)
+		{history.count=0;history.parity=player->m_nNewSequenceParity();}
+		history.identity=identity;history.last=now;
+		auto& queue=*reinterpret_cast<NativeQueue*>(uintptr_t(rcx)+0x7e0);
+		auto& parity=*reinterpret_cast<int*>(uintptr_t(rcx)+0xae4);
+		SkinRender::DrawStateScope queueScope(queue,NativeQueue{history.layers.data(),64,-1,history.count,0,history.layers.data()});
+		SkinRender::DrawStateScope parityScope(parity,history.parity);
+		CALL_ORIGINAL(rcx,boneSetup,flCycle,pos,q);
+		history.count=queue.count;history.parity=parity;
+		return; // A fake build must never fall through into either other history.
+	}
 	if (SkinRender::CosmeticPoseActive(rcx))
 	{
 		if (!S::SkinNative_TransitionLayout()||!I::GlobalVars) return;

@@ -1,6 +1,7 @@
 #include "../SDK/SDK.h"
 #include "../Features/Visuals/CapturePolicy.h"
 #include "../Features/Visuals/RenderAudit.h"
+#include "../Features/Visuals/PostProcessing/PostProcessing.h"
 
 MAKE_SIGNATURE(DoEnginePostProcessing, "client.dll", "48 8B C4 44 89 48 ? 44 89 40 ? 89 50 ? 89 48", 0x0);
 
@@ -18,4 +19,5 @@ MAKE_HOOK(DoEnginePostProcessing, S::DoEnginePostProcessing(), void,
 		CALL_ORIGINAL(x, y, w, h, bFlashlightIsOn, bPostVGui);
         RenderAudit::Sample(bPostVGui?"post.vgui.after":"post.world.after");
     }
+    PostFX::Apply(x,y,w,h,bPostVGui);
 }

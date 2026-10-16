@@ -5,7 +5,9 @@
 #include "../Features/ImGui/Menu/Menu.h"
 #include "../Features/Visuals/RenderAudit.h"
 #include "../Features/ImGui/DeviceStatePolicy.h"
+#include "../Features/ImGui/PresentBoundary.h"
 #include <type_traits>
+#include "../Features/Visuals/PostProcessing/Renderer.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -16,13 +18,14 @@ MAKE_HOOK(Direct3DDevice9_Present, U::Memory.GetVirtual(I::DirectXDevice, 17), H
 	DEBUG_RETURN(Direct3DDevice9_Present, pDevice, pSource, pDestination, hDestinationWindow, pDirtyRegion);
 
     if(G::Unload)return Direct3DContract::ForwardPresent(Hook.As<FN>(),pDevice,pSource,pDestination,hDestinationWindow,pDirtyRegion);
+    DeviceStatePolicy::PresentBoundary presentState(pDevice);
     RenderAudit::Sample("present.custom.before",pDevice);
-    F::Render.Render(pDevice);
+    if(presentState.Ready())F::Render.Render(pDevice);
     RenderAudit::Sample("present.custom.after",pDevice);
     DeviceStatePolicy::PresentState<IDirect3DDevice9,D3DRENDERSTATETYPE,DWORD> gammaWrite(pDevice,D3DRS_SRGBWRITEENABLE);
     const auto result=Direct3DContract::ForwardPresent(Hook.As<FN>(),pDevice,pSource,pDestination,hDestinationWindow,pDirtyRegion);
-    RenderAudit::Sample("present.native.after",pDevice);
-    gammaWrite.Restore(result);
+    RenderAudit::Sample("present.native.after",pDevice,false,result);
+    if(!presentState.Restore(result)&&SUCCEEDED(result)&&pDevice->TestCooperativeLevel()==D3D_OK)gammaWrite.Restore(result);
     RenderAudit::Sample("present.restored.after",pDevice);
     RenderAudit::Flush();
     return result;
@@ -33,6 +36,7 @@ MAKE_HOOK(Direct3DDevice9_Reset, U::Memory.GetVirtual(I::DirectXDevice, 16), HRE
 {
 	DEBUG_RETURN(Direct3DDevice9_Reset, pDevice, pPresentationParameters);
 	if(G::Unload)return CALL_ORIGINAL(pDevice,pPresentationParameters);
+	PostFX::renderer.Reset();
 	if (!F::Render.m_bInitialized) return CALL_ORIGINAL(pDevice,pPresentationParameters);
 
 	F::Render.ReleaseLauncherTextures();

@@ -1,6 +1,10 @@
 #include "MovementSimulation.h"
+#include "MovementImpact.h"
 #include "PredictionPolicy.h"
+#include "../../Aimbot/ProjectilePerformancePolicy.h"
 #include "LedgePrediction.h"
+#include "MovementInputPolicy.h"
+#include "../../NeuralMovement/NeuralMovement.h"
 #include "../../Aimbot/AimbotGlobal/AimbotGlobal.h"
 #include "../../Aimbot/ProjectileDiagnostics.h"
 
@@ -43,12 +47,14 @@ bool CMovementSimulation::PackReuse(MoveStorage& storage,std::vector<byte>& pack
 // Exclude the restore buffer, original command and path container: their ownership
 // stays with the current live simulation. All prediction scalars are copied/checked.
 #define REUSE_FIELDS(X) \
-    X(m_pPlayer) X(m_flAverageYaw) X(m_flCounterTime) \
+    X(m_pPlayer) X(m_flAverageYaw) X(m_flCounterTime) X(m_vObservedWish) X(m_bObservedWish) \
     X(m_vDiagnosticStartOrigin) X(m_vDiagnosticStartVelocity) X(m_bDiagnosticStartGrounded) \
-    X(m_bLedgeAware) X(m_bLedgeBraking) X(m_flLedgeStartTime) X(m_bBunnyHop) \
+    X(m_bLedgeAware) X(m_bLedgeBraking) X(m_bLedgeImpulse) X(m_iLedgeLanding) X(m_flLedgeStartTime) X(m_bBunnyHop) \
     X(m_flSimTime) X(m_flPredictedDelta) X(m_flPredictedSimTime) X(m_flDiagnosticNetworkOriginTime) \
     X(m_bDirectMove) X(m_bPredictNetworked) X(m_vPredictedOrigin) \
-    X(m_bFailed) X(m_bInitFailed) X(m_bInitialized)
+    X(m_bFailed) X(m_bInitFailed) X(m_bInitialized) \
+    X(m_bLearnedTiming) X(m_flTimingFirst) X(m_flTimingLeg) X(m_iTimingSign) X(m_flTimingBraking) \
+    X(m_bLedgeEvidence) X(m_bLedgeHold) X(m_bLedgeStopped) X(m_bLedgeSeen) X(m_bLedgeAheadSupport) X(m_iLedgeProbeAge) X(m_vLedgeProbeDirection)
 
 bool CMovementSimulation::SameReuseState(const MoveStorage& a,const MoveStorage& b)
 {
@@ -68,7 +74,7 @@ bool CMovementSimulation::SameReuseState(const MoveStorage& a,const MoveStorage&
 #undef CHECK_MOVE
 #define CHECK_COUNTER(field) if(a.m_CounterStrafe.field!=b.m_CounterStrafe.field) return false;
     CHECK_COUNTER(valid) CHECK_COUNTER(ax) CHECK_COUNTER(ay) CHECK_COUNTER(center) CHECK_COUNTER(drift)
-    CHECK_COUNTER(speed) CHECK_COUNTER(confidence) CHECK_COUNTER(driftLimit)
+    CHECK_COUNTER(speed) CHECK_COUNTER(confidence) CHECK_COUNTER(driftLimit) CHECK_COUNTER(kind) CHECK_COUNTER(repeated) CHECK_COUNTER(response) CHECK_COUNTER(along)
 #undef CHECK_COUNTER
     return true;
 }
@@ -134,9 +140,10 @@ bool CMovementSimulation::TryReuseTick(MoveStorage& storage,bool path,RunTickCal
     {m_bReuseValidation=true;return false;}
     ProjectileDiagnostics::Profile timer(ProjectileDiagnostics::MovementReuseReplay);
     auto& frame=m_vReuseFrames[m_nReuseCursor++];
-    CPredictionCopy copy={PC_EVERYTHING,storage.m_pPlayer,PC_DATA_NORMAL,frame.packed.data(),PC_DATA_PACKED};
-    copy.TransferData("MovementReuseReplay",storage.m_pPlayer->entindex(),storage.m_pPlayer->GetPredDescMap());
+    if (!PredictionRestore::Restore(storage.m_pPlayer,storage.m_RestoreSnapshot,frame.packed.data(),"MovementReuseReplay"))
+    { storage.m_bFailed=true; m_bReuseDisabled=true; return true; }
     CopyReuseState(storage,frame.state);
+    if(storage.m_bLedgeSeen) m_bLedgeEncountered=true; // replayed ticks still reached the edge
     storage.m_pPlayer->SetAbsOrigin(frame.absoluteOrigin);
     storage.m_vPath.push_back(frame.pathPoint);
     if(capture) ++ProjectileDiagnostics::reuse.hits;
@@ -145,7 +152,7 @@ bool CMovementSimulation::TryReuseTick(MoveStorage& storage,bool path,RunTickCal
 
 void CMovementSimulation::CaptureReuseTick(MoveStorage& storage,bool path,RunTickCallback* callback)
 {
-    if(!m_pReuseTarget || storage.m_pPlayer!=m_pReuseTarget || !m_bReuseAllowed || m_bReuseDisabled || !path || callback || LandingReplay::active)
+    if(MovementImpact::Active() || !m_pReuseTarget || storage.m_pPlayer!=m_pReuseTarget || !m_bReuseAllowed || m_bReuseDisabled || !path || callback || LandingReplay::active)
         return;
     ProjectileDiagnostics::Profile timer(ProjectileDiagnostics::MovementReuseCapture);
     auto* capture=ProjectileDiagnostics::current;
@@ -177,11 +184,9 @@ void CMovementSimulation::CaptureReuseTick(MoveStorage& storage,bool path,RunTic
 
 bool CMovementSimulation::Store(MoveStorage& tMoveStorage)
 {
-	auto pMap = tMoveStorage.m_pPlayer->GetPredDescMap();
-	if (!pMap)
-		return false;
-
-	size_t iSize = tMoveStorage.m_pPlayer->GetIntermediateDataSize();
+    if (!tMoveStorage.m_RestoreSnapshot.Capture(tMoveStorage.m_pPlayer)) return false;
+	auto pMap = tMoveStorage.m_RestoreSnapshot.map;
+	size_t iSize = tMoveStorage.m_RestoreSnapshot.size;
 	if (!iSize) return false;
 	tMoveStorage.m_pData = reinterpret_cast<byte*>(I::MemAlloc->Alloc(iSize));
 	if (!tMoveStorage.m_pData) return false;
@@ -195,11 +200,8 @@ void CMovementSimulation::Reset(MoveStorage& tMoveStorage)
 {
 	if (tMoveStorage.m_pData)
 	{
-		if (auto pMap = tMoveStorage.m_pPlayer->GetPredDescMap())
-		{
-			CPredictionCopy copy = { PC_EVERYTHING, tMoveStorage.m_pPlayer, PC_DATA_NORMAL, tMoveStorage.m_pData, PC_DATA_PACKED };
-			copy.TransferData("MovementSimulationReset", tMoveStorage.m_pPlayer->entindex(), pMap);
-		}
+        if (!PredictionRestore::Restore(tMoveStorage.m_pPlayer,tMoveStorage.m_RestoreSnapshot,
+            tMoveStorage.m_pData,"MovementSimulationReset")) tMoveStorage.m_bFailed=true;
 
 		I::MemAlloc->Free(tMoveStorage.m_pData);
 		tMoveStorage.m_pData = nullptr;
@@ -277,13 +279,17 @@ static inline void HandleMovement(CTFPlayer* pPlayer, MoveData* pLastRecord, Mov
 
 void CMovementSimulation::Clear()
 {
-    m_mRecords.clear(); m_mCounterRecords.clear(); m_mSimTimes.clear(); m_mIdentities.clear();
+    m_mRecords.clear(); m_mCounterRecords.clear(); m_mSimTimes.clear(); m_mIdentities.clear(); m_mMotionReceipts.clear();
+    m_bReuseDisabled=true; // Clear also invalidates an active same-target reuse scope.
 }
 
-void CMovementSimulation::StoreCounterHistory(int index)
+void CMovementSimulation::StoreCounterHistory(int index,bool continuing)
 {
     const auto& records=m_mRecords[index]; auto& history=m_mCounterRecords[index];
-    if(records.size()<=1) history.clear(); // Same identity/mode/discontinuity/wall resets as normal history.
+    // Identity, mode and discontinuity resets clear the pattern history. The
+    // ordinary history's wall-contact trim does not: a strafe leg that touches a
+    // wall is still part of the rhythm (Detect has its own corridor checks).
+    if(!continuing) history.clear();
     if(records.empty()) return;
     history.push_front(records.front());
     while(history.size()>160 || (!history.empty() && history.front().m_flSimTime-history.back().m_flSimTime>CounterStrafe::HistorySeconds)) history.pop_back();
@@ -302,26 +308,65 @@ CounterStrafe::Audit CMovementSimulation::DiagnosticCounterAudit(CTFPlayer* play
         samples.push_back({record.m_flSimTime,record.m_vOrigin.x,record.m_vOrigin.y,record.m_vVelocity.x,record.m_vVelocity.y});
     }
     std::reverse(samples.begin(),samples.end());
-    CounterStrafe::Detect(samples,&audit);
+    CounterStrafe::Detect(samples,&audit,true,true,TICK_INTERVAL);
     return audit;
+}
+
+bool CMovementSimulation::HistoryCurrent(CTFPlayer* player) const
+{
+    const int index=player->entindex();
+    const auto identity=m_mIdentities.find(index);
+    const auto records=m_mRecords.find(index);
+    return identity!=m_mIdentities.end()
+        && identity->second.handle==player->As<IHandleEntity>()->GetRefEHandle().ToInt()
+        && identity->second.spawn==player->m_iSpawnCounter()
+        && identity->second.server==I::ClientState->m_nServerCount
+        && records!=m_mRecords.end() && !records->second.empty()
+        && records->second.front().m_flSimTime==player->m_flSimulationTime()
+        && records->second.front().m_iMode==GetMoveMode(player);
+}
+
+bool CMovementSimulation::PatternHistoryFresh(CTFPlayer* player) const
+{
+    const auto found=m_mMotionReceipts.find(player->entindex());
+    if(found==m_mMotionReceipts.end() || !found->second.valid || !HistoryCurrent(player)) return false;
+    const float age=std::chrono::duration<float>(std::chrono::steady_clock::now()-found->second.received).count();
+    // Receipt age, not simulation time: unchanged/stale packets cannot keep a
+    // remembered oscillation alive. Do not change legacy ordinary history rules.
+    return age>=0.f && age<=.2f;
 }
 
 bool CMovementSimulation::AcceptRecord(CTFPlayer* player, float time, const Vec3& origin, const Vec3& velocity)
 {
     const int index = player->entindex();
-    const auto identity = static_cast<unsigned long>(player->As<IHandleEntity>()->GetRefEHandle().ToInt());
+    const HistoryIdentity identity{static_cast<unsigned long>(player->As<IHandleEntity>()->GetRefEHandle().ToInt()),
+        player->m_iSpawnCounter(),I::ClientState->m_nServerCount};
     auto& records = m_mRecords[index];
-    if (!m_mIdentities.contains(index) || m_mIdentities[index] != identity)
-    { records.clear(); m_mSimTimes[index].clear(); m_mIdentities[index] = identity; }
-    if (!std::isfinite(time)) { records.clear(); m_mCounterRecords[index].clear(); m_mSimTimes[index].clear(); return false; }
+    const auto clear=[&] { records.clear(); m_mCounterRecords[index].clear(); m_mSimTimes[index].clear(); };
+    if (!m_mIdentities.contains(index) || m_mIdentities[index]!=identity)
+    { clear(); m_mMotionReceipts.erase(index); m_mIdentities[index]=identity; }
+    if (!std::isfinite(time) || !std::isfinite(origin.x) || !std::isfinite(origin.y) || !std::isfinite(origin.z)
+        || !std::isfinite(velocity.x) || !std::isfinite(velocity.y) || !std::isfinite(velocity.z))
+    { clear(); m_mMotionReceipts.erase(index); return false; }
     if (!records.empty())
     {
         const auto& last = records.front();
         if (time == last.m_flSimTime) return false;
         if (PredictionPolicy::Discontinuity(time-last.m_flSimTime, origin.DistTo(last.m_vOrigin),
             std::max(velocity.Length(), last.m_vVelocity.Length())) || GetMoveMode(player) != last.m_iMode)
-        { records.clear(); m_mSimTimes[index].clear(); }
+            clear();
     }
+    auto& receipt=m_mMotionReceipts[index];
+    const float dt=time-receipt.time;
+    // Ground/air mode resets do not erase an observed impulse. This is an
+    // evidence guard, not a claim that future buttons or jump type are known.
+    const float maxSpeed=std::max(SDK::MaxSpeed(player),1.f);
+    const bool sudden=receipt.valid && dt>0.f && dt<=.12f
+        && (velocity-receipt.velocity).Length2D()>maxSpeed*14.f*dt+80.f;
+    receipt.impulse=sudden || (receipt.valid && dt>0.f && dt<=.12f && velocity.z-receipt.velocity.z>350.f)
+        || player->InCond(TF_COND_BLASTJUMPING) || velocity.Length2D()>maxSpeed*1.3f
+        || player->InCond(TF_COND_LOST_FOOTING) || player->InCond(TF_COND_AIR_CURRENT);
+    receipt.received=std::chrono::steady_clock::now();receipt.velocity=velocity;receipt.time=time;receipt.valid=true;
     return true;
 }
 
@@ -335,16 +380,18 @@ void CMovementSimulation::Store()
 	std::erase_if(m_mRecords, [&](const auto& item) { return !present.contains(item.first); });
     std::erase_if(m_mCounterRecords, [&](const auto& item) { return !present.contains(item.first); });
 	std::erase_if(m_mSimTimes, [&](const auto& item) { return !present.contains(item.first); });
+	std::erase_if(m_mMotionReceipts, [&](const auto& item) { return !present.contains(item.first); });
 	std::erase_if(m_mIdentities, [&](const auto& item) { return !present.contains(item.first); });
 
 	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerAll))
 	{
 		auto pPlayer = pEntity->As<CTFPlayer>();
 		auto& vRecords = m_mRecords[pPlayer->entindex()];
-		const bool keepReversalStops = Vars::Aimbot::Projectile::StrafePrediction.Value & Vars::Aimbot::Projectile::StrafePredictionEnum::CounterStrafe;
+		const bool keepReversalStops = Vars::Aimbot::Projectile::StrafePrediction.Value & (Vars::Aimbot::Projectile::StrafePredictionEnum::CounterStrafe | Vars::Aimbot::Projectile::StrafePredictionEnum::Snake);
 		if (!pPlayer->IsAlive() || pPlayer->IsAGhost() || pPlayer->IsDormant() || (pPlayer->m_vecVelocity().IsZero() && !keepReversalStops))
 		{
 			vRecords.clear();
+            m_mMotionReceipts.erase(pPlayer->entindex());
 			m_mCounterRecords[pPlayer->entindex()].clear();
 			m_mSimTimes[pPlayer->entindex()].clear();
 			continue;
@@ -356,6 +403,7 @@ void CMovementSimulation::Store()
 		Vec3 vOrigin = pPlayer->m_vecOrigin();
 		Vec3 vDirection = vVelocity.To2D();
 		if (!AcceptRecord(pPlayer, pPlayer->m_flSimulationTime(), vOrigin, vVelocity)) continue;
+        const bool continuing=!vRecords.empty();
 
 		MoveData* pLastRecord = !vRecords.empty() ? &vRecords.front() : nullptr;
 		vRecords.emplace_front(
@@ -370,7 +418,7 @@ void CMovementSimulation::Store()
 			vRecords.pop_back();
 
 		HandleMovement(pPlayer, pLastRecord, tCurRecord, vRecords);
-        StoreCounterHistory(pPlayer->entindex());
+        StoreCounterHistory(pPlayer->entindex(),continuing);
 	}
 
 	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerAll))
@@ -407,6 +455,7 @@ void CMovementSimulation::StorePlayer(CTFPlayer* pPlayer, CMoveData& tMoveData, 
 	Vec3 vOrigin = tMoveData.m_vecAbsOrigin;
 	Vec3 vDirection = Math::RotatePoint({ tMoveData.m_flForwardMove, -tMoveData.m_flSideMove, tMoveData.m_flUpMove }, {}, { 0, tMoveData.m_vecViewAngles.y, 0 });
 	if (!AcceptRecord(pPlayer, flTime, vOrigin, vVelocity)) return;
+    const bool continuing=!vRecords.empty();
 
 	MoveData* pLastRecord = !vRecords.empty() ? &vRecords.front() : nullptr;
 	vRecords.emplace_front(
@@ -421,7 +470,7 @@ void CMovementSimulation::StorePlayer(CTFPlayer* pPlayer, CMoveData& tMoveData, 
 		vRecords.pop_back();
 
 	HandleMovement(pPlayer, pLastRecord, tCurRecord, vRecords);
-    StoreCounterHistory(pPlayer->entindex());
+    StoreCounterHistory(pPlayer->entindex(),continuing);
 }
 
 
@@ -460,8 +509,34 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tMoveSto
 	if (pPlayer->m_MoveType() == MOVETYPE_NONE || pPlayer->m_MoveType() == MOVETYPE_OBSERVER)
 		pPlayer->m_MoveType() = MOVETYPE_WALK;
 
-	if (auto pAvgVelocity = H::Entities.GetAvgVelocity(pPlayer->entindex()))
-		pPlayer->m_vecVelocity() = *pAvgVelocity; // only use average velocity here
+    // History belongs to a full entity lifetime, not merely a reused player index.
+    // Never revive pre-respawn/old-mode steering or an unstamped average buffer.
+    if (pPlayer->entindex()!=I::EngineClient->GetLocalPlayer() && !HistoryCurrent(pPlayer))
+    {
+        m_mRecords[pPlayer->entindex()].clear();
+        m_mCounterRecords[pPlayer->entindex()].clear();
+        m_mSimTimes[pPlayer->entindex()].clear();
+    }
+    const bool patternAllowed=bStrafe && !NeuralMovement::TargetForced(pPlayer)
+        && pPlayer->entindex()!=I::EngineClient->GetLocalPlayer()
+        && (Vars::Aimbot::Projectile::StrafePrediction.Value & (Vars::Aimbot::Projectile::StrafePredictionEnum::CounterStrafe
+            | Vars::Aimbot::Projectile::StrafePredictionEnum::Snake | Vars::Aimbot::Projectile::StrafePredictionEnum::LedgeAware
+            | Vars::Aimbot::Projectile::StrafePredictionEnum::Knockback));
+    const bool freshPattern=patternAllowed && PatternHistoryFresh(pPlayer);
+    // Starting velocity, independent of which pattern predictors are enabled
+    // (enabling Counter/Snake/Ledge used to silently switch this off for every
+    // target). The averaged estimate only extends back over records consistent
+    // with one velocity, so it follows changes quickly but filters the 1/8-unit
+    // origin noise and corrects airborne gravity. A fresh received impulse keeps
+    // the raw chord. The ground input fit below still overrides this when valid.
+    if (HistoryCurrent(pPlayer) && m_mRecords[pPlayer->entindex()].size()>=2)
+    {
+        const bool impulse=PatternHistoryFresh(pPlayer) && m_mMotionReceipts[pPlayer->entindex()].impulse;
+        if (!impulse)
+            if (auto pAvgVelocity=H::Entities.GetAvgVelocity(pPlayer->entindex()); pAvgVelocity
+                && std::isfinite(pAvgVelocity->x) && std::isfinite(pAvgVelocity->y) && std::isfinite(pAvgVelocity->z))
+                pPlayer->m_vecVelocity()=*pAvgVelocity;
+    }
 
 	pPlayer->m_bDucked() = pPlayer->IsDucking() && !pPlayer->IsDormant();
 	pPlayer->m_fFlags() &= ~FL_DUCKING; // breaks origin's z if FL_DUCKING is not removed
@@ -473,7 +548,7 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tMoveSto
 	if (pPlayer->entindex() != I::EngineClient->GetLocalPlayer())
 	{
 		pPlayer->m_vecBaseVelocity() = Vec3(); // residual basevelocity causes issues
-		if (pPlayer->IsOnGround() && !pPlayer->IsDormant())
+		if (pPlayer->IsOnGround() && !pPlayer->IsDormant() && !(freshPattern && m_mMotionReceipts[pPlayer->entindex()].impulse))
 			pPlayer->m_vecVelocity().z = std::min(pPlayer->m_vecVelocity().z, 0.f); // step fix
 		else
 			pPlayer->m_hGroundEntity() = nullptr; // fix for velocity.z being set to 0 even if in air
@@ -482,7 +557,9 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tMoveSto
 		tMoveStorage.m_bBunnyHop = true;
 
 	// setup move data
-	SetupMoveData(tMoveStorage);
+	SetupMoveData(tMoveStorage,freshPattern && !m_mMotionReceipts[pPlayer->entindex()].impulse
+        && (Vars::Aimbot::Projectile::StrafePrediction.Value & (Vars::Aimbot::Projectile::StrafePredictionEnum::CounterStrafe
+            | Vars::Aimbot::Projectile::StrafePredictionEnum::Snake)));
 	if (CheckStuck(tMoveStorage))
 	{
 		tMoveStorage.m_bFailed = true;
@@ -490,28 +567,15 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tMoveSto
 	}
 
 	// calculate strafe if desired
-    float ledgeAge=-1.f,ledgePreviousSpeed=0.f,ledgeDirectionDot=0.f;
-    int ledgeRecords=0;
-	if (bStrafe && (Vars::Aimbot::Projectile::StrafePrediction.Value & Vars::Aimbot::Projectile::StrafePredictionEnum::LedgeAware)
-		&& pPlayer->entindex()!=I::EngineClient->GetLocalPlayer() && pPlayer->IsOnGround()
-		&& !pPlayer->IsSwimming() && !pPlayer->InCond(TF_COND_SHIELD_CHARGE))
-	{
-		const auto& records=m_mRecords[pPlayer->entindex()];
-        ledgeRecords=int(records.size());
-		for (size_t i=1;i<records.size();++i)
-		{
-			const auto& now=records.front(); const auto& old=records[i];
-			const float age=now.m_flSimTime-old.m_flSimTime;
-			if(old.m_iMode!=MoveEnum::Ground || age>.25f) break;
-			const auto a=now.m_vVelocity.Normalized2D(), b=old.m_vVelocity.Normalized2D();
-            ledgeAge=age;ledgePreviousSpeed=old.m_vVelocity.Length2D();ledgeDirectionDot=a.x*b.x+a.y*b.y;
-			if(LedgePrediction::Evidence(now.m_vVelocity.Length2D(),old.m_vVelocity.Length2D(),a.x*b.x+a.y*b.y,age))
-			{ tMoveStorage.m_bLedgeAware=true; break; }
-		}
-		tMoveStorage.m_flLedgeStartTime=tMoveStorage.m_flSimTime;
-	}
-    if(ProjectileDiagnostics::LedgeSample(0))
-        ProjectileDiagnostics::Ledge("ledge_eligibility",std::format("entity={} enabled={} strafe={} local={} grounded={} swimming={} charging={} records={} evidence={} history_age={} previous_speed={} direction_dot={} speed={} simtime={} origin={},{},{}",pPlayer->entindex(),bool(Vars::Aimbot::Projectile::StrafePrediction.Value & Vars::Aimbot::Projectile::StrafePredictionEnum::LedgeAware),bStrafe,pPlayer->entindex()==I::EngineClient->GetLocalPlayer(),pPlayer->IsOnGround(),pPlayer->IsSwimming(),pPlayer->InCond(TF_COND_SHIELD_CHARGE),ledgeRecords,tMoveStorage.m_bLedgeAware,ledgeAge,ledgePreviousSpeed,ledgeDirectionDot,pPlayer->m_vecVelocity().Length2D(),tMoveStorage.m_flSimTime,pPlayer->GetAbsOrigin().x,pPlayer->GetAbsOrigin().y,pPlayer->GetAbsOrigin().z));
+    tMoveStorage.m_bLedgeAware=freshPattern
+        && (Vars::Aimbot::Projectile::StrafePrediction.Value & Vars::Aimbot::Projectile::StrafePredictionEnum::LedgeAware)
+        && !pPlayer->IsSwimming() && !pPlayer->InCond(TF_COND_SHIELD_CHARGE);
+    tMoveStorage.m_bLedgeImpulse=freshPattern && m_mMotionReceipts[pPlayer->entindex()].impulse;
+    tMoveStorage.m_flLedgeStartTime=tMoveStorage.m_flSimTime;
+    if(tMoveStorage.m_bLedgeAware) {
+        tMoveStorage.m_bLedgeEvidence=LedgeEvidence(pPlayer);
+        tMoveStorage.m_bLedgeHold=LedgePrediction::HoldHypothesis(tMoveStorage.m_bLedgeEvidence,m_iLedgeHypothesis!=0);
+    }
 	if (!StrafePrediction(tMoveStorage, bStrafe, bHitchance))
 	{
 		tMoveStorage.m_bFailed = true;
@@ -522,14 +586,74 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tMoveSto
 	tMoveStorage.m_vPath = { tMoveStorage.m_MoveData.m_vecAbsOrigin };
 	if (bPredict)
 	{
-		for (int i = 0; i < H::Entities.GetChoke(pPlayer->entindex()); i++)
-			RunTick(tMoveStorage);
+        for (int i=0, count=H::Entities.GetChoke(pPlayer->entindex()); i<count; ++i)
+        {
+            if (!ProjectilePerformancePolicy::SearchStep(ProjectilePerformancePolicy::SearchWork::Prediction))
+            { tMoveStorage.m_bFailed=true; Restore(tMoveStorage); return false; }
+            RunTick(tMoveStorage);
+            if (tMoveStorage.m_bFailed) { Restore(tMoveStorage); return false; }
+        }
 	}
 
 	return true;
 }
 
-void CMovementSimulation::SetupMoveData(MoveStorage& tMoveStorage)
+static MovementInputPolicy::Physics MovementPhysics(CTFPlayer* player,float maxSpeed,bool ground)
+{
+    static auto friction=H::ConVars.FindVar("sv_friction");
+    static auto stop=H::ConVars.FindVar("sv_stopspeed");
+    static auto accelerate=H::ConVars.FindVar("sv_accelerate");
+    static auto airAccelerate=H::ConVars.FindVar("sv_airaccelerate");
+    if(!friction || !stop || !accelerate || !airAccelerate) return {};
+    return {TICK_INTERVAL,maxSpeed,friction->GetFloat(),stop->GetFloat(),
+        (ground?accelerate:airAccelerate)->GetFloat(),player->m_surfaceFriction(),player->InCond(TF_COND_LOST_FOOTING)};
+}
+
+// World-space wish expressed in the CURRENT view frame (view yaw unchanged).
+static void SetWorldWish(CMoveData& move,MovementInputPolicy::Vector wish)
+{
+    Vec3 forward,right;
+    Math::AngleVectors({0,move.m_vecViewAngles.y,0},&forward,&right);
+    move.m_flForwardMove=wish.x*forward.x+wish.y*forward.y;
+    move.m_flSideMove=wish.x*right.x+wish.y*right.y;
+}
+
+// Remote view angles are unknown, so the simulated view faces the wish. A view
+// fixed elsewhere would make native WalkMove apply its backpedal clamp
+// (tf_clamp_back_speed 0.9) to every reversed counter-strafe leg.
+static void ApplyMovementInput(CMoveData& move,MovementInputPolicy::Vector wish)
+{
+    const float speed=std::hypot(wish.x,wish.y);
+    if(!std::isfinite(speed) || speed<.001f) {move.m_flForwardMove=move.m_flSideMove=0.f;return;}
+    move.m_vecViewAngles.y=Math::VectorAngles(Vec3(wish.x,wish.y,0.f)).y;
+    move.m_flForwardMove=speed;move.m_flSideMove=0.f;
+}
+
+bool CMovementSimulation::LedgeEvidence(CTFPlayer* player)
+{
+    // Received slowdown or a sharp turn shortly before now: the player is
+    // reacting (to an edge, or anything). Only consulted once the simulation
+    // actually reaches a drop, where it decides the primary ledge hypothesis.
+    const auto found=m_mRecords.find(player->entindex());
+    if(found==m_mRecords.end() || found->second.size()<2) return false;
+    const auto& records=found->second;
+    const auto& now=records.front();
+    if(now.m_iMode!=MoveEnum::Ground) return false;
+    const MoveData* best=nullptr;float bestScore=1e30f;
+    for(size_t i=1;i<records.size();++i) {
+        const float age=now.m_flSimTime-records[i].m_flSimTime;
+        if(age>.25f || records[i].m_iMode!=MoveEnum::Ground) break;
+        if(age<.06f) continue;
+        const float score=std::fabs(age-.12f);
+        if(score<bestScore) {bestScore=score;best=&records[i];}
+    }
+    if(!best) return false;
+    const float speed=now.m_vVelocity.Length2D(),previous=best->m_vVelocity.Length2D();
+    const float dot=speed>1.f&&previous>1.f?now.m_vVelocity.Normalized2D().Dot(best->m_vVelocity.Normalized2D()):1.f;
+    return LedgePrediction::Evidence(speed,previous,dot,now.m_flSimTime-best->m_flSimTime);
+}
+
+void CMovementSimulation::SetupMoveData(MoveStorage& tMoveStorage, bool observedPattern)
 {
 	tMoveStorage.m_MoveData.m_bFirstRunOfFunctions = false;
 	tMoveStorage.m_MoveData.m_bGameCodeMovedPlayer = false;
@@ -559,9 +683,25 @@ void CMovementSimulation::SetupMoveData(MoveStorage& tMoveStorage)
 			auto& tRecord = vRecords.front();
 			if (!tRecord.m_vDirection.IsZero())
 			{
-				G::DummyCmd.forwardmove = tRecord.m_vDirection.x;
-				G::DummyCmd.sidemove = -tRecord.m_vDirection.y;
-				G::DummyCmd.upmove = tRecord.m_vDirection.z;
+                Vec3 direction=tRecord.m_vDirection;
+                // A remote ground player who is still gaining speed along a steady
+                // heading is holding a key: wish full speed, not the current speed.
+                // (The exact input fit below overrides this whenever it succeeds.)
+                if (iIndex != I::EngineClient->GetLocalPlayer() && !tRecord.m_bInputDirection && vRecords.size()>=2
+                    && !tMoveStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE)
+                    && tRecord.m_iMode==MoveEnum::Ground && vRecords[1].m_iMode==MoveEnum::Ground)
+                {
+                    const auto& older=vRecords[1];
+                    const float dt=tRecord.m_flSimTime-older.m_flSimTime;
+                    const float speed=tRecord.m_vVelocity.Length2D(),before=older.m_vVelocity.Length2D();
+                    const float noise=dt>0.f?2.f*MovementInputPolicy::OriginQuantum/dt:1e30f;
+                    if (speed>1.f && before>1.f && speed>before+noise && speed<tMoveStorage.m_MoveData.m_flMaxSpeed-1.f
+                        && tRecord.m_vVelocity.Normalized2D().Dot(older.m_vVelocity.Normalized2D())>.95f)
+                        direction=tRecord.m_vVelocity.Normalized2D()*tMoveStorage.m_MoveData.m_flMaxSpeed;
+                }
+				G::DummyCmd.forwardmove = direction.x;
+				G::DummyCmd.sidemove = -direction.y;
+				G::DummyCmd.upmove = direction.z;
 				SDK::FixMovement(&G::DummyCmd, {}, tMoveStorage.m_MoveData.m_vecViewAngles);
 				tMoveStorage.m_MoveData.m_flForwardMove = G::DummyCmd.forwardmove;
 				tMoveStorage.m_MoveData.m_flSideMove = G::DummyCmd.sidemove;
@@ -569,6 +709,59 @@ void CMovementSimulation::SetupMoveData(MoveStorage& tMoveStorage)
 			}
 		}
 	}
+
+    auto* player=tMoveStorage.m_pPlayer;
+    auto& move=tMoveStorage.m_MoveData;
+    const auto& history=m_mRecords[player->entindex()];
+    if(player->entindex()!=I::EngineClient->GetLocalPlayer() && HistoryCurrent(player)
+        && player->IsOnGround() && !player->IsSwimming() && !player->m_bDucked()
+        && player->m_MoveType()==MOVETYPE_WALK && !player->InCond(TF_COND_SHIELD_CHARGE)
+        && !player->InCond(TF_COND_LOST_FOOTING) && !player->InCond(TF_COND_AIR_CURRENT)
+        && history.size()>=2)
+    {
+        const auto& current=history[0]; const auto& previous=history[1];
+        // Ground contacts/knockback/slopes do not uniquely identify input.
+        // The enabled pattern path can also fit a short received interval, but
+        // must reproduce both its velocity and displacement on clear flat ground.
+        if(previous.m_iMode==MoveEnum::Ground && current.m_iMode==MoveEnum::Ground
+            && previous.m_vVelocity.z==0.f && current.m_vVelocity.z==0.f
+            && std::abs(current.m_vOrigin.z-previous.m_vOrigin.z)<=PLAYER_ORIGIN_COMPRESSION)
+        {
+            auto inferred=MovementInputPolicy::InferGround(
+                {previous.m_vVelocity.x,previous.m_vVelocity.y},{current.m_vVelocity.x,current.m_vVelocity.y},
+                current.m_flSimTime-previous.m_flSimTime,MovementPhysics(player,move.m_flMaxSpeed,true));
+            if(observedPattern) {
+                const auto interval=MovementInputPolicy::InferGroundInterval(
+                    {previous.m_vVelocity.x,previous.m_vVelocity.y},{current.m_vVelocity.x,current.m_vVelocity.y},
+                    {current.m_vOrigin.x-previous.m_vOrigin.x,current.m_vOrigin.y-previous.m_vOrigin.y},
+                    current.m_flSimTime-previous.m_flSimTime,MovementPhysics(player,move.m_flMaxSpeed,true),
+                    std::max(.0001f,std::nextafter(current.m_flSimTime,std::numeric_limits<float>::infinity())-current.m_flSimTime));
+                if(interval.valid)inferred=interval;
+                else observedPattern=false; // Never label an unverified adjacent fallback as observed input.
+            }
+            if(inferred.valid)
+            {
+                CTraceFilterWorldAndPropsOnly filter={};filter.pSkip=player;
+                CGameTrace route={};
+                SDK::TraceHull(previous.m_vOrigin,current.m_vOrigin,player->m_vecMins()+PLAYER_ORIGIN_COMPRESSION,
+                    player->m_vecMaxs()-PLAYER_ORIGIN_COMPRESSION,player->SolidMask(),&filter,&route);
+                if(!route.DidHit() && !route.startsolid && !route.allsolid)
+                {
+                    // The inverse was fitted to this exact observation. Applying it
+                    // to an older averaged starting speed would reintroduce lag.
+                    // A multi-tick fit also gives the native END velocity, which the
+                    // received chord (an interval mean) lags behind.
+                    move.m_vecVelocity.x=inferred.hasEnd?inferred.end.x:current.m_vVelocity.x;
+                    move.m_vecVelocity.y=inferred.hasEnd?inferred.end.y:current.m_vVelocity.y;
+                    ApplyMovementInput(move,inferred.wish);
+                    if(observedPattern) {
+                        tMoveStorage.m_vObservedWish={inferred.wish.x,inferred.wish.y,0};
+                        tMoveStorage.m_bObservedWish=true;
+                    }
+                }
+            }
+        }
+    }
 
 	tMoveStorage.m_MoveData.m_vecAngles = tMoveStorage.m_MoveData.m_vecOldAngles = tMoveStorage.m_MoveData.m_vecViewAngles;
 	if (auto pConstraintEntity = tMoveStorage.m_pPlayer->m_hConstraintEntity().Get())
@@ -630,7 +823,7 @@ static inline void VisualizeRecords(MoveData& tRecord1, MoveData& tRecord2, Colo
 	const float flTime1 = tRecord1.m_flSimTime, flTime2 = tRecord2.m_flSimTime;
 	const int iTicks = std::max(TIME_TO_TICKS(flTime1 - flTime2), 1);
 	const float flYaw = Math::NormalizeAngle(flYaw1 - flYaw2);
-	const bool bStraight = fabsf(flYaw) * tRecord1.m_vVelocity.Length2D() * iTicks < flStraightFuzzyValue; // dumb way to get straight bool
+	const bool bStraight = fabsf(flYaw) / iTicks * tRecord1.m_vVelocity.Length2D() < flStraightFuzzyValue;
 
 	G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(tRecord1.m_vOrigin, tRecord2.m_vOrigin), I::GlobalVars->curtime + 5.f, tColor);
 	G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(tRecord1.m_vOrigin, tRecord1.m_vOrigin + Vec3(0, 0, 5)), I::GlobalVars->curtime + 5.f, tColor);
@@ -673,7 +866,8 @@ static inline bool GetYawDifference(MoveData& tRecord1, MoveData& tRecord2, bool
 	const bool iCurrZero = bStaticZero = !*pYaw;
 
 	const bool bChanged = iCurrSign != iLastSign || iCurrZero && iLastZero;
-	const bool bStraight = fabsf(*pYaw) * tRecord1.m_vVelocity.Length2D() * iTicks < flStraightFuzzyValue; // dumb way to get straight bool
+	// Per-tick turn: *pYaw already spans iTicks, so divide (it used to multiply).
+	const bool bStraight = fabsf(*pYaw) / iTicks * tRecord1.m_vVelocity.Length2D() < flStraightFuzzyValue;
 
 	if (bStart)
 	{
@@ -791,8 +985,12 @@ void CMovementSimulation::GetAverageYaw(MoveStorage& tMoveStorage, int iSamples)
 
 bool CMovementSimulation::StrafePrediction(MoveStorage& tMoveStorage, bool bStrafe, bool bHitchance)
 {
+    bool patternEnded=false; // a recently received strafe pattern just ended
     if(ProjectileDiagnostics::MovementSample()) ProjectileDiagnostics::Ledge("movement_settings",std::format("entity={} strafe={} flags={} grounded={} direct_move={} swimming={} charging={} local={} hitchance_check={} hitchance={} ground_samples={} air_samples={} records={} origin={},{},{} velocity={},{},{}",tMoveStorage.m_pPlayer->entindex(),bStrafe,Vars::Aimbot::Projectile::StrafePrediction.Value,tMoveStorage.m_pPlayer->IsOnGround(),tMoveStorage.m_bDirectMove,tMoveStorage.m_pPlayer->IsSwimming(),tMoveStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE),tMoveStorage.m_pPlayer->entindex()==I::EngineClient->GetLocalPlayer(),bHitchance,Vars::Aimbot::Projectile::HitChance.Value,Vars::Aimbot::Projectile::GroundSamples.Value,Vars::Aimbot::Projectile::AirSamples.Value,m_mRecords[tMoveStorage.m_pPlayer->entindex()].size(),tMoveStorage.m_MoveData.m_vecAbsOrigin.x,tMoveStorage.m_MoveData.m_vecAbsOrigin.y,tMoveStorage.m_MoveData.m_vecAbsOrigin.z,tMoveStorage.m_MoveData.m_vecVelocity.x,tMoveStorage.m_MoveData.m_vecVelocity.y,tMoveStorage.m_MoveData.m_vecVelocity.z));
-	if (bStrafe && (Vars::Aimbot::Projectile::StrafePrediction.Value & Vars::Aimbot::Projectile::StrafePredictionEnum::CounterStrafe)
+	if (bStrafe && !NeuralMovement::TargetForced(tMoveStorage.m_pPlayer)
+        && PatternHistoryFresh(tMoveStorage.m_pPlayer)
+        && !m_mMotionReceipts[tMoveStorage.m_pPlayer->entindex()].impulse
+        && (Vars::Aimbot::Projectile::StrafePrediction.Value & (Vars::Aimbot::Projectile::StrafePredictionEnum::CounterStrafe | Vars::Aimbot::Projectile::StrafePredictionEnum::Snake))
 		&& tMoveStorage.m_pPlayer->entindex() != I::EngineClient->GetLocalPlayer()
 		&& !tMoveStorage.m_pPlayer->IsSwimming() && !tMoveStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE))
 	{
@@ -806,13 +1004,28 @@ bool CMovementSimulation::StrafePrediction(MoveStorage& tMoveStorage, bool bStra
 		std::reverse(samples.begin(),samples.end());
         CounterStrafe::Audit audit;
         const bool logCounter=ProjectileDiagnostics::MovementSample();
-		tMoveStorage.m_CounterStrafe=CounterStrafe::Detect(samples,logCounter?&audit:nullptr);
+		tMoveStorage.m_CounterStrafe=CounterStrafe::Detect(samples,&audit,
+            bool(Vars::Aimbot::Projectile::StrafePrediction.Value & Vars::Aimbot::Projectile::StrafePredictionEnum::CounterStrafe),
+            bool(Vars::Aimbot::Projectile::StrafePrediction.Value & Vars::Aimbot::Projectile::StrafePredictionEnum::Snake),TICK_INTERVAL);
         if(logCounter) {
             const auto& e=tMoveStorage.m_CounterStrafe;
             ProjectileDiagnostics::Ledge("counter_model",std::format("entity={} extended={} interval={} freshness={} width_limit={} mean_drift={} cycle_drift={} drift_limit={} policy=cycle_drift_bounded_slow_history",tMoveStorage.m_pPlayer->entindex(),audit.extended,audit.interval,audit.freshness,audit.widthLimit,audit.meanDrift,e.drift,e.driftLimit));
             ProjectileDiagnostics::Ledge("counter_history",std::format("entity={} reversal_age={} low={} high={} rejection_mask={} grounded={} current_lateral={} score_kind=directional_balance_not_probability timing_model=center_convergence_not_next_reversal",tMoveStorage.m_pPlayer->entindex(),audit.age,audit.low,audit.high,audit.rejectionMask,tMoveStorage.m_pPlayer->IsOnGround(),samples.empty()?0.f:samples.back().vx*audit.axisX+samples.back().vy*audit.axisY));
             ProjectileDiagnostics::Ledge("counter_detect",std::format("entity={} reason={} samples={} duration={} rapid={} reversals={} positive={} negative={} variance={} corridor_width={} drift={} agreement={} valid={} axis={},{} center={} speed={} confidence={}",tMoveStorage.m_pPlayer->entindex(),audit.reason,samples.size(),audit.duration,audit.rapid,audit.reversals,audit.positive,audit.negative,audit.variance,audit.width,audit.drift,audit.agreement,e.valid,e.ax,e.ay,e.center,e.speed,e.confidence));
         }
+        if(!tMoveStorage.m_CounterStrafe.valid &&
+            (!std::strcmp(audit.reason,"stopped_pattern") || !std::strcmp(audit.reason,"direction_changed_or_stopped"))) {
+            tMoveStorage.m_flAverageYaw=0.f;return true;
+        }
+        // A pattern that ended (held leg, broke out of its corridor, a single turn
+        // that was not repeated) no longer suppresses the ordinary turn predictor
+        // for the rest of the 2.1 s window. Its own consistency test only uses the
+        // records since the last sign change. The strafing history must not fail
+        // the ordinary hit chance windows, so that check is skipped here.
+        if(!tMoveStorage.m_CounterStrafe.valid &&
+            (!std::strcmp(audit.reason,"outside_corridor") || !std::strcmp(audit.reason,"pattern_ended")
+                || !std::strcmp(audit.reason,"single_turn_finished")))
+            patternEnded=true;
 		if(tMoveStorage.m_CounterStrafe.valid)
 		{
 			// Use reversal balance instead of the constant-turn consistency test for this model.
@@ -822,8 +1035,30 @@ bool CMovementSimulation::StrafePrediction(MoveStorage& tMoveStorage, bool bStra
 				return false;
 			}
 			tMoveStorage.m_flAverageYaw=0.f;
+            // Learned strafe timing replaces centre convergence for repeated (non-rapid) patterns.
+            tMoveStorage.m_bLearnedTiming=false;
+            if(const auto& e=tMoveStorage.m_CounterStrafe; m_bAllowLearnedTiming && e.repeated && e.kind!=CounterStrafe::Kind::Single && e.response>.07f) {
+                float first=0.f,leg=0.f,dx=0.f,dy=0.f;
+                const auto& v=tMoveStorage.m_MoveData.m_vecVelocity;const float lateral=v.x*e.ax+v.y*e.ay-e.drift;
+                // The learned leg's direction must agree with the corridor's current lateral direction.
+                if(std::fabs(lateral)>=20.f && NeuralMovement::ReversalPlan(tMoveStorage.m_pPlayer,m_iReversalHypothesis,first,leg,dx,dy)
+                    && (dx*e.ax+dy*e.ay)*lateral>0.f) {
+                    tMoveStorage.m_bLearnedTiming=true;tMoveStorage.m_flTimingFirst=first;tMoveStorage.m_flTimingLeg=leg;
+                    // Native braking time from the reversed wish to the zero crossing
+                    // (~0.08 s at full speed for every class; not proportional to speed).
+                    tMoveStorage.m_flTimingBraking=MovementInputPolicy::ReversalTime(e.speed,
+                        MovementPhysics(tMoveStorage.m_pPlayer,std::min(tMoveStorage.m_MoveData.m_flMaxSpeed,tMoveStorage.m_MoveData.m_flClientMaxSpeed),true));
+                    tMoveStorage.m_iTimingSign=lateral>0.f?1:-1;m_bReversalPlanned=true;m_flPlannedFirst=first;
+                }
+            }
 			return true;
 		}
+        // Respond to measured braking before a complete reversal exists.
+        // Passive friction remains zero input; neither case invents recurrence.
+        if(tMoveStorage.m_bObservedWish
+            && tMoveStorage.m_vObservedWish.Dot(tMoveStorage.m_MoveData.m_vecVelocity)<=0.f) {
+            tMoveStorage.m_flAverageYaw=0.f;return true;
+        }
 	}
 	if (bStrafe && Vars::Aimbot::Projectile::StrafePrediction.Value & (tMoveStorage.m_bDirectMove ? Vars::Aimbot::Projectile::StrafePredictionEnum::Ground : Vars::Aimbot::Projectile::StrafePredictionEnum::Air))
 	{
@@ -834,7 +1069,7 @@ bool CMovementSimulation::StrafePrediction(MoveStorage& tMoveStorage, bool bStra
 		GetAverageYaw(tMoveStorage, iStrafeSamples);
 
 		// really hope this doesn't work like shit
-		if (bHitchance && !tMoveStorage.m_pPlayer->m_vecVelocity().IsZero() && Vars::Aimbot::Projectile::HitChance.Value)
+		if (bHitchance && !patternEnded && !tMoveStorage.m_pPlayer->m_vecVelocity().IsZero() && Vars::Aimbot::Projectile::HitChance.Value)
 		{
 			const auto& vRecords = m_mRecords[tMoveStorage.m_pPlayer->entindex()];
 			const auto iSamples = vRecords.size();
@@ -979,64 +1214,79 @@ void CMovementSimulation::RestoreBounds(CTFPlayer* pPlayer)
 
 void CMovementSimulation::PredictLedge(MoveStorage& storage)
 {
-	if(!storage.m_bLedgeAware) return;
-	auto* player=storage.m_pPlayer;
-	auto& move=storage.m_MoveData;
-	// Never carry an observed ground-braking hypothesis into a jump, fall or swimming.
-	if(!player->IsOnGround() || player->IsSwimming() || move.m_vecVelocity.z>50.f
-		|| (move.m_nButtons & IN_JUMP) || storage.m_flSimTime-storage.m_flLedgeStartTime>1.f)
-	{
-        if(ProjectileDiagnostics::LedgeSample(2)) ProjectileDiagnostics::Ledge("ledge_cancel",std::format("entity={} reason=movement_or_horizon grounded={} swimming={} vertical_speed={} jump={} elapsed={} was_braking={}",player->entindex(),player->IsOnGround(),player->IsSwimming(),move.m_vecVelocity.z,bool(move.m_nButtons&IN_JUMP),storage.m_flSimTime-storage.m_flLedgeStartTime,storage.m_bLedgeBraking));
-        storage.m_bLedgeAware=false; storage.m_bLedgeBraking=false; return;
+    storage.m_bLedgeBraking=false;
+    if(!storage.m_bLedgeAware) return;
+    auto* player=storage.m_pPlayer;auto& move=storage.m_MoveData;
+    if(player->IsSwimming() || player->InCond(TF_COND_SHIELD_CHARGE)) return;
+    if(!player->IsOnGround()) {
+        // The following native ProcessMovement step assesses the actual flight,
+        // hull contacts and landing support. Do not replace it with an approximate
+        // gravity parabola (which ignores air input, attributes and collisions).
+        storage.m_iLedgeLanding=-1;storage.m_bLedgeStopped=false;storage.m_iLedgeProbeAge=0;
+        return;
     }
-	const float speed=move.m_vecVelocity.Length2D();
-	if(speed<1.f && !storage.m_bLedgeBraking) return;
-	const Vec3 direction=move.m_vecVelocity.Normalized2D();
-	const float acceleration=std::max(400.f,move.m_flMaxSpeed*4.f);
-	CTraceFilterWorldAndPropsOnly filter={}; filter.pSkip=player;
-	const auto mins=player->m_vecMins()+PLAYER_ORIGIN_COMPRESSION;
-	const auto maxs=player->m_vecMaxs()-PLAYER_ORIGIN_COMPRESSION;
-	auto supported=[&](const Vec3& point, float depth, const char* probe) {
-		CGameTrace trace={};
-		SDK::TraceHull(point+Vec3(0,0,2),point-Vec3(0,0,depth),mins,maxs,player->SolidMask(),&filter,&trace);
-        const bool walkable=LedgePrediction::Walkable(trace.DidHit(),trace.startsolid||trace.allsolid,trace.plane.normal.z);
-        if(ProjectileDiagnostics::LedgeSample(1)) ProjectileDiagnostics::Ledge("ledge_support",std::format("entity={} probe={} elapsed={} depth={} walkable={} hit={} fraction={} startsolid={} allsolid={} normal_z={} point={},{},{} end={},{},{} vertical_drop={}",player->entindex(),probe,storage.m_flSimTime-storage.m_flLedgeStartTime,depth,walkable,trace.DidHit(),trace.fraction,trace.startsolid,trace.allsolid,trace.plane.normal.z,point.x,point.y,point.z,trace.endpos.x,trace.endpos.y,trace.endpos.z,point.z-trace.endpos.z));
-		return walkable;
-	};
-	if(!supported(move.m_vecAbsOrigin,24.f,"current")) {
-        if(ProjectileDiagnostics::LedgeSample(2)) ProjectileDiagnostics::Ledge("ledge_cancel",std::format("entity={} reason=current_support_missing was_braking={}",player->entindex(),storage.m_bLedgeBraking));
-        storage.m_bLedgeAware=false; storage.m_bLedgeBraking=false; return;
+    storage.m_iLedgeLanding=1;
+    // Observed external momentum overrides an uncertain edge hold. Native
+    // ground categorization already reports support, so no extra trace here.
+    if(storage.m_bLedgeImpulse) return;
+    const auto physics=MovementPhysics(player,std::min(move.m_flMaxSpeed,move.m_flClientMaxSpeed),true);
+    if(!MovementInputPolicy::Valid(physics)) return;
+    const float speed=move.m_vecVelocity.Length2D();
+    // Active braking toward zero, the way players stop at an edge (counter-
+    // strafe), instead of releasing the keys and sliding ~60 units on friction.
+    const auto brake=[&] {
+        const auto input=MovementInputPolicy::ForVelocity({move.m_vecVelocity.x,move.m_vecVelocity.y},{0.f,0.f},physics,true);
+        if(input.valid) SetWorldWish(move,input.wish); else move.m_flForwardMove=move.m_flSideMove=0.f;
+        storage.m_bLedgeBraking=true;
+    };
+    // Held at the edge: stay stopped for the rest of this hypothesis (a counter
+    // strafe keeps its own reversals, so it is never latched).
+    if(storage.m_bLedgeStopped) {brake();return;}
+    if(speed<1.f) return;
+    CTraceFilterWorldAndPropsOnly filter={};filter.pSkip=player;
+    const auto mins=player->m_vecMins()+PLAYER_ORIGIN_COMPRESSION;
+    const auto maxs=player->m_vecMaxs()-PLAYER_ORIGIN_COMPRESSION;
+    auto trace=[&](const Vec3& a,const Vec3& b,CGameTrace& result) {
+        if(!ProjectilePerformancePolicy::SearchStep(ProjectilePerformancePolicy::SearchWork::Geometry)) {storage.m_bFailed=true;return false;}
+        SDK::TraceHull(a,b,mins,maxs,player->SolidMask(),&filter,&result);return true;
+    };
+    // Probe every other tick: the look-ahead covers the extra tick of travel.
+    const float stop=MovementInputPolicy::ActiveStopDistance(speed,physics);
+    const float distance=std::clamp(stop+speed*TICK_INTERVAL*2.f+LedgePrediction::EdgeMargin,2.f,96.f);
+    bool aheadSupport=storage.m_bLedgeAheadSupport;
+    const Vec3 heading=move.m_vecVelocity.Normalized2D();
+    // Re-probe at once after a reversal or sharp turn: the cached result faced elsewhere.
+    if(storage.m_iLedgeProbeAge>0 && heading.Dot(storage.m_vLedgeProbeDirection)>=.7f) --storage.m_iLedgeProbeAge;
+    else {
+        storage.m_iLedgeProbeAge=1;storage.m_vLedgeProbeDirection=heading;
+        const Vec3 ahead=move.m_vecAbsOrigin+move.m_vecVelocity.Normalized2D()*distance;
+        CGameTrace route={};if(!trace(move.m_vecAbsOrigin+Vec3(0,0,2),ahead+Vec3(0,0,2),route))return;
+        // A wall ahead is handled by native collision; steps and slopes are support.
+        if(route.DidHit()||route.startsolid||route.allsolid) aheadSupport=true;
+        else {
+            CGameTrace down={};if(!trace(ahead+Vec3(0,0,2),ahead-Vec3(0,0,LedgePrediction::DropDepth),down))return;
+            aheadSupport=LedgePrediction::Walkable(down.DidHit(),down.startsolid||down.allsolid,down.plane.normal.z);
+        }
+        storage.m_bLedgeAheadSupport=aheadSupport;
     }
-	const float distance=LedgePrediction::LookAhead(speed,acceleration,TICK_INTERVAL);
-	const Vec3 ahead=move.m_vecAbsOrigin+direction*distance;
-	CGameTrace route={};
-	SDK::TraceHull(move.m_vecAbsOrigin+Vec3(0,0,2),ahead+Vec3(0,0,2),mins,maxs,player->SolidMask(),&filter,&route);
-    if(ProjectileDiagnostics::LedgeSample(1)) ProjectileDiagnostics::Ledge("ledge_route",std::format("entity={} speed={} lookahead={} elapsed={} blocked={} fraction={} startsolid={} allsolid={} ahead={},{},{}",player->entindex(),speed,distance,storage.m_flSimTime-storage.m_flLedgeStartTime,route.DidHit(),route.fraction,route.startsolid,route.allsolid,ahead.x,ahead.y,ahead.z));
-	// A wall or rising slope is not evidence of a drop. Leave it to engine collision handling.
-	// Permit a walkable downhill slope over the probe distance, not just a flat 24-unit step.
-	if(!storage.m_bLedgeBraking && !route.DidHit() && !route.startsolid && !route.allsolid && !supported(ahead,24.f+distance,"ahead"))
-	{
-		storage.m_bLedgeBraking=true;
-        if(ProjectileDiagnostics::LedgeSample(2)) ProjectileDiagnostics::Ledge("ledge_brake_start",std::format("entity={} elapsed={} speed={} lookahead={} origin={},{},{}",player->entindex(),storage.m_flSimTime-storage.m_flLedgeStartTime,speed,distance,move.m_vecAbsOrigin.x,move.m_vecAbsOrigin.y,move.m_vecAbsOrigin.z));
-		SDK::Output("LedgePrediction","Supported braking alternative selected near a predicted drop",{100,200,150},Vars::Debug::Logging.Value);
-	}
-	if(storage.m_bLedgeBraking)
-	{
-		const float reduced=LedgePrediction::Brake(speed,acceleration,TICK_INTERVAL);
-        if(ProjectileDiagnostics::LedgeSample(1)) ProjectileDiagnostics::Ledge("ledge_brake_step",std::format("entity={} elapsed={} before={} after={} acceleration={} origin={},{},{}",player->entindex(),storage.m_flSimTime-storage.m_flLedgeStartTime,speed,reduced,acceleration,move.m_vecAbsOrigin.x,move.m_vecAbsOrigin.y,move.m_vecAbsOrigin.z));
-		move.m_vecVelocity.x=direction.x*reduced; move.m_vecVelocity.y=direction.y*reduced;
-		move.m_flForwardMove=move.m_flSideMove=0.f;
-		storage.m_flAverageYaw=0.f; storage.m_CounterStrafe.valid=false;
-	}
+    if(storage.m_bFailed || aheadSupport) return;
+    storage.m_bLedgeSeen=true;m_bLedgeEncountered=true;
+    if(!storage.m_bLedgeHold) return; // walk-off hypothesis: native movement goes over the edge
+    brake();
+    if(!(storage.m_CounterStrafe.valid && storage.m_CounterStrafe.repeated)) storage.m_bLedgeStopped=true;
+    if(ProjectileDiagnostics::LedgeSample(2))ProjectileDiagnostics::Ledge("ledge_hold",std::format("entity={} speed={} lookahead={} evidence={} alternate={} policy=active_brake_hold",player->entindex(),speed,distance,storage.m_bLedgeEvidence,m_iLedgeHypothesis));
 }
 
 void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTickCallback* pCallback)
 {
     ProjectileDiagnostics::Profile profile(ProjectileDiagnostics::MovementTick);
-	if (!tMoveStorage.m_bInitialized || tMoveStorage.m_bFailed || !tMoveStorage.m_pPlayer || !tMoveStorage.m_pPlayer->IsPlayer())
-		return;
+	if (!tMoveStorage.m_bInitialized || tMoveStorage.m_bFailed || !tMoveStorage.m_pPlayer) return;
+    if (!tMoveStorage.m_RestoreSnapshot.Matches(tMoveStorage.m_pPlayer))
+    { tMoveStorage.m_bFailed=true; return; }
 
-    if(TryReuseTick(tMoveStorage,bPath,pCallback)) return;
+    MovementImpact::AtBoundary(tMoveStorage);
+    if(tMoveStorage.m_bFailed)return;
+    if(!MovementImpact::Active() && TryReuseTick(tMoveStorage,bPath,pCallback)) return;
 
 	// make sure frametime and prediction vars are right
 	const bool oldPrediction = I::Prediction->m_bInPrediction, oldFirst = I::Prediction->m_bFirstTimePredicted;
@@ -1096,31 +1346,80 @@ void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTick
 		tMoveStorage.m_MoveData.m_nButtons |= IN_JUMP;
 	}
 
-	if (auto& counter=tMoveStorage.m_CounterStrafe; counter.valid)
+	if (auto& counter=tMoveStorage.m_CounterStrafe; counter.valid && counter.repeated)
 	{
 		// Keep the forward trend and vertical physics; converge only the oscillating component.
 		auto& move=tMoveStorage.m_MoveData;
 		const float elapsed=tMoveStorage.m_flCounterTime;
 		const float lateral=move.m_vecVelocity.x*counter.ax+move.m_vecVelocity.y*counter.ay;
-		const float correction=CounterStrafe::Correction(counter,
+		float correction=CounterStrafe::Correction(counter,
 			move.m_vecAbsOrigin.x*counter.ax+move.m_vecAbsOrigin.y*counter.ay,lateral,elapsed);
+        if(tMoveStorage.m_bLearnedTiming) {
+            // Hold the current leg until the learned reversal, then alternate every learned leg.
+            // The wish flips early by the braking time so lateral speed crosses zero on time.
+            const float braking=tMoveStorage.m_flTimingBraking,flip=tMoveStorage.m_flTimingFirst-braking;
+            int sign=tMoveStorage.m_iTimingSign;
+            if(elapsed>=flip) {const int flips=1+int((elapsed-flip)/std::max(tMoveStorage.m_flTimingLeg,.05f));if(flips%2)sign=-sign;}
+            correction=CounterStrafe::DriftVelocity(counter,elapsed)+float(sign)*counter.speed-lateral;
+        }
         if(ProjectileDiagnostics::MovementSample(true)) {
             const auto a=CounterStrafe::Explain(counter,move.m_vecAbsOrigin.x*counter.ax+move.m_vecAbsOrigin.y*counter.ay,lateral,elapsed);
-            ProjectileDiagnostics::Ledge("counter_apply",std::format("entity={} elapsed={} lateral_before={} correction={} lateral_after={} center={} drift={} origin={},{},{} drift_offset={} center_error={} raw_steering={} steering={} blend={} desired={} saturated={} opposes_velocity={} zero_drift_correction={} drift_correction_delta={} comparison=same_state_not_resimulation",tMoveStorage.m_pPlayer->entindex(),elapsed,lateral,correction,lateral+correction,counter.center,counter.drift,move.m_vecAbsOrigin.x,move.m_vecAbsOrigin.y,move.m_vecAbsOrigin.z,a.driftOffset,a.centerError,a.rawSteering,a.steering,a.blend,a.desired,a.saturated,a.opposesVelocity,a.zeroDriftCorrection,correction-a.zeroDriftCorrection));
+            ProjectileDiagnostics::Ledge("counter_apply",std::format("entity={} elapsed={} lateral_before={} correction={} lateral_desired={} center={} drift={} origin={},{},{} drift_offset={} center_error={} raw_steering={} steering={} blend={} desired={} saturated={} opposes_velocity={} zero_drift_correction={} drift_correction_delta={} comparison=same_state_not_resimulation application=native_wish_input",tMoveStorage.m_pPlayer->entindex(),elapsed,lateral,correction,lateral+correction,counter.center,counter.drift,move.m_vecAbsOrigin.x,move.m_vecAbsOrigin.y,move.m_vecAbsOrigin.z,a.driftOffset,a.centerError,a.rawSteering,a.steering,a.blend,a.desired,a.saturated,a.opposesVelocity,a.zeroDriftCorrection,correction-a.zeroDriftCorrection));
         }
-		move.m_vecVelocity.x+=correction*counter.ax;
-		move.m_vecVelocity.y+=correction*counter.ay;
-		move.m_vecViewAngles.y=Math::VectorAngles(move.m_vecVelocity).y;
-		move.m_flForwardMove=tMoveStorage.m_bDirectMove?move.m_vecVelocity.Length2D():0.f;
-		move.m_flSideMove=0.f;
+        const bool ground=tMoveStorage.m_pPlayer->IsOnGround();
+        const float alongVelocity=-move.m_vecVelocity.x*counter.ay+move.m_vecVelocity.y*counter.ax;
+        float alongCorrection=CounterStrafe::AlongCorrection(counter,alongVelocity);
+        if(ground && tMoveStorage.m_bObservedWish) {
+            const auto wish=tMoveStorage.m_vObservedWish;
+            const float alongWish=-wish.x*counter.ay+wish.y*counter.ax;
+            const float receivedAlong=counter.along!=0.f?counter.along:alongVelocity;
+            const bool braking=alongWish*receivedAlong<=0.f;
+            // A stationary corridor can survive the first received departure
+            // from wall contact. Honor that corroborated acceleration without
+            // replacing established Snake travel with a held acceleration.
+            const bool departing=counter.kind==CounterStrafe::Kind::Counter
+                && std::abs(counter.along)<35.f && std::abs(alongVelocity)>35.f
+                && alongWish*alongVelocity>0.f;
+            if(braking || departing) {
+                const auto next=MovementInputPolicy::GroundInterval({move.m_vecVelocity.x,move.m_vecVelocity.y},
+                    {wish.x,wish.y},1,MovementPhysics(tMoveStorage.m_pPlayer,std::min(move.m_flMaxSpeed,move.m_flClientMaxSpeed),true));
+                float desired=-next.velocity.x*counter.ay+next.velocity.y*counter.ax;
+                // Braking does not invent an unreceived longitudinal reversal.
+                if(braking && desired*receivedAlong<=0.f)desired=0.f;
+                alongCorrection=desired-alongVelocity;
+            }
+        }
+        const auto input=MovementInputPolicy::ForVelocity(
+            {move.m_vecVelocity.x,move.m_vecVelocity.y},
+            {move.m_vecVelocity.x+correction*counter.ax-alongCorrection*counter.ay,move.m_vecVelocity.y+correction*counter.ay+alongCorrection*counter.ax},
+            MovementPhysics(tMoveStorage.m_pPlayer,std::min(move.m_flMaxSpeed,move.m_flClientMaxSpeed),ground),ground);
+        if(input.valid) ApplyMovementInput(move,input.wish);
+        // The corridor is a desired motion hypothesis, not an impulse. Native
+        // ground/air acceleration is the only code allowed to realize it.
+
 		tMoveStorage.m_flCounterTime+=TICK_INTERVAL;
 	}
-	PredictLedge(tMoveStorage);
+    const float supportForward=tMoveStorage.m_MoveData.m_flForwardMove,supportSide=tMoveStorage.m_MoveData.m_flSideMove;
+    PredictLedge(tMoveStorage);
+    if(tMoveStorage.m_bFailed) return;
     const bool wasGrounded=tMoveStorage.m_pPlayer->IsOnGround();
     const auto beforeOrigin=tMoveStorage.m_MoveData.m_vecAbsOrigin;
     const auto beforeVelocity=tMoveStorage.m_MoveData.m_vecVelocity;
     const float beforeForward=tMoveStorage.m_MoveData.m_flForwardMove,beforeSide=tMoveStorage.m_MoveData.m_flSideMove;
+    MovementImpact::BeforeMovement(tMoveStorage);
+    const bool impactInputChanged=beforeForward!=tMoveStorage.m_MoveData.m_flForwardMove||beforeSide!=tMoveStorage.m_MoveData.m_flSideMove;
 	I::GameMovement->ProcessMovement(tMoveStorage.m_pPlayer, &tMoveStorage.m_MoveData);
+    if(impactInputChanged){tMoveStorage.m_MoveData.m_flForwardMove=beforeForward;tMoveStorage.m_MoveData.m_flSideMove=beforeSide;}
+    if(tMoveStorage.m_bLedgeBraking) {
+        tMoveStorage.m_MoveData.m_flForwardMove=supportForward;tMoveStorage.m_MoveData.m_flSideMove=supportSide;
+    }
+    if(tMoveStorage.m_bLedgeAware) {
+        const bool landed=tMoveStorage.m_pPlayer->IsOnGround();
+        tMoveStorage.m_iLedgeLanding=landed?1:-1;
+        if(!landed)tMoveStorage.m_bLedgeBraking=false;
+        if(landed && !wasGrounded)tMoveStorage.m_bLedgeImpulse=false;
+        if(ProjectileDiagnostics::LedgeSample(2))ProjectileDiagnostics::Ledge("ledge_native_support",std::format("entity={} grounded={} landing={} impulse={} origin_z={} velocity_z={} policy=native_movement_contacts",tMoveStorage.m_pPlayer->entindex(),landed,landed&&!wasGrounded,tMoveStorage.m_bLedgeImpulse,tMoveStorage.m_MoveData.m_vecAbsOrigin.z,tMoveStorage.m_MoveData.m_vecVelocity.z));
+    }
     if(LandingReplay::active && wasGrounded!=tMoveStorage.m_pPlayer->IsOnGround()) {
         auto* rules=I::TFGameRules();auto* vectors=rules?rules->GetViewVectors():nullptr;
         if(vectors) {
@@ -1272,9 +1571,10 @@ void CMovementSimulation::RunTick(MoveStorage& tMoveStorage, bool bPath, RunTick
         }
     }
 
+    MovementImpact::AtBoundary(tMoveStorage);
 	if (bPath)
 		tMoveStorage.m_vPath.push_back(tMoveStorage.m_MoveData.m_vecAbsOrigin);
-    if(!LandingReplay::active) PrivateLearning::EngineTick(&tMoveStorage,tMoveStorage.m_flSimTime,
+    if(!LandingReplay::active&&!MovementImpact::hypothetical) PrivateLearning::EngineTick(&tMoveStorage,tMoveStorage.m_flSimTime,
         tMoveStorage.m_MoveData.m_vecAbsOrigin.x,tMoveStorage.m_MoveData.m_vecAbsOrigin.y,
         tMoveStorage.m_vPredictedOrigin.x,tMoveStorage.m_vPredictedOrigin.y);
     CaptureReuseTick(tMoveStorage,bPath,pCallback);
@@ -1291,8 +1591,12 @@ void CMovementSimulation::Restore(MoveStorage& tMoveStorage)
 		return;
 	tMoveStorage.m_bInitialized = false; // make restoring more than once harmless
 
+    const bool sameEntity=I::ClientState->m_nServerCount==tMoveStorage.m_RestoreSnapshot.server
+        && I::ClientEntityList->GetClientEntityFromHandle(tMoveStorage.m_RestoreSnapshot.handle)==tMoveStorage.m_pPlayer;
 	Reset(tMoveStorage);
-	tMoveStorage.m_pPlayer->m_pCurrentCommand() = tMoveStorage.m_pOriginalCommand;
+    // Pointer ownership is independent of whether the packed model/map is still usable.
+    if (sameEntity && tMoveStorage.m_pPlayer->m_pCurrentCommand()==&G::DummyCmd)
+        tMoveStorage.m_pPlayer->m_pCurrentCommand() = tMoveStorage.m_pOriginalCommand;
 }
 
 float CMovementSimulation::GetPredictedDelta(CBaseEntity* pEntity)

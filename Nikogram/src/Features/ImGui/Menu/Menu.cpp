@@ -1,4 +1,4 @@
-#include "Menu.h"
+﻿#include "Menu.h"
 #include "BindLayout.h"
 #include "../MoonlitHud.h"
 #include "../../Backtrack/Backtrack.h"
@@ -6,6 +6,8 @@
 #include "../../Visuals/PlayerConditions/PlayerConditions.h"
 
 #include "Components.h"
+#include "../../Visuals/PostProcessing/Renderer.h"
+#include "PostProcessing.inl"
 #include "../../Triggerbot/TriggerPolicy.h"
 #include "../Workspace.h"
 #include "../MenuPresets.h"
@@ -29,6 +31,7 @@
 #include "../../Statistics/Statistics.h"
 #include "../../SkinChanger/SkinChanger.h"
 #include "../../LearningAccess.h"
+#include "../../NeuralMovement/NeuralMovement.h"
 #include "../../Output/Output.h"
 #include "../../World/World.h"
 #include "../../Simulation/ProjectileSimulation/ProjectileSimulation.h"
@@ -291,7 +294,7 @@ void CMenu::DrawMenu()
             {
                 tabs("categories", { "Aim", "Triggerbot", "HvH", "Visuals", "Misc", "Tools" }, mainTab);
                 if (mainTab == 0) tabs("aim", { "General", "Draw" }, aimTab);
-                if (mainTab == 3) tabs("visuals", { "ESP", "World / camera", "Menu / HUD" }, visualTab);
+                if (mainTab == 3) tabs("visuals", { "ESP", "World / camera", "Menu / HUD", "Post processing" }, visualTab);
                 SetNextItemWidth(-1);
                 InputTextWithHint("##Search", "Search all settings...", &search);
                 if (BeginChild("SettingsPage", {}, ImGuiChildFlags_AlwaysUseWindowPadding))
@@ -727,11 +730,15 @@ void CMenu::MenuTriggerbot()
 	using namespace ImGui;
 	if (Section("General"))
 	{
+        FToggle(Vars::Triggerbot::Diagnostics);
+        if(IsItemHovered())SetTooltip("Global Trigger-only logging, unaffected by Rage/Legit aim modes or their activation. Records bounded denial and native trace details; does not change aiming or firing. Saved with this config. The older projectile diagnostic option can also enable Trigger logs.");
 		FDropdown(Vars::Triggerbot::Hitboxes);
 		if (IsItemHovered()) SetTooltip("Selecting any hitbox enables hitscan triggerbot. None selected disables it. Fires without aiming; respects ignored players, walls and weapon readiness. Does not override manual shots or aimbot assistance. Miniguns must already be spun up; scope-only weapons must already be scoped. Projectiles, melee and release-fired Classic shots are excluded.");
 		FSlider(Vars::Triggerbot::Delay);
-		if (IsItemHovered()) SetTooltip("Drag: 0 to 0.5 seconds in 0.05-second increments. Click the value to enter any finite delay, including 999 seconds. Negative values mean zero delay. Losing the target resets the timer; the selected hitbox must still be under your cursor when it fires.");
+		if (IsItemHovered()) SetTooltip("Drag: 0 to 0.5 seconds in 0.05-second increments. Click the value to enter any finite delay, including 999 seconds. Negative values mean zero delay. A valid hitbox starts the static/dynamic delay. Once armed, it fires along your current view when the delay ends, even if you leave or change targets. Disable delay bypasses delay while active and requires a current valid hit. Changing the override clears the pending commitment.");
 		FToggle(Vars::Triggerbot::DynamicDelay);
+        FToggle(Vars::Triggerbot::DisableDelay);
+        if(IsItemHovered())SetTooltip("Bypass static and dynamic trigger delays while active; requires a current valid hit. Changing this override clears the pending delayed-shot commitment. Bind this setting to a key (Hold) for a temporary override. Your saved delays and weapon checks remain unchanged.");
 		PushTransparent(!Vars::Triggerbot::DynamicDelay.Value);
 		FSlider(Vars::Triggerbot::DelayMin, FSliderEnum::Left);
 		FSlider(Vars::Triggerbot::DelayMax, FSliderEnum::Right);
@@ -786,18 +793,18 @@ void CMenu::MenuAimbot(int iTab)
 					FSlider(Vars::Aimbot::General::AssistStrength, FSliderEnum::Left);
                     if(AimModes::Editing==AimModes::Legit)
                     {
-                        if(FGet(Vars::Aimbot::General::CombinedGuidance,true))
+                        if(FGet(Vars::Aimbot::General::CombinedGuidance))
                         {
                             FSlider(Vars::Aimbot::General::SmoothAmount,FSliderEnum::Left);
                             FSlider(Vars::Aimbot::General::AssistAmount,FSliderEnum::Right);
                             FSlider(Vars::Aimbot::General::SmoothTime);
                         }
                     }
-                    if(FGet(Vars::Aimbot::General::AimType,true)==Vars::Aimbot::General::AimTypeEnum::Smooth
-                        &&!(AimModes::Editing==AimModes::Legit&&FGet(Vars::Aimbot::General::CombinedGuidance,true)))
+                    if(FGet(Vars::Aimbot::General::AimType)==Vars::Aimbot::General::AimTypeEnum::Smooth
+                        &&!(AimModes::Editing==AimModes::Legit&&FGet(Vars::Aimbot::General::CombinedGuidance)))
                     {
                         FDropdown(Vars::Aimbot::General::SmoothFormula);
-                        if(FGet(Vars::Aimbot::General::SmoothFormula,true)==Vars::Aimbot::General::SmoothFormulaEnum::Damped)
+                        if(FGet(Vars::Aimbot::General::SmoothFormula)==Vars::Aimbot::General::SmoothFormulaEnum::Damped)
                         {
                             FSlider(Vars::Aimbot::General::SmoothTime);
                             if(AimModes::Editing!=AimModes::Legit)
@@ -809,7 +816,7 @@ void CMenu::MenuAimbot(int iTab)
                     }
                     FSlider(Vars::Aimbot::General::TargetSwitchDelay);
                     FToggle(Vars::Aimbot::General::DynamicTargetSwitch);
-                    if(FGet(Vars::Aimbot::General::DynamicTargetSwitch,true))
+                    if(FGet(Vars::Aimbot::General::DynamicTargetSwitch))
                     {
                         FSlider(Vars::Aimbot::General::TargetSwitchMin,FSliderEnum::Left);
                         FSlider(Vars::Aimbot::General::TargetSwitchMax,FSliderEnum::Right);
@@ -935,6 +942,7 @@ void CMenu::MenuAimbot(int iTab)
 #ifdef NIKOGRAM_PRIVATE_LEARNING
 				if (Section("Private learning")) { PrivateLearning::Draw(); } EndSection();
 #endif
+                if (Section("Neural movement")) { NeuralMovement::Draw(); } EndSection();
 				if (Section("Projectile"))
 				{
 					FSlider(Vars::Aimbot::Projectile::AimFOV);
@@ -952,11 +960,12 @@ void CMenu::MenuAimbot(int iTab)
 						if (FGet(*option)) projectileModifierPreview.push_back(option->m_vNames.front());
 					bool predictHovered = false;
 					FDropdown(Vars::Aimbot::Projectile::StrafePrediction, FDropdownEnum::Left, 0, &predictHovered);
-					FTooltip("Counter strafe predict: detects repeated tight left/right movement and biases prediction toward its moving centre. Hit chance uses reversal balance, not measured hit probability.\nLedge aware prediction: when recent braking or reversal suggests an uncertain walk-off, checks hull support ahead and predicts slowing near the edge. Does not hold airborne targets on ledges. Uses your existing splash setting. Both options are experimental.", predictHovered);
+					FTooltip("Counter strafe predict: follows a single observed reversal; repeated reversals use a moving recent corridor. Snake prediction: recognizes world-space zigzag travel in either direction. They share one lateral estimate and release it when current evidence breaks the pattern; no added aim smoothing.\nLedge aware prediction: prefers supported movement near uncertain edges, monitors jump/fall landing support and yields to observed impulses. Future inputs remain unknown. Native falling, collisions and projectile safety remain active.\nApplies to ordinary prediction, including Auto fallback. Knockback prediction: bounded received rocket, regular grenade, Cannon, Cleaver and Scorch Shot impact hypotheses. Grenade world/player bounces are considered where supported. Uncertain encounters require the same shot to validate without the impact; Cannon also checks hidden double-donk damage. Coverage is partial. Unknown fuse timing, future sticky detonation and unknown airblast input are not guessed. Observed impulses override stale movement patterns. Force neural excludes all four heuristics, including its optional ordinary fallback. Each option saves separately in this list; existing saved choices are preserved.", predictHovered);
 					FDropdown(Vars::Aimbot::Projectile::SplashPrediction, FDropdownEnum::Right);
 					FDropdown(Vars::Aimbot::Projectile::SplashMode);
                     if(IsItemHovered()) SetTooltip("Trace: sample outward around the predicted target. Face: sample nearby collision surfaces and edges. Dynamic: a short Trace attempt, then Face if no fully validated shot was found, within one shared budget. Takes the first valid Dynamic shot; never waits for workers. Saves with your config. Does not bypass visibility or self-damage checks. Reflected projectiles use Trace when Dynamic is selected.");
-					FDropdown(Vars::Aimbot::Projectile::AutoDetonate, FDropdownEnum::Left);
+                    if(AimModes::Editing!=AimModes::Legit)FDropdown(Vars::Aimbot::Projectile::AutoDetonate, FDropdownEnum::Left);
+                    else TextDisabled("Auto detonate is unavailable in Legitbot.");
 					FDropdown(Vars::Aimbot::Projectile::AutoAirblast, FDropdownEnum::Right);
 					FDropdown(Vars::Aimbot::Projectile::Hitboxes, FDropdownEnum::Left);
                     if(IsItemHovered()) SetTooltip("Flare Gun, Detonator, Scorch Shot, Manmelter and Crusader's Crossbow use body aim instead of feet. True prioritize feet overrides this: feet first, with other selected hitboxes as fallback; works with Auto on or off. Normal grenade-launcher feet tuning is preserved unless the true-feet override is selected.");
@@ -978,9 +987,7 @@ void CMenu::MenuAimbot(int iTab)
 					if(IsItemHovered()) SetTooltip("Requires Projectile / self damage diagnostics. Own pill/sticky lifetime observations and secondary-fire request edges run without aim selection or Auto shoot; held requests refresh at most four times per second. Sampled enemy exposure screening still requires an aimed candidate and Auto shoot. Logs ammo_lifetime, ammo_detonation_request, ammo_evidence and ammo_shadow. Disappearance is NOT a confirmed explosion; requests are NOT confirmed detonations. No shot suppression or target switching.");
 					FDropdown(Vars::Aimbot::Projectile::AmmoEvidenceSources);
 					FToggle(Vars::Aimbot::Projectile::AmmoConservation);
-					if(IsItemHovered()) SetTooltip("Experimental live behavior, OFF by default. Auto shoot: rocket launchers, Direct Hit, Scorch Shot, grenade and normal stickybomb launchers. Demo weapons credit recently fired unbounced pills and pending Auto detonate of settled normal stickies aged 5 seconds. Sticky firing can switch to a normally validated target, or briefly hold an automated charge instead of releasing it. No new charge starts during a brief wait; manual/unknown charges and charges near maximum are excluded. Up to 100 ms diversion/wait, then 1 second normal firing. Rockets/Scorch use imminent fixed-world impacts. No idle-sticky kill promises, afterburn, bounces, rolling-pill fuse guesses, Scottish Resistance, Beggar's, Rocket Jumper or other charged weapons. Independent of diagnostic toggles/source selection.");
-					FDropdown(Vars::Aimbot::Projectile::AmmoConservationFallback);
-					if(IsItemHovered()) SetTooltip("When a conservatively covered target has no validated replacement: briefly withhold Auto shoot within the 100 ms action window, or shoot the original target anyway. A request is not a confirmed detonation; normal firing resumes when evidence is uncertain.");
+					if(IsItemHovered()) SetTooltip("Auto shoot only. Avoid another shot when your observed imminent projectile damage is credibly lethal. Select another normally validated target that still needs damage; otherwise withhold the redundant shot and recheck next command. No fixed wait/cooldown cycle and no near-death threshold. Models rockets/energy, fresh direct pills/cannon contacts, flares, arrows/bolts, cleavers/balls, and requested normal sticky detonations. No guessed headshots, crits, afterburn, bounce/fuse kills, utility damage, non-networked syringes/flames, or unknown effects. Uncertain evidence keeps normal firing. Manual input, loaded Beggar's and active cannon fuses are not interrupted.");
 					PushTransparent(!Vars::Aimbot::Projectile::AutoRelease.Value);
 					{
 						FSlider(Vars::Aimbot::Projectile::AutoRelease);
@@ -1153,6 +1160,10 @@ void CMenu::MenuAimbot(int iTab)
 			{
 				if (Section("Prediction"))
 				{
+                    FToggle(Vars::Visuals::Prediction::FireReason);
+                    if(IsItemHovered())SetTooltip("Compact current aim decision. A requested command is not confirmed server fire.");
+                    FToggle(Vars::Visuals::Prediction::Comparison);
+                    if(IsItemHovered())SetTooltip("Frozen target-position forecasts and later received positions. Blue ordinary, purple neural, green observed. Frames crossfade cosmetically; errors use original samples. Missing predictions remain unavailable.");
 					FColoredDropdown(Vars::Visuals::Prediction::PlayerPath, { &Vars::Colors::PlayerPathIgnoreZ, &Vars::Colors::PlayerPath }, FDropdownEnum::Left);
 					FColoredDropdown(Vars::Visuals::Prediction::ProjectilePath, { &Vars::Colors::ProjectilePathIgnoreZ, &Vars::Colors::ProjectilePath }, FDropdownEnum::Right);
 					FToggle(Vars::Visuals::Prediction::SwingLines);
@@ -1448,6 +1459,7 @@ void CMenu::MenuHVH(int iTab)
 void CMenu::MenuVisuals(int iTab)
 {
 	using namespace ImGui;
+	if(iTab==3){PostProcessingSettings();return;}
 
 	switch (iTab)
 	{
@@ -1972,6 +1984,7 @@ void CMenu::MenuVisuals(int iTab)
 				if (Section("Viewmodel"))
 				{
 					FToggle(Vars::Visuals::Viewmodel::CrosshairAim, FToggleEnum::Left);
+                    if(IsItemHovered())SetTooltip("Projectile marker movement is cosmetically stabilized between commands. Shots and changed targets snap immediately. This does not alter aiming or firing; Draw paths and impact boxes show the exact current geometry.");
 					FToggle(Vars::Visuals::Viewmodel::ViewmodelAim, FToggleEnum::Right);
 					PushTransparent(!Vars::Visuals::Viewmodel::CrosshairAim.Value);
 					FToggle(Vars::Visuals::Viewmodel::CrosshairCooldown, FToggleEnum::Left);
@@ -2486,6 +2499,7 @@ void CMenu::MenuLogs(int iTab)
 								I::SteamFriends->ActivateGameOverlayToWebPage(std::format("https://steamhistory.net/id/{}", CSteamID(tPlayer.m_uAccountID, k_EUniversePublic, k_EAccountTypeIndividual).ConvertToUint64()).c_str());
 						}
 
+						NeuralMovement::DrawPlayer(tPlayer.m_uAccountID,tPlayer.m_bFake);
 						if (FSelectable(F::Spectate.GetTarget(true) == tPlayer.m_iUserID ? "Unspectate" : "Spectate"))
 							F::Spectate.SetTarget(tPlayer.m_iUserID);
 						if (!tPlayer.m_bLocal && !I::EngineClient->IsPlayingDemo() && FSelectable("Set as blockbot target"))
@@ -2671,7 +2685,7 @@ void CMenu::MenuLogs(int iTab)
 
 							TextColored(F::Render.Inactive.Value, "Partied:");
 							for (auto& pPlayer2 : mParties[tPlayer.m_iParty])
-								TextColored(F::Render.Inactive.Value, pPlayer2->m_sName.c_str());
+								TextColored(F::Render.Inactive.Value, "%s", pPlayer2->m_sName.c_str());
 						}
 
 						if (tPlayer.m_iLevel != -2)
@@ -2685,7 +2699,7 @@ void CMenu::MenuLogs(int iTab)
 								int iLevel = ((tPlayer.m_iLevel - 1) % 150) + 1;
 								sLevel = std::format("T{} L{}", iTier, iLevel);
 							}
-							TextColored(F::Render.Inactive.Value, sLevel.c_str());
+							TextColored(F::Render.Inactive.Value, "%s", sLevel.c_str());
 						}
 
 						PopStyleVar();
@@ -2805,15 +2819,25 @@ void CMenu::MenuLogs(int iTab)
 				}
 			} EndChild();
 
-			auto fDrawTag = [](std::vector<PriorityLabel_t>::iterator it, PriorityLabel_t& _tTag, int y)
+			// Custom menu fonts and padding make the editor taller than the legacy row.
+			// Anchor the list to the actual child rectangles in this section's coordinates.
+			float tagHeaderY = 0;
+			for (const auto& column : vTable)
+				tagHeaderY = std::max(tagHeaderY, column.m_vPos.y + column.m_vSize.y);
+			tagHeaderY += H::Draw.Scale(4);
+			const float tagHeaderHeight = std::max(H::Draw.Scale(20), GetTextLineHeight() + H::Draw.Scale(6));
+			const float tagRowHeight = std::max(H::Draw.Scale(22), GetTextLineHeight() + H::Draw.Scale(8));
+			const float tagRowsY = tagHeaderY + tagHeaderHeight;
+
+			auto fDrawTag = [tagRowsY, tagRowHeight](std::vector<PriorityLabel_t>::iterator it, PriorityLabel_t& _tTag, int y)
 			{
 				int _iID = std::distance(F::PlayerUtils.m_vTags.begin(), it);
 
-				ImVec2 vOriginalPos = { !_tTag.m_bLabel ? GetStyle().WindowPadding.x : GetWindowWidth() * 2 / 3 + GetStyle().WindowPadding.x / 2, H::Draw.Scale(96 + 22 * y) };
+				ImVec2 vOriginalPos = { !_tTag.m_bLabel ? GetStyle().WindowPadding.x : GetWindowWidth() * 2 / 3 + GetStyle().WindowPadding.x / 2, tagRowsY + tagRowHeight * y };
 
 				// background
 				float flWidth = GetWindowWidth() * (_tTag.m_bLabel ? 1.f / 3 : 2.f / 3) - GetStyle().WindowPadding.x * 1.5f;
-				float flHeight = H::Draw.Scale(22);
+				float flHeight = tagRowHeight;
 				ImColor tColor = ColorByteToFloat(_tTag.m_tColor.Lerp(Vars::Menu::Theme::Background.Value, 0.5f, LerpEnum::NoAlpha));
 				ImVec2 vDrawPos = GetDrawPos() + vOriginalPos;
 				if (iID != _iID)
@@ -2943,14 +2967,14 @@ void CMenu::MenuLogs(int iTab)
 			{
 				const float x = label ? GetWindowWidth() * 2 / 3 + GetStyle().WindowPadding.x / 2 : GetStyle().WindowPadding.x;
 				const float width = GetWindowWidth() * (label ? 1.f / 3 : 2.f / 3) - GetStyle().WindowPadding.x * 1.5f;
-				const ImVec2 pos = GetDrawPos() + ImVec2(x, H::Draw.Scale(76));
-				GetWindowDrawList()->AddRectFilled(pos, pos + ImVec2(width, H::Draw.Scale(20)), GetColorU32(ImGuiCol_TableHeaderBg));
-				GetWindowDrawList()->AddRect(pos, pos + ImVec2(width, H::Draw.Scale(20)), GetColorU32(ImGuiCol_TableBorderStrong));
-				SetCursorPos({ x + H::Draw.Scale(5), H::Draw.Scale(79) });
+				const ImVec2 pos = GetDrawPos() + ImVec2(x, tagHeaderY);
+				GetWindowDrawList()->AddRectFilled(pos, pos + ImVec2(width, tagHeaderHeight), GetColorU32(ImGuiCol_TableHeaderBg));
+				GetWindowDrawList()->AddRect(pos, pos + ImVec2(width, tagHeaderHeight), GetColorU32(ImGuiCol_TableBorderStrong));
+				SetCursorPos({ x + H::Draw.Scale(5), tagHeaderY + H::Draw.Scale(3) });
 				FText(label ? "Labels" : "Priorities");
 				if (!label)
 				{
-					SetCursorPos({ x + width / 2, H::Draw.Scale(79) }); FText("Value");
+					SetCursorPos({ x + width / 2, tagHeaderY + H::Draw.Scale(3) }); FText("Value");
 				}
 			}
 
@@ -3031,7 +3055,7 @@ void CMenu::MenuLogs(int iTab)
 					iID--;
 			}
 			iPendingDelete = -1;
-			SetCursorPos({ 0, H::Draw.Scale(72 + 22 * std::max(iPriorities, iLabels)) }); DebugDummy({ 0, H::Draw.Scale(28) });
+			SetCursorPos({ 0, tagRowsY + tagRowHeight * std::max(iPriorities, iLabels) }); DebugDummy({ 0, H::Draw.Scale(4) });
 		} EndSection();
 		{
 			PushDisabled(F::PlayerUtils.m_bLoad);
@@ -3437,7 +3461,7 @@ void CMenu::MenuSettings(int iTab)
 					FTooltip(ICON_MD_ADD ICON_MD_FILE_UPLOAD_OFF, bNoSave && IsItemHovered(), 300.f, F::Render.IconFont);
 
 					SetCursorPos({ H::Draw.Scale(43), vOriginalPos.y + H::Draw.Scale(4) });
-					TextColored(bCurrentConfig ? F::Render.Active.Value : F::Render.Inactive.Value, TruncateText(sConfigName, GetWindowWidth() - GetStyle().WindowPadding.x * 2 - H::Draw.Scale(80)).c_str());
+					TextColored(bCurrentConfig ? F::Render.Active.Value : F::Render.Inactive.Value, "%s", TruncateText(sConfigName, GetWindowWidth() - GetStyle().WindowPadding.x * 2 - H::Draw.Scale(80)).c_str());
 
 					int iOffset = 9;
 					SetCursorPos({ GetWindowWidth() - H::Draw.Scale(iOffset += 25), vOriginalPos.y + H::Draw.Scale(1) });
@@ -4074,7 +4098,7 @@ void CMenu::MenuSettings(int iTab)
 					ImVec2 vOriginalPos = GetCursorPos();
 
 					SetCursorPos({ H::Draw.Scale(17), vOriginalPos.y + H::Draw.Scale(4) });
-					TextColored(tMaterial.m_bLocked ? F::Render.Inactive.Value : F::Render.Active.Value, TruncateText(tMaterial.m_sName, GetWindowWidth() - GetStyle().WindowPadding.x * 2 - H::Draw.Scale(56)).c_str());
+					TextColored(tMaterial.m_bLocked ? F::Render.Inactive.Value : F::Render.Active.Value, "%s", TruncateText(tMaterial.m_sName, GetWindowWidth() - GetStyle().WindowPadding.x * 2 - H::Draw.Scale(56)).c_str());
 
 					int iOffset = 9;
 					if (!tMaterial.m_bLocked)
@@ -4429,6 +4453,7 @@ void CMenu::MenuSearch(std::string sSearch)
 	uint32_t uLastSection = 0;
 	int i = 0; for (auto pBase : vVars) // possibly implement tablelike visuals, do away with left right, just switch if current side is higher than other?
 	{
+        if(AimModes::Editing==AimModes::Legit&&pBase==&Vars::Aimbot::Projectile::AutoDetonate)continue;
 		int iWidgetEnum = WidgetEnum::Invalid, iTypeEnum = WidgetEnum::Invalid;
 		if (auto pVar = pBase->As<bool>())
 			iWidgetEnum = iTypeEnum = WidgetEnum::FToggle;
@@ -4648,7 +4673,8 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 	if (!bShouldDraw)
 		return;
 
-	auto tDragBox = FGet(tVar, true);
+	FEditScope editScope;
+	auto tDragBox = FGet(tVar);
 	auto uHash = FNV1A::Hash32(sLabel);
 	const bool bCritPanel = &tVar == &Vars::Menu::CritsDisplay || &tVar == &Vars::Menu::TicksDisplay || &tVar == &Vars::Menu::SpectatorsDisplay
 		|| (MoonlitHud::Enabled() && (&tVar == &Vars::Menu::PingDisplay || &tVar == &Vars::Menu::ConditionsDisplay || &tVar == &Vars::Menu::SeedPredictionDisplay));
@@ -4683,6 +4709,7 @@ void CMenu::AddDraggable(const char* sLabel, ConfigVar<DragBox_t>& tVar, bool bS
 		? ImVec2(F::SpectatorList.m_vMinimumSize.x, F::SpectatorList.m_vMinimumSize.y) : vSize);
 	if (Begin(sLabel, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings))
 	{
+		FGet(tVar, true);
 		ImVec2 vWindowPos = GetWindowPos();
 		if (bSpectatorPanel)
 		{
@@ -4762,7 +4789,8 @@ void CMenu::AddResizableDraggable(const char* sLabel, ConfigVar<WindowBox_t>& tV
 	if (!bShouldDraw)
 		return;
 
-	auto tWindowBox = FGet(tVar, true);
+	FEditScope editScope;
+	auto tWindowBox = FGet(tVar);
 	auto uHash = FNV1A::Hash32(sLabel);
 
 	bool bContains = s_mWindowBoxStorage.contains(uHash);
@@ -4781,6 +4809,7 @@ void CMenu::AddResizableDraggable(const char* sLabel, ConfigVar<WindowBox_t>& tV
 	PushStyleVar(ImGuiStyleVar_WindowBorderSize, H::Draw.Scale(1));
 	if (Begin(sLabel, nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings))
 	{
+		FGet(tVar, true);
 		ImVec2 vWindowPos = GetWindowPos();
 		ImVec2 vWinSize = GetWindowSize();
 
@@ -4919,7 +4948,8 @@ void CMenu::DrawBinds()
 		return;
 
 	static DragBox_t tOld = { -2147483648, -2147483648 };
-	DragBox_t tDragBox = m_bIsOpen ? FGet(Vars::Menu::BindsDisplay, true) : Vars::Menu::BindsDisplay.Value;
+	FEditScope editScope;
+	DragBox_t tDragBox = m_bIsOpen ? FGet(Vars::Menu::BindsDisplay) : Vars::Menu::BindsDisplay.Value;
 	if (tDragBox != tOld)
 		SetNextWindowPos({ float(tDragBox.x), float(tDragBox.y) }, ImGuiCond_Always);
 
@@ -4955,6 +4985,8 @@ void CMenu::DrawBinds()
 	PushStyleVar(ImGuiStyleVar_WindowMinSize, { H::Draw.Scale(40), H::Draw.Scale(40) });
 	if (Begin("Binds", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings))
 	{
+		if (m_bIsOpen)
+			FGet(Vars::Menu::BindsDisplay, true);
 		ImVec2 vWindowPos = GetWindowPos();
 		const ImVec2 vActualSize = GetWindowSize();
 		const float flBar = m_bIsOpen && !moonlit ? H::Draw.Scale(26) : 0.f;

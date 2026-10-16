@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../../../SDK/SDK.h"
 
 #include "../AimbotGlobal/AimbotGlobal.h"
@@ -21,7 +21,7 @@ private:
 	void GetHullInfo(CBaseEntity* pTarget, TickRecord* pRecord = nullptr, const matrix3x4** pTransform = nullptr, Vec3* pMins = nullptr, Vec3* pMaxs = nullptr, float* pModelScale = nullptr);
 	void GetHitboxPoints(std::vector<Vec3>& vPoints, CBaseEntity* pTarget, CTFWeaponBase* pWeapon, const Vec3& vMins, const Vec3& vMaxs, int nHitbox = 0);
 	int CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon);
-	bool BuildServerEstimate(CBaseEntity* pTarget, const std::vector<TickRecord*>& records);
+	bool BuildServerEstimate(CBaseEntity* pTarget, const std::vector<TickRecord*>& records, const CUserCmd* command);
 	bool BuildOccludedGuide(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CBaseEntity* pTarget);
 	TickRecord m_tServerEstimate = {}; // Must outlive CanHit for shot visualisation.
 	Vec3 m_vEstimateOffset = {};
@@ -32,6 +32,15 @@ private:
 	void Aim(CUserCmd* pCmd, Vec3& vAngles, int iMethod = Vars::Aimbot::General::AimType.Value);
 	bool ShouldFire(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, const Target_t& tTarget);
 
+    struct EstimateUse
+    {
+        int input=-1,commandTick=0,lerpTicks=-1,spawn=0,server=0,targetSpawn=0,targetModel=0;
+        unsigned owner=0,weapon=0;
+        CBaseHandle target{};
+        float simulation=0.f;
+        bool active=false,ownsPrimary=false;
+    } m_estimateUse;
+
 	Vec3 m_vEyePos = {};
 	std::optional<Vec3> m_vMainPreview;
 
@@ -39,6 +48,7 @@ private:
 	matrix3x4 m_mHullMatrix = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 } };
 
 public:
+    void FinalizeEstimate(CTFPlayer* local, CTFWeaponBase* weapon, CUserCmd* command);
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
 };
 

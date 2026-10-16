@@ -5,6 +5,57 @@
 // Camera-only optical magnification. No saved FOV, player netvars or cvars.
 namespace OptifineZoom
 {
+    struct WheelButton
+    {
+        bool captured = false;
+        bool Event(bool down, bool eligible)
+        {
+            if (down) return captured = eligible;
+            const bool consume = captured;
+            captured = false;
+            return consume;
+        }
+    };
+    struct Wheel
+    {
+        float configured = -1.f, value = 4.f;
+        float Effective(float setting)
+        {
+            setting = std::isfinite(setting) ? std::clamp(setting, 1.f, 10.f) : 4.f;
+            if (configured != setting) configured = value = setting;
+            return value;
+        }
+        void Adjust(float setting, int steps)
+        { value = std::clamp(Effective(setting) + float(steps) * .5f, 1.f, 10.f); }
+    };
+    struct Level
+    {
+        float scale = 1.f;
+        bool initialized = false;
+        void Reset() { scale = 1.f; initialized = false; }
+        void Update(float magnification, bool smooth, float duration, float dt, bool visible)
+        {
+            magnification = std::isfinite(magnification) ? std::clamp(magnification, 1.f, 10.f) : 4.f;
+            const float target = 1.f / magnification;
+            // Preserve the existing activation ramp. A hidden zoom has no level
+            // transition to carry into the next activation.
+            if (!initialized || !visible || !smooth || !std::isfinite(scale))
+                scale = target;
+            else
+            {
+                duration = std::isfinite(duration) ? std::clamp(duration, 0.05f, 0.5f) : 0.18f;
+                dt = std::isfinite(dt) && dt > 0.f ? dt : 0.f;
+                // Exact exponential decay in optical scale: 99% of the change
+                // within the configured transition time, independent of FPS.
+                // Retarget from the displayed value, with no queued wheel steps.
+                const float blend = -std::expm1(-4.605170186f * dt / duration);
+                scale += (target - scale) * blend;
+            }
+            scale = std::clamp(scale, 0.1f, 1.f);
+            initialized = true;
+        }
+        float Magnification() const { return 1.f / scale; }
+    };
     struct State
     {
         float amount = 0.f;

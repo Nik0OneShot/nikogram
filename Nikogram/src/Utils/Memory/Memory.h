@@ -11,6 +11,10 @@ public:
 	std::vector<byte> PatternToByte(const char* szPattern);
 	std::vector<int> PatternToInt(const char* szPattern);
 	uintptr_t FindSignature(const char* szModule, const char* szPattern);
+	// First match whose RIP-relative operand (4-byte displacement at iReferenceOffset,
+	// relative to the end of that displacement) points at the exact string szReference
+	// inside the same module. Keeps signatures unique without hard-coding addresses.
+	uintptr_t FindSignatureWithReference(const char* szModule, const char* szPattern, int iReferenceOffset, const char* szReference);
 	PVOID FindInterface(const char* szModule, const char* szObject);
 	std::string GetModuleOffset(void* pAddress) { return GetModuleOffset(uintptr_t(pAddress)); };
 	std::string GetModuleOffset(uintptr_t uAddress);

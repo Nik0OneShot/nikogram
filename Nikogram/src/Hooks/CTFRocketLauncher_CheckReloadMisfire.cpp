@@ -1,4 +1,5 @@
 #include "../SDK/SDK.h"
+#include "../Features/NeuralMovement/NeuralMovement.h"
 
 MAKE_SIGNATURE(CTFRocketLauncher_CheckReloadMisfire, "client.dll", "48 83 EC ? E8 ? ? ? ? 32 C0", 0x0);
 MAKE_SIGNATURE(CTFRocketLauncher_FireProjectile, "client.dll", "48 89 74 24 ? 57 48 81 EC ? ? ? ? 48 8B FA 48 89 9C 24", 0x0);
@@ -41,7 +42,7 @@ MAKE_HOOK(CTFRocketLauncher_FireProjectile, S::CTFRocketLauncher_FireProjectile(
 
 	auto pWeapon = reinterpret_cast<CTFWeaponBase*>(rcx);
 	pWeapon->m_bRemoveable() = false;
-	return CALL_ORIGINAL(rcx, pPlayer);
+	auto result=CALL_ORIGINAL(rcx,pPlayer);NeuralMovement::ShotFired(pPlayer,pWeapon);return result;
 }
 
 // more accurate way to track this? either way doesn't matter too much

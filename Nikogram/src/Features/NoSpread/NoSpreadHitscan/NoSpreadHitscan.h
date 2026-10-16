@@ -7,13 +7,19 @@ class CNoSpreadHitscan
 {
 private:
 	bool ShouldRun(CTFWeaponBase* pWeapon = nullptr);
-	int GetSeed(CUserCmd* pCmd);
+	enum class SeedMode { Unknown, Command, Time };
+	SeedMode GetSeedMode();
+	int GetSeed(CUserCmd* pCmd, SeedMode mode);
+	bool Fresh(double now) const;
+	void ExpireSamples();
 	float CalcMantissaStep(float flV);
 	std::string GetFormat(int iServerTime);
 
 	bool m_bWaitingForPlayerPerf = false;
 	int m_bSynced = 0;
 	double m_dRequestTime = 0.0;
+	double m_dLastAcceptedReplyTime = 0.0;
+	bool m_bHaveAcceptedReply = false;
 	float m_flServerTime = 0.f;
 	double m_dTimeDelta = 0.0;
 	std::deque<double> m_vTimeDeltas = {};

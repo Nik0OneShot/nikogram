@@ -1,3 +1,4 @@
+#include "../../Backtrack/NamedPlayerTraceDiagnostics.h"
 #include "Glow.h"
 #include "../RenderState.h"
 
@@ -118,6 +119,7 @@ void CGlow::SecondEnd(Glow_t tGlow, IMatRenderContext* pRenderContext, int w, in
 
 void CGlow::DrawModel(CBaseEntity* pEntity)
 {
+    NamedPlayerTraceDiagnostics::RenderScope diagnosticRoute(m_iFlags?4:2);
 	SkinRender::ViewmodelDrawScope drawScope(m_bRendering, true);
 
 	if (pEntity->IsPlayer())
@@ -249,6 +251,7 @@ void CGlow::RenderBacktrack(const DrawModelState_t& pState, const ModelRenderInf
 
 		//I::RenderView->SetBlend(flBlend * flOriginalBlend);
 		static auto IVModelRender_DrawModelExecute = U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
+		NamedPlayerTraceDiagnostics::ObserveDraw(pState,pInfo,pBoneToWorld);
 		IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, pBoneToWorld);
 	};
 	if (!bDrawLast && !bDrawFirst)
@@ -279,7 +282,8 @@ void CGlow::RenderBacktrack(const DrawModelState_t& pState, const ModelRenderInf
 void CGlow::RenderFakeAngle(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo)
 {
 	static auto IVModelRender_DrawModelExecute = U::Hooks.m_mHooks["IVModelRender_DrawModelExecute"];
-	IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, F::FakeAngle.aBones);
+	if (auto bones = F::FakeAngle.RenderBones(pInfo.pModel))
+		IVModelRender_DrawModelExecute->Call<void>(I::ModelRender, pState, pInfo, bones);
 }
 void CGlow::RenderHandler(const DrawModelState_t& pState, const ModelRenderInfo_t& pInfo, matrix3x4* pBoneToWorld, bool localViewmodel)
 {

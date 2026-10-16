@@ -36,6 +36,12 @@ void CEnginePrediction::Simulate(CTFPlayer* pLocal, CUserCmd* pCmd)
 	const int nOldTickBase = pLocal->m_nTickBase();
 	const bool bOldIsFirstPrediction = I::Prediction->m_bFirstTimePredicted;
 	const bool bOldInPrediction = I::Prediction->m_bInPrediction;
+    auto* oldHost=MoveSimulationHost::Current;
+    auto* oldCommand=pLocal->m_pCurrentCommand();
+    auto* oldPlayer=I::GameMovement->player;
+    auto* oldTFPlayer=I::GameMovement->m_pTFPlayer;
+    auto* oldMove=I::GameMovement->mv;
+    const int oldSeed=G::RandomSeed();
 
 	I::MoveHelper->SetHost(pLocal);
 	pLocal->m_pCurrentCommand() = pCmd;
@@ -51,9 +57,10 @@ void CEnginePrediction::Simulate(CTFPlayer* pLocal, CUserCmd* pCmd)
 	I::Prediction->FinishMove(pLocal, pCmd, &m_tMoveData);
 	RestorePlayers();
 
-	I::MoveHelper->SetHost(nullptr);
-	pLocal->m_pCurrentCommand() = nullptr;
-	G::RandomSeed() = -1;
+	I::MoveHelper->SetHost(oldHost);
+	pLocal->m_pCurrentCommand() = oldCommand;
+	G::RandomSeed() = oldSeed;
+    I::GameMovement->player=oldPlayer;I::GameMovement->m_pTFPlayer=oldTFPlayer;I::GameMovement->mv=oldMove;
 
 	pLocal->m_nTickBase() = nOldTickBase;
 	I::Prediction->m_bFirstTimePredicted = bOldIsFirstPrediction;
@@ -67,60 +74,45 @@ void CEnginePrediction::Simulate(CTFPlayer* pLocal, CUserCmd* pCmd)
 
 void CEnginePrediction::Start(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
-	m_bInPrediction = true;
-	if (!pLocal->IsAlive())
-		return;
-
-	auto pMap = pLocal->GetPredDescMap();
-	if (!pMap)
-		return;
-
-	m_nOldTickCount = I::GlobalVars->tickcount;
-	m_flOldCurrentTime = I::GlobalVars->curtime;
-	m_flOldFrameTime = I::GlobalVars->frametime;
-
-	I::GlobalVars->tickcount = pLocal->m_nTickBase();
-	I::GlobalVars->curtime = TICKS_TO_TIME(I::GlobalVars->tickcount);
-	I::GlobalVars->frametime = I::Prediction->m_bEnginePaused ? 0.f : TICK_INTERVAL;
-
-	size_t iSize = pLocal->GetIntermediateDataSize();
-	if (!m_tLocal.m_pData) 
-	{
-		m_tLocal.m_pData = reinterpret_cast<byte*>(I::MemAlloc->Alloc(iSize));
-		m_tLocal.m_iSize = iSize;
-	}
-	else if (m_tLocal.m_iSize != iSize)
-	{
-		m_tLocal.m_pData = reinterpret_cast<byte*>(I::MemAlloc->Realloc(m_tLocal.m_pData, iSize));
-		m_tLocal.m_iSize = iSize;
-	}
-
-	CPredictionCopy copy = { PC_EVERYTHING, m_tLocal.m_pData, PC_DATA_PACKED, pLocal, PC_DATA_NORMAL };
-	copy.TransferData("EnginePredictionStart", pLocal->entindex(), pMap);
-
-	Simulate(pLocal, pCmd);
+    if (m_bRestorePending) End(m_pRestorePlayer,pCmd);
+    m_bInPrediction=false;
+    if (!pLocal || !pLocal->IsAlive() || !m_RestoreSnapshot.Capture(pLocal)) return;
+    const size_t size=m_RestoreSnapshot.size;
+    if (!m_tLocal.m_pData || m_tLocal.m_iSize!=size)
+    {
+        auto* data=reinterpret_cast<byte*>(I::MemAlloc->Alloc(size));
+        if (!data) return;
+        if (m_tLocal.m_pData) I::MemAlloc->Free(m_tLocal.m_pData);
+        m_tLocal.m_pData=data;m_tLocal.m_iSize=size;
+    }
+    CPredictionCopy copy{PC_EVERYTHING,m_tLocal.m_pData,PC_DATA_PACKED,pLocal,PC_DATA_NORMAL};
+    copy.TransferData("EnginePredictionStart",pLocal->entindex(),m_RestoreSnapshot.map);
+    m_nOldTickCount=I::GlobalVars->tickcount;
+    m_flOldCurrentTime=I::GlobalVars->curtime;
+    m_flOldFrameTime=I::GlobalVars->frametime;
+    m_pRestorePlayer=pLocal;m_bRestorePending=m_bInPrediction=true;
+    I::GlobalVars->tickcount=pLocal->m_nTickBase();
+    I::GlobalVars->curtime=TICKS_TO_TIME(I::GlobalVars->tickcount);
+    I::GlobalVars->frametime=I::Prediction->m_bEnginePaused?0.f:TICK_INTERVAL;
+    Simulate(pLocal,pCmd);
 }
 
 void CEnginePrediction::End(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
-	m_bInPrediction = false;
-	if (!pLocal->IsAlive())
-		return;
-
-	auto pMap = pLocal->GetPredDescMap();
-	if (!pMap)
-		return;
-
-	I::GlobalVars->tickcount = m_nOldTickCount;
-	I::GlobalVars->curtime = m_flOldCurrentTime;
-	I::GlobalVars->frametime = m_flOldFrameTime;
-
-	CPredictionCopy copy = { PC_EVERYTHING, pLocal, PC_DATA_NORMAL, m_tLocal.m_pData, PC_DATA_PACKED };
-	copy.TransferData("EnginePredictionEnd", pLocal->entindex(), pMap);
+    m_bInPrediction=false;
+    if (!m_bRestorePending) return;
+    m_bRestorePending=false;
+    // Global clocks must be restored even if the entity died or changed identity.
+    I::GlobalVars->tickcount=m_nOldTickCount;
+    I::GlobalVars->curtime=m_flOldCurrentTime;
+    I::GlobalVars->frametime=m_flOldFrameTime;
+    PredictionRestore::Restore(m_pRestorePlayer,m_RestoreSnapshot,m_tLocal.m_pData,"EnginePredictionEnd");
+    m_pRestorePlayer=nullptr;
 }
 
 void CEnginePrediction::Unload()
 {
+    if (m_bRestorePending) End(m_pRestorePlayer,nullptr);
 	if (m_tLocal.m_pData)
 	{
 		I::MemAlloc->Free(m_tLocal.m_pData);

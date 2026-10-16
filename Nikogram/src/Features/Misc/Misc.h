@@ -20,6 +20,7 @@ private:
 
 	void TauntKartControl(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void FastMovement(CTFPlayer* pLocal, CUserCmd* pCmd);
+	void FastStop(CTFPlayer* pLocal, CUserCmd* pCmd);
 
 	void AutoPeek(CTFPlayer* pLocal, CUserCmd* pCmd, bool bPost = false);
 	void EdgeJump(CTFPlayer* pLocal, CUserCmd* pCmd, bool bPost = false);

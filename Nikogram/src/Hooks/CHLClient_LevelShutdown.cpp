@@ -1,10 +1,14 @@
+#include "../Features/Aimbot/AimObserver.h"
 #include "../SDK/SDK.h"
+#include "../Features/NeuralMovement/NeuralMovement.h"
 
 #include "../Features/EnginePrediction/EnginePrediction.h"
+#include "../Features/Ticks/TickbaseCorrectionPolicy.h"
 #include "../Features/Simulation/MovementSimulation/MovementSimulation.h"
 #include "../Features/Spectate/Spectate.h"
 #include "../Features/Blockbot/Blockbot.h"
 #include "../Features/Visuals/AnimInterp/AnimInterp.h"
+#include "../Features/Visuals/Chams/Chams.h"
 #include "../Features/Visuals/Visuals.h"
 #include "../Features/Aimbot/AutoViewmodelSwitch.h"
 #include "../Features/Backtrack/Backtrack.h"
@@ -18,6 +22,8 @@ MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 	void* rcx)
 {
 	DEBUG_RETURN(CHLClient_LevelShutdown, rcx);
+    NeuralMovement::ResetSession();
+	TickbaseCorrectionPolicy::queue.Reset();
 
 	F::Visuals.RestoreWorldModulation();
 	F::AntiAim.ResetPacketState();
@@ -29,6 +35,7 @@ MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 	F::Triggerbot.Reset();
 	F::AutoFlarePunch.Reset();
 	F::AnimInterp.Reset();
+	F::Chams.Reset();
 	F::Visuals.ResetLocalAnimationQueue();
 	F::Visuals.ResetFreelook();
 	H::Entities.Clear(true);
@@ -38,5 +45,6 @@ MAKE_HOOK(CHLClient_LevelShutdown, U::Memory.GetVirtual(I::Client, 7), void,
 	F::Blockbot.Reset();
 	H::Draw.ClearAvatarCache(); // free avatar textures between maps instead of keeping them forever
 
+	AimObserver::Reset();
 	CALL_ORIGINAL(rcx);
 }

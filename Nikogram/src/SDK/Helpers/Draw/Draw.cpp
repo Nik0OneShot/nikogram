@@ -6,6 +6,7 @@
 #include "../../../Utils/Timer/Timer.h"
 #include "../../../Features/ImGui/Render.h"
 #include "../../../Features/ImGui/TextStyle.h"
+#include "../../../Features/ImGui/IndicatorOverlay.h"
 
 MAKE_SIGNATURE(CHudBaseDeathNotice_GetIcon, "client.dll", "40 53 48 81 EC ? ? ? ? 48 8B DA", 0x0);
 MAKE_SIGNATURE(RenderLine, "engine.dll", "48 89 5C 24 ? 48 89 74 24 ? 44 89 44 24", 0x0);
@@ -38,12 +39,14 @@ void CDraw::End()
 
 void CDraw::StartClipping(int x, int y, int w, int h)
 {
+	if (IndicatorOverlay::Active()) { IndicatorOverlay::SetClip(x,y,w,h); return; }
 	I::MatSystemSurface->DisableClipping(false);
 	I::MatSystemSurface->SetClippingRect(x, y, x + w, y + h);
 }
 
 void CDraw::EndClipping()
 {
+	if (IndicatorOverlay::Active()) { IndicatorOverlay::ClearClip(); return; }
 	I::MatSystemSurface->DisableClipping(true);
 }
 
@@ -96,6 +99,18 @@ Vec2 CDraw::GetTextSize(const wchar_t* text, const Font_t& tFont)
 
 static constexpr std::pair<int, int> s_aOutline[] = { { -1, 0 }, { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, -1 }, { 1, 1 }, { -1, 1 }, { 1, -1 } };
 
+static bool CaptureIndicatorString(const Font_t& font,int x,int y,Vec2 size,Color_t color,const wchar_t* text,const Color_t* outline=nullptr)
+{
+	if(!IndicatorOverlay::Active())return false;
+	auto emit=[&](int px,int py,Color_t c)
+	{
+		if(font.m_nFlags&FONTFLAG_DROPSHADOW)IndicatorOverlay::Text(font,px+1,py+1,int(size.x),int(size.y),Color_t{0,0,0,c.a},text);
+		IndicatorOverlay::Text(font,px,py,int(size.x),int(size.y),c,text);
+	};
+	if(outline&&outline->a)for(auto [dx,dy]:s_aOutline)emit(x+dx,y+dy,*outline);
+	emit(x,y,color);return true;
+}
+
 static wchar_t s_wstr[1024] = { '\0' };
 static inline void Utf8ToBuffer(const char* str)
 {
@@ -123,6 +138,8 @@ void CDraw::String(const Font_t& tFont, int x, int y, Color_t tColor, EAlign eAl
 	case ALIGN_BOTTOMRIGHT: x -= vSize.x; y -= vSize.y; break;
 	}
 
+	if(CaptureIndicatorString(tFont,x,y,vSize,tColor,s_wstr))return;
+
 	I::MatSystemSurface->DrawSetTextPos(x, y);
 	I::MatSystemSurface->DrawSetTextFont(dwFont);
 	I::MatSystemSurface->DrawSetTextColor(tColor);
@@ -145,6 +162,8 @@ void CDraw::String(const Font_t& tFont, int x, int y, Color_t tColor, EAlign eAl
 	case ALIGN_BOTTOM: x -= vSize.x / 2; y -= vSize.y; break;
 	case ALIGN_BOTTOMRIGHT: x -= vSize.x; y -= vSize.y; break;
 	}
+
+	if(CaptureIndicatorString(tFont,x,y,vSize,tColor,wstr))return;
 
 	I::MatSystemSurface->DrawSetTextPos(x, y);
 	I::MatSystemSurface->DrawSetTextFont(dwFont);
@@ -174,6 +193,8 @@ void CDraw::StringOutlined(const Font_t& tFont, int x, int y, Color_t tColor, Co
 	}
 
 	tColorOut.a *= Math::RemapVal(tColorOut.Brightness(), 0, 255, 0.5f, 0.1f);
+	if(CaptureIndicatorString(tFont,x,y,vSize,tColor,s_wstr,&tColorOut))return;
+
 	if (tColorOut.a)
 	{
 		for (auto& [x2, y2] : s_aOutline)
@@ -212,6 +233,8 @@ void CDraw::StringOutlined(const Font_t& tFont, int x, int y, Color_t tColor, Co
 	}
 	
 	tColorOut.a *= Math::RemapVal(tColorOut.Brightness(), 0, 255, 0.5f, 0.1f);
+	if(CaptureIndicatorString(tFont,x,y,vSize,tColor,wstr,&tColorOut))return;
+
 	if (tColorOut.a)
 	{
 		for (auto& [x2, y2] : s_aOutline)
@@ -231,12 +254,14 @@ void CDraw::StringOutlined(const Font_t& tFont, int x, int y, Color_t tColor, Co
 
 void CDraw::Line(int x1, int y1, int x2, int y2, Color_t tColor)
 {
+	if(IndicatorOverlay::Line(x1,y1,x2,y2,tColor))return;
 	I::MatSystemSurface->DrawSetColor(tColor);
 	I::MatSystemSurface->DrawLine(x1, y1, x2, y2);
 }
 
 void CDraw::FillPolygon(std::vector<Vertex_t> vVertices, Color_t tColor)
 {
+	if(IndicatorOverlay::Polygon(vVertices,tColor,true))return;
 	static int iId = 0;
 	if (!I::MatSystemSurface->IsTextureIDValid(iId))
 	{
@@ -252,6 +277,7 @@ void CDraw::FillPolygon(std::vector<Vertex_t> vVertices, Color_t tColor)
 }
 void CDraw::LinePolygon(std::vector<Vertex_t> vVertices, Color_t tColor)
 {
+	if(IndicatorOverlay::Polygon(vVertices,tColor,false))return;
 	static int iId = 0;
 	if (!I::MatSystemSurface->IsTextureIDValid(iId))
 		iId = I::MatSystemSurface->CreateNewTextureID();
@@ -263,16 +289,19 @@ void CDraw::LinePolygon(std::vector<Vertex_t> vVertices, Color_t tColor)
 
 void CDraw::FillRect(int x, int y, int w, int h, Color_t tColor)
 {
+	if(IndicatorOverlay::Rect(IndicatorOverlay::Kind::Fill,x,y,w,h,tColor))return;
 	I::MatSystemSurface->DrawSetColor(tColor);
 	I::MatSystemSurface->DrawFilledRect(x, y, x + w, y + h);
 }
 void CDraw::LineRect(int x, int y, int w, int h, Color_t tColor)
 {
+	if(IndicatorOverlay::Rect(IndicatorOverlay::Kind::Outline,x,y,w,h,tColor))return;
 	I::MatSystemSurface->DrawSetColor(tColor);
 	I::MatSystemSurface->DrawOutlinedRect(x, y, x + w, y + h);
 }
 void CDraw::GradientRect(int x, int y, int w, int h, Color_t tColorTop, Color_t tColorBottom, bool bHorizontal)
 {
+	if(IndicatorOverlay::Gradient(x,y,w,h,tColorTop,tColorBottom,bHorizontal))return;
 	// top colour fades out while bottom colour fades in (the fade alphas are scaled by the draw colour's alpha)
 	I::MatSystemSurface->DrawSetColor(tColorTop);
 	I::MatSystemSurface->DrawFilledRectFade(x, y, x + w, y + h, 255, 0, bHorizontal);
@@ -363,6 +392,12 @@ void CDraw::FillCircle(int x, int y, float iRadius, int iSegments, Color_t tColo
 }
 void CDraw::LineCircle(int x, int y, float iRadius, int iSegments, Color_t tColor)
 {
+	if(IndicatorOverlay::Active())
+	{
+		std::vector<Vertex_t> vertices;const int count=std::clamp(iSegments,3,1024);
+		for(int i=0;i<count;++i){const float angle=float(i)*Math::PI*2.f/count;vertices.emplace_back(Vec2{x+iRadius*cosf(angle),y+iRadius*sinf(angle)});}
+		IndicatorOverlay::Polygon(vertices,tColor,false);return;
+	}
 	I::MatSystemSurface->DrawSetColor(tColor);
 	I::MatSystemSurface->DrawOutlinedCircle(x, y, iRadius, iSegments);
 }

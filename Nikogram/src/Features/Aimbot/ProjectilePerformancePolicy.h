@@ -8,17 +8,17 @@
 
 namespace ProjectilePerformancePolicy
 {
-    enum class SearchWork : std::size_t { Prediction, Sampling, Selection, Validation, Geometry, Count };
+    enum class SearchWork : std::size_t { Prediction, Sampling, Selection, Validation, Geometry, Flight, Count };
 
     // Cooperative limits, not a frame-time guarantee. An engine operation or
-    // full candidate validation already in progress must finish safely.
+    // one native movement/trace operation already in progress must finish safely.
     struct SearchBudget
     {
         using Clock = std::chrono::steady_clock;
         static constexpr std::int64_t TotalUs = 4000;
-        static constexpr std::array<std::int64_t, 5> DeadlineUs{2000, 3000, 3500, TotalUs, 3000};
-        static constexpr std::array<unsigned, 5> Limits{512, 512, 4096, 64, 2048};
-        std::array<unsigned, 5> used{};
+        static constexpr std::array<std::int64_t, 6> DeadlineUs{2000, 3000, 3500, TotalUs, 3000, TotalUs};
+        static constexpr std::array<unsigned, 6> Limits{512, 512, 4096, 64, 2048, 2048};
+        std::array<unsigned, 6> used{};
         Clock::time_point start{};
         int command = 0;
         bool initialized = false, limited = false;
@@ -54,8 +54,8 @@ namespace ProjectilePerformancePolicy
     {
         using Clock=SearchBudget::Clock;
         static constexpr std::int64_t DeadlineUs=600;
-        static constexpr std::array<unsigned,5> Limits{512,64,512,4,256};
-        std::array<unsigned,5> used{};
+        static constexpr std::array<unsigned,6> Limits{512,64,512,4,256,512};
+        std::array<unsigned,6> used{};
         Clock::time_point start=Clock::now();
         bool Check(SearchWork work,std::int64_t elapsed,bool consume)
         {

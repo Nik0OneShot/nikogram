@@ -1,3 +1,4 @@
+#include "../AimObserver.h"
 #include "AimbotMelee.h"
 #include "../SmoothAim.h"
 #include "../MeleeDiagnostics.h"
@@ -654,7 +655,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		pCmd->buttons |= IN_ATTACK;
 	if (!Vars::Aimbot::General::AimType.Value
 		|| !F::AimbotGlobal.ShouldAim() && pWeapon->m_flSmackTime() < 0.f)
-    { MD::Event("aim_inactive"); return; }
+    { AimObserver::Mark(!Vars::Aimbot::General::AimType.Value?AimObserver::Reason::AimInactive:AimObserver::Reason::WeaponNotReady);MD::Event("aim_inactive"); return; }
 
     if(!std::isfinite(Vars::Aimbot::Melee::AimFOV.Value) || Vars::Aimbot::Melee::AimFOV.Value<=0.f)
     {MD::Event("melee_fov_disabled");return;}
@@ -664,8 +665,8 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 
 	auto vTargets = F::AimbotGlobal.ManageTargets(GetTargets, pLocal, pWeapon, Vars::Aimbot::General::TargetSelectionEnum::Distance);
 	MD::Event("candidate_count",-1,float(vTargets.size()));
-	if (vTargets.empty())
-		return;
+	if (vTargets.empty()){AimObserver::Mark(AimObserver::Reason::NoTarget);return;}
+    AimObserver::Mark(AimObserver::Reason::NoSolution);
 
 	//if (!G::AimTarget.m_iEntIndex)
 	//	G::AimTarget = { vTargets.front().m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
@@ -680,9 +681,12 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		const auto iResult = CanHit(tTarget, pLocal, pWeapon);
 		MD::Event("can_hit_result",tTarget.m_pEntity->entindex(),float(iResult));
 		if (!iResult) continue;
-        if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)) break;
+        AimObserver::Selected(tTarget.m_pEntity->IsPlayer()?tTarget.m_pEntity->As<CTFPlayer>():nullptr);
+        AimObserver::Mark(AimObserver::Reason::Evaluating);
+        if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)){AimObserver::Mark(AimObserver::Reason::TargetDelay);break;}
 		if (iResult == 2)
 		{
+            AimObserver::Mark(AimObserver::Reason::AimOnly);
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 			Aim(pCmd, tTarget.m_vAngleTo);
 			break;
@@ -692,11 +696,13 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		{
 			MD::Event(m_bShouldSwing?"swing_allowed":"swing_timing_blocked",tTarget.m_pEntity->entindex(),float(m_iDoubletapTicks));
 			if (m_bShouldSwing)
-				pCmd->buttons |= IN_ATTACK;
+                {pCmd->buttons |= IN_ATTACK;AimObserver::Mark(AimObserver::Reason::SwingRequested);}
+            else AimObserver::Mark(AimObserver::Reason::SwingWait);
             if (m_iDoubletapTicks)
                 F::Ticks.m_bDoubletap = true;
         }
-        else MD::Event(Vars::Aimbot::General::AutoShoot.Value?"swing_already_in_progress":"autoshoot_disabled",tTarget.m_pEntity->entindex());
+        else {MD::Event(Vars::Aimbot::General::AutoShoot.Value?"swing_already_in_progress":"autoshoot_disabled",tTarget.m_pEntity->entindex());
+            AimObserver::Mark(Vars::Aimbot::General::AutoShoot.Value?AimObserver::Reason::SwingWait:AimObserver::Reason::Manual);}
         if(!G::CanPrimaryAttack) MD::Event("weapon_cooldown",tTarget.m_pEntity->entindex());
 
 		G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);

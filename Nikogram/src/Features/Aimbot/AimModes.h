@@ -10,12 +10,31 @@ namespace AimModes
     enum Mode { None=-1, Rage=0, Legit=1 };
     inline thread_local int Editing=None;
     inline int Active=None;
+    inline bool Banked=false;
+    // Auxiliary controls retain their saved Rage bank even while aim is off.
+    // Timing retains its existing active-mode profile, falling back to Rage.
+    inline bool RageAuxiliary(const BaseVar* source)
+    {
+        return source==&Vars::Aimbot::General::NoSpread
+            || std::string_view(source->Name()).starts_with("Vars::CritHack::")
+            || source==&Vars::Aimbot::Projectile::AutoDetonate
+            || source==&Vars::Aimbot::Projectile::AutodetRadius
+            || source==&Vars::Aimbot::Projectile::AutoAirblast;
+    }
+    inline int RuntimeBank(const BaseVar* source)
+    {
+        if(RageAuxiliary(source))return Rage;
+        if(Active==None&&std::string_view(source->Name()).starts_with("Vars::Doubletap::"))return Rage;
+        return Active;
+    }
+    inline bool DetonateAllowed(){return !Banked||Active!=Legit;}
     struct Entry
     {
         BaseVar* original;
         std::shared_ptr<BaseVar> mode[2];
         std::function<void(int)> apply;
         std::function<void()> seed;
+        std::function<void(bool)> auxiliary;
     };
     inline std::vector<Entry>& Entries(){static std::vector<Entry> values;return values;}
     inline std::unordered_map<BaseVar*,size_t>& Index(){static std::unordered_map<BaseVar*,size_t> values;return values;}
@@ -31,6 +50,11 @@ namespace AimModes
         }
         e.apply=[&original,a=banks[0],b=banks[1]](int mode){original.Value=(mode==Rage?a:b)->Value;};
         e.seed=[&original,a=banks[0],b=banks[1]]{a->Map={{DEFAULT_BIND,original.Map.at(DEFAULT_BIND)}};b->Map=a->Map;};
+        e.auxiliary=[&original,a=banks[0],previous=original.Default](bool enter) mutable
+        {
+            if(enter){previous=original.Value;original.Value=a->Value;}
+            else original.Value=previous;
+        };
         Index()[&original]=Entries().size();Entries().push_back(std::move(e));
     }
     inline void Ensure()
@@ -63,10 +87,43 @@ namespace AimModes
         Ensure();auto it=Index().find(&original);
         return mode>=Rage&&mode<=Legit&&it!=Index().end()?*Entries()[it->second].mode[mode]->As<T>():original;
     }
-    template<class T> ConfigVar<T>& Resolve(ConfigVar<T>& original){return Get(original,Editing);}
+    template<class T> ConfigVar<T>& Resolve(ConfigVar<T>& original)
+    {
+        // Advanced/search editors must edit the same auxiliary bank used at runtime.
+        return Get(original,Editing!=None&&RageAuxiliary(&original)?Rage:Editing);
+    }
     struct EditScope
     {
         int previous=Editing;EditScope(int mode){Ensure();Editing=mode;}~EditScope(){Editing=previous;}
+    };
+    inline bool AuxiliaryDependency(const BaseVar* source)
+    {
+        return std::string_view(source->Name()).starts_with("Vars::Aimbot::")
+            &&!RageAuxiliary(source)&&source!=&Vars::Aimbot::General::AimType
+            &&source!=&Vars::Aimbot::General::AutoShoot;
+    }
+    // Helpers share the projectile targeting/safety solver, but must not inherit
+    // an unrelated legacy/Legit FOV or self-damage threshold. Scope evaluated
+    // values only; leave activation, AutoShoot and serialized maps untouched.
+    // Nested helper scopes reuse the outer snapshot without overwriting it.
+    inline thread_local int AuxiliaryDepth=0;
+    struct AuxiliaryScope
+    {
+        bool entered=false;
+        explicit AuxiliaryScope(bool enabled)
+        {
+            if(!enabled||!Banked||Active==Rage)return;
+            entered=true;if(AuxiliaryDepth++!=0)return;
+            for(auto& e:Entries())if(AuxiliaryDependency(e.original))e.auxiliary(true);
+            Vars::Aimbot::Projectile::AimFOV.Value=std::min(Vars::Aimbot::Projectile::AimFOV.Value,Get(Vars::Aimbot::General::AimFOV,Rage).Value);
+        }
+        ~AuxiliaryScope()
+        {
+            if(!entered||--AuxiliaryDepth!=0)return;
+            for(auto& e:Entries())if(AuxiliaryDependency(e.original))e.auxiliary(false);
+        }
+        AuxiliaryScope(const AuxiliaryScope&)=delete;
+        AuxiliaryScope& operator=(const AuxiliaryScope&)=delete;
     };
     inline int NormalizeStyle(int mode,int style)
     {
@@ -88,7 +145,7 @@ namespace AimModes
     inline int Choose(bool rage,bool legit){return rage?Rage:legit?Legit:None;}
     inline void Apply(bool nikogram)
     {
-        Ensure();Active=None;if(!nikogram)return;
+        Ensure();Active=None;Banked=nikogram;if(!nikogram)return;
         Active=Choose(Vars::AimModes::RageEnabled.Value&&Vars::AimModes::RageActivation.Value,
             Vars::AimModes::LegitEnabled.Value&&Vars::AimModes::LegitActivation.Value);
         if(Active!=None)
@@ -105,7 +162,15 @@ namespace AimModes
             Vars::Aimbot::Melee::AimFOV.Value=std::min(Vars::Aimbot::Melee::AimFOV.Value,Vars::Aimbot::General::AimFOV.Value);
         }
         else Vars::Aimbot::General::AimType.Value=0;
-        Vars::Aimbot::General::FOVCircle.Value=Active!=None&&Vars::Aimbot::General::FOVCircle.Value&&Vars::AimModes::CircleEnabled.Value;
+        for(auto& e:Entries())
+        {
+            const int bank=RuntimeBank(e.original);
+            if(bank!=None&&bank!=Active)e.apply(bank);
+        }
+        // Never let a stale/legacy Legit detonation value escape through another caller.
+        if(!DetonateAllowed())Vars::Aimbot::Projectile::AutoDetonate.Value=0;
+        Vars::Aimbot::General::FOVCircle.Value=Vars::AimModes::CircleEnabled.Value
+            &&(Get(Vars::Aimbot::General::FOVCircle,Rage).Value||Get(Vars::Aimbot::General::FOVCircle,Legit).Value);
         if(Vars::AimModes::CircleOverride.Value)Vars::Colors::FOVCircle.Value=Vars::AimModes::CircleColour.Value;
         Vars::ESP::MoonlitEnabled.Value=Vars::ESP::MoonlitEnabled.Value&&Vars::ESP::MoonlitMaster.Value;
     }

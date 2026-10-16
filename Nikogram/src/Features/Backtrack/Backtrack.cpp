@@ -1,7 +1,11 @@
+#include "NamedPlayerTraceDiagnostics.h"
+#include "SniperPlayerClip.h"
 #include "Backtrack.h"
+#include "../ImGui/HudTextStyle.h"
 #include "../ImGui/MoonlitHud.h"
 #include "BacktrackPolicy.h"
 #include "CursorBacktrackPolicy.h"
+#include "CursorTraceDiagnostics.h"
 #include "NetworkTimingPolicy.h"
 #include "../Aimbot/Aimbot.h"
 #include "../Aimbot/AimbotGlobal/AimbotGlobal.h"
@@ -15,11 +19,13 @@
 void CBacktrack::Reset()
 {
 	m_mRecords.clear();
+	m_mRecordIdentity.clear();
 	m_dSequences.clear();
     m_iLastInSequence = 0;
     m_mDidShoot.clear();
     m_nOldInSequenceNr=m_nOldInReliableState=m_nLastInSequenceNr=m_nOldTickBase=0;
     m_iTickCount=0;m_flMaxUnlag=1.f;m_flFakeLatency=m_flLatencyDrift=0.f;
+    m_pSequenceChannel=nullptr;m_flSequenceRealtime=0.f;
     m_flFakeInterp=std::isfinite(G::Lerp)?std::clamp(G::Lerp,0.f,1.f):.015f;
     m_flSentInterp=-1.f;m_bLerpQueued=m_bSettingUpBones=false;
 }
@@ -96,32 +102,71 @@ void CBacktrack::CreateMove(CUserCmd* pCmd)
 }
 
 CursorHit_t CBacktrack::FindCursorHit(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, const Vec3& shotAngles,
-    int hitboxes,int historyMode,bool currentPose,bool respectFilters)
+    int hitboxes,int historyMode,bool currentPose,bool respectFilters,CUserCmd* diagnosticCommand)
 {
     CursorHit_t result;
-    if (!pLocal || !pWeapon || !(hitboxes&31)) return result;
+    if (!pLocal || !pWeapon || !(hitboxes&31)) {result.rejection="cursor_invalid_input";return result;}
     const Vec3 eye=pLocal->GetShootPos();
     Vec3 direction; Math::AngleVectors(shotAngles+pLocal->m_vecPunchAngle(),&direction);
     const auto finite=[](const Vec3& v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);};
-    if (!finite(eye) || !finite(direction)) return result;
+    if (!finite(eye) || !finite(direction)) {result.rejection="cursor_invalid_ray";return result;}
     const CursorBacktrackPolicy::Point origin={eye.x,eye.y,eye.z}, ray={direction.x,direction.y,direction.z};
     const float range=pWeapon->GetRange();
-    if (!std::isfinite(range) || range<=0.f) return result;
+    if (!std::isfinite(range) || range<=0.f) {result.rejection="cursor_invalid_range";return result;}
     if (currentPose)
     {
-        CTraceFilterHitscan liveFilter;liveFilter.pSkip=pLocal;
+        CursorTraceDiagnostics::Filter liveFilter;liveFilter.pSkip=pLocal;
+        liveFilter.capture=CursorTraceDiagnostics::Due(diagnosticCommand);
         CGameTrace live={};
         SDK::Trace(eye,eye+direction*range,MASK_SHOT|CONTENTS_GRATE,&liveFilter,&live);
-        if (!live.startsolid && !live.allsolid && live.m_pEnt && live.m_pEnt->IsPlayer())
+        CursorTraceDiagnostics::Write(liveFilter,pLocal,pWeapon,diagnosticCommand,shotAngles,eye,eye+direction*range,range,MASK_SHOT|CONTENTS_GRATE,live);
+        if(liveFilter.capture)NamedPlayerTraceDiagnostics::Write(pLocal,diagnosticCommand,eye,eye+direction*range,range,live);
+        if(SniperPlayerClip::Rifle(pWeapon->GetWeaponID()))
+        {
+            const auto recovery=SniperPlayerClip::Recover(eye,direction,range,MASK_SHOT|CONTENTS_GRATE,liveFilter,live,liveFilter.capture);
+            if(liveFilter.capture)try
+            {
+                const auto final=SniperPlayerClip::CaptureTrace(live);
+                const auto vec=[](const Vec3& v){return std::format("{},{},{}",v.x,v.y,v.z);};
+                std::string text=std::format(
+                    "schema=2 cmd={} examined={} clipped={} candidate={} validated={} recovered={} reason={} direct_known={} validation_known={} original_mask={} direct_mask={} direct_range={} validation_mask={} validation_start={} validation_requested_end={} validation_callbacks={} validation_callbacks_omitted={} validation_null_callbacks={} validation_candidate_seen={} validation_candidate_accepted={} validation_static_accepted={} validation_other_player_rejected={} validation_other_accepted={} filter_policy=existing_trigger cover_policy=conservative",
+                    diagnosticCommand->command_number,recovery.examined,recovery.clipped,recovery.candidate,recovery.validated,recovery.recovered,recovery.reason,
+                    recovery.directKnown,recovery.validationKnown,MASK_SHOT|CONTENTS_GRATE,(MASK_SHOT|CONTENTS_GRATE)|CONTENTS_HITBOX,range+40.f,
+                    recovery.validationMask,vec(recovery.validationStart),vec(recovery.validationEnd),recovery.callbacks.observed,recovery.callbacks.omitted,
+                    recovery.callbacks.nulls,recovery.callbacks.candidateSeen,recovery.callbacks.candidateAccepted,recovery.callbacks.staticAccepted,
+                    recovery.callbacks.otherPlayerRejected,recovery.callbacks.otherAccepted);
+                const auto identity=[&](const char* label,const SniperPlayerClip::Identity& value)
+                {
+                    text+=std::format(" {}_pointer={} {}_resolved={} {}_index={} {}_class={} {}_handle={} {}_scan={} {}_scan_truncated={}",
+                        label,value.pointer,label,value.resolved,label,value.index,label,value.classID,label,value.handle,label,value.scanned,label,value.truncated);
+                };
+                const auto snapshot=[&](const char* label,const SniperPlayerClip::TraceSnapshot& value)
+                {
+                    identity(label,value.entity);
+                    text+=std::format(" {}_fraction={} {}_start={} {}_end={} {}_hitbox={} {}_hitgroup={} {}_contents={} {}_startsolid={} {}_allsolid={}",
+                        label,value.fraction,label,vec(value.start),label,vec(value.end),label,value.hitbox,label,value.hitgroup,label,value.contents,label,value.startsolid,label,value.allsolid);
+                };
+                identity("candidate",recovery.candidateIdentity);
+                snapshot("original",recovery.original);snapshot("direct",recovery.direct);snapshot("validation",recovery.validation);snapshot("final",final);
+                SelfDamageDiagnostics::WriteTrigger("trigger_player_clip",text);
+            }
+            catch(...){} // Diagnostic formatting cannot alter physical acceptance.
+        }
+        if(live.startsolid || live.allsolid) result.rejection="cursor_start_solid";
+        else if (live.m_pEnt && live.m_pEnt->IsPlayer())
         {
             auto player=live.m_pEnt->As<CTFPlayer>();
-            if (player!=pLocal && player->m_iTeamNum()!=pLocal->m_iTeamNum() && player->IsAlive()
-                && !player->IsDormant() && !player->IsAGhost()
-                && (!respectFilters || !F::AimbotGlobal.ShouldIgnore(player,pLocal,pWeapon))
-                && live.hitbox>=0 && live.hitbox<player->GetNumOfHitboxes()
-                && F::AimbotGlobal.IsHitboxValid(player,live.hitbox,hitboxes))
+            result.rejectedEntity=player->entindex();result.rejectedHitbox=live.hitbox;
+            const char* rejection=player==pLocal?"cursor_local":player->m_iTeamNum()==pLocal->m_iTeamNum()?"cursor_friendly"
+                :!player->IsAlive()?"cursor_dead":player->IsDormant()?"cursor_dormant":player->IsAGhost()?"cursor_ghost"
+                :respectFilters && F::AimbotGlobal.ShouldIgnore(player,pLocal,pWeapon)?"cursor_ignore_filter"
+                :live.hitbox<0 || live.hitbox>=player->GetNumOfHitboxes()?"cursor_invalid_hitbox"
+                :!F::AimbotGlobal.IsHitboxValid(player,live.hitbox,hitboxes)?"cursor_hitbox_disabled":nullptr;
+            if(!rejection)
                 return {player,nullptr,live.hitbox,0,double(range*live.fraction)};
+            result.rejection=rejection;
         }
+        else if(live.fraction<1.f) result.rejection="cursor_world_or_prop";
     }
     if (historyMode!=Vars::Triggerbot::BacktrackEnum::Last && historyMode!=Vars::Triggerbot::BacktrackEnum::All) return result;
 
@@ -253,8 +298,13 @@ void CBacktrack::UpdateDatagram()
     if (!pNetChan)
         return;
 
-    if(pNetChan->m_nInSequenceNr<m_iLastInSequence)
+    // Histories cannot cross a channel replacement or receipt-clock rewind.
+    if(pNetChan!=m_pSequenceChannel || !std::isfinite(I::GlobalVars->realtime)
+        || I::GlobalVars->realtime<m_flSequenceRealtime || pNetChan->m_nInSequenceNr<m_iLastInSequence)
     {m_dSequences.clear();m_iLastInSequence=m_nLastInSequenceNr=0;m_flLatencyDrift=m_flFakeLatency=0.f;}
+    m_pSequenceChannel=pNetChan;
+    m_flSequenceRealtime=I::GlobalVars->realtime;
+    if(!std::isfinite(m_flSequenceRealtime)) return;
 
 	if (auto pLocal = H::Entities.GetLocal())
 		m_nOldTickBase = pLocal->m_nTickBase();
@@ -271,8 +321,23 @@ void CBacktrack::UpdateDatagram()
 
 
 
+void CBacktrack::CheckRecordIdentity(CBaseEntity* entity)
+{
+    if (!entity || !entity->IsPlayer()) return;
+    auto* player = entity->As<CTFPlayer>();
+    const RecordIdentity current{entity->GetRefEHandle().ToInt(), player->m_iSpawnCounter(), entity->m_nModelIndex()};
+    const auto previous = m_mRecordIdentity.find(entity);
+    if (previous == m_mRecordIdentity.end() || !(previous->second == current))
+    {
+        m_mRecords.erase(entity);
+        m_mDidShoot.erase(entity->entindex());
+        m_mRecordIdentity[entity] = current;
+    }
+}
+
 bool CBacktrack::GetRecords(CBaseEntity* pEntity, std::vector<TickRecord*>& vReturn)
 {
+    CheckRecordIdentity(pEntity);
     auto it=m_mRecords.find(pEntity);
     if(it==m_mRecords.end() || it->second.empty())
         return false;
@@ -370,6 +435,7 @@ void CBacktrack::MakeRecords()
 	for (auto& pEntity : H::Entities.GetGroup(EntityEnum::PlayerAll))
 	{
 		auto pPlayer = pEntity->As<CTFPlayer>();
+		CheckRecordIdentity(pPlayer);
 		if (pPlayer->entindex() == I::EngineClient->GetLocalPlayer() || !pPlayer->IsAlive() || pPlayer->IsAGhost()
 			|| !H::Entities.GetDeltaTime(pPlayer->entindex()))
 			continue;
@@ -430,10 +496,20 @@ void CBacktrack::MakeRecords()
 void CBacktrack::CleanRecords()
 {
 	auto& vPlayers = H::Entities.GetGroup(EntityEnum::PlayerAll);
+    // Failed/absent bone samples can leave identity entries without a deque.
+    for (auto it = m_mRecordIdentity.begin(); it != m_mRecordIdentity.end();)
+    {
+        if (std::find(vPlayers.begin(), vPlayers.end(), it->first) == vPlayers.end())
+            it = m_mRecordIdentity.erase(it);
+        else ++it;
+    }
 	for (auto it = m_mRecords.begin(); it != m_mRecords.end();)
 	{	// prune records of players that are no longer present
 		if (std::find(vPlayers.begin(), vPlayers.end(), it->first) == vPlayers.end())
+		{
+			m_mRecordIdentity.erase(it->first);
 			it = m_mRecords.erase(it);
+		}
 		else
 			++it;
 	}
@@ -533,6 +609,7 @@ void CBacktrack::AdjustPing(CNetChannel* pNetChan)
 
 	auto fSet = [&]()
 	{
+		if (pNetChan != m_pSequenceChannel) return 0.f;
 		if (!Vars::Backtrack::Latency.Value)
 			return 0.f;
 
@@ -544,18 +621,30 @@ void CBacktrack::AdjustPing(CNetChannel* pNetChan)
         float flTimescale = host_timescale?host_timescale->GetFloat():1.f;
         if(!std::isfinite(flTimescale) || flTimescale<=0.f) return 0.f;
 
-        float flFake = GetWishFake(), flReal = TICKS_TO_TIME(pLocal->m_nTickBase() - m_nOldTickBase);
-        m_flLatencyDrift += (flReal + 5 * TICK_INTERVAL - m_flLatencyDrift) * 0.1f;
+        const float flFake = GetWishFake();
+        const double elapsed = (double(pLocal->m_nTickBase()) - m_nOldTickBase) * TICK_INTERVAL;
+        // A respawn/correction is not elapsed command processing time.
+        if (!std::isfinite(elapsed) || elapsed < 0. || elapsed > m_flMaxUnlag)
+            m_flLatencyDrift = 0.f;
+        else
+            m_flLatencyDrift += (float(elapsed) + 5 * TICK_INTERVAL - m_flLatencyDrift) * 0.1f;
+        const float budget = std::max(0.f, std::min(flFake, m_flMaxUnlag - m_flLatencyDrift));
+        if (!std::isfinite(flFake) || !std::isfinite(budget)) return 0.f;
 
 		int nInReliableState = pNetChan->m_nInReliableState, nInSequenceNr = pNetChan->m_nInSequenceNr; float flLatency = 0.f;
 		for (auto& cSequence : m_dSequences)
 		{
+			const float age = (I::GlobalVars->realtime - cSequence.m_flTime) * flTimescale;
+            if (!std::isfinite(age) || age < 0.f) break;
+            const float latency = std::max(age - TICK_INTERVAL, 0.f);
+            // Validate before accepting: sparse history must not overshoot the
+            // requested/bounded delay or move acknowledgements backwards.
+            if (latency > budget || cSequence.m_nSequenceNr < m_nLastInSequenceNr
+                || cSequence.m_nSequenceNr > pNetChan->m_nInSequenceNr) break;
 			nInReliableState = cSequence.m_nInReliableState;
 			nInSequenceNr = cSequence.m_nSequenceNr;
-            flLatency = std::max((I::GlobalVars->realtime - cSequence.m_flTime) * flTimescale - TICK_INTERVAL,0.f);
-
-            if (flLatency > flFake || m_nLastInSequenceNr >= cSequence.m_nSequenceNr || flLatency > m_flMaxUnlag - m_flLatencyDrift)
-				break;
+            flLatency = latency;
+			if (cSequence.m_nSequenceNr == m_nLastInSequenceNr) break;
 		}
         if (!std::isfinite(flLatency) || flLatency > m_flMaxUnlag)
 			return 0.f;
@@ -630,8 +719,8 @@ void CBacktrack::Draw(CTFPlayer* pLocal)
 	}
 
 	if (flFake || Vars::Backtrack::Interp.Value > G::Lerp * 1000)
-		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format("Ping {:.0f} (+ {:.0f}) ms", flLatency, flFake).c_str());
+		H::Draw.StringOutlined(fFont, x, y, Workspace::HudTextColour(), Vars::Menu::Theme::Background.Value, align, std::format("Ping {:.0f} (+ {:.0f}) ms", flLatency, flFake).c_str());
 	else
-		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format("Ping {:.0f} ms", flLatency).c_str());
-	H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format("Scoreboard {} ms", iLatencyScoreboard).c_str());
+		H::Draw.StringOutlined(fFont, x, y, Workspace::HudTextColour(), Vars::Menu::Theme::Background.Value, align, std::format("Ping {:.0f} ms", flLatency).c_str());
+	H::Draw.StringOutlined(fFont, x, y += nTall, Workspace::HudTextColour(), Vars::Menu::Theme::Background.Value, align, std::format("Scoreboard {} ms", iLatencyScoreboard).c_str());
 }

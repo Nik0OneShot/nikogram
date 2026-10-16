@@ -1,4 +1,5 @@
 #include "NoSpreadHitscan.h"
+#include "../../ImGui/HudTextStyle.h"
 #include "../../ImGui/MoonlitHud.h"
 
 #include "../../Ticks/Ticks.h"
@@ -11,6 +12,9 @@ MAKE_SIGNATURE(CTFWeaponBaseGun_GetWeaponSpread, "client.dll", "48 89 5C 24 ? 57
 void CNoSpreadHitscan::Reset()
 {
 	m_bWaitingForPlayerPerf = false;
+	m_dRequestTime=0;
+	m_dLastAcceptedReplyTime=0;
+	m_bHaveAcceptedReply=false;
 	m_flServerTime = 0.f;
 	m_vTimeDeltas.clear();
 	m_dTimeDelta = 0.0;
@@ -34,15 +38,36 @@ bool CNoSpreadHitscan::ShouldRun(CTFWeaponBase* pWeapon)
 	return true;
 }
 
-int CNoSpreadHitscan::GetSeed(CUserCmd* pCmd)
+CNoSpreadHitscan::SeedMode CNoSpreadHitscan::GetSeedMode()
 {
-	static auto sv_usercmd_custom_random_seed = H::ConVars.FindVar("sv_usercmd_custom_random_seed");
-	if (!sv_usercmd_custom_random_seed->GetBool())
-		return pCmd->random_seed & 255;
-
-	double dFloatTime = SDK::PlatFloatTime() + m_dTimeDelta;
-	float flTime = float(dFloatTime * 1000.0);
-	return *reinterpret_cast<int*>((char*)&flTime) & 255;
+    // sv_usercmd_custom_random_seed exists only in server.dll (FCVAR_CHEAT,
+    // default 1, not replicated). On a remote server our process can only see
+    // its own local copy, or nothing if server.dll is absent, which used to
+    // leave public servers on "Unknown" (no correction at all) or on a value
+    // that says nothing about the real server. Remote servers use the
+    // cheat-locked server default (time seeded); only a listen server's value
+    // is authoritative.
+    if (!SDK::IsLoopback()) return SeedMode::Time;
+    static auto seed = H::ConVars.FindVar("sv_usercmd_custom_random_seed");
+    return !seed?SeedMode::Unknown:seed->GetBool()?SeedMode::Time:SeedMode::Command;
+}
+bool CNoSpreadHitscan::Fresh(double now) const
+{
+    const double timeout=Vars::Aimbot::General::NoSpreadBackupInterval.Value;
+    return m_bHaveAcceptedReply&&std::isfinite(now)&&std::isfinite(m_dLastAcceptedReplyTime)
+        &&std::isfinite(timeout)&&timeout>0&&now>=m_dLastAcceptedReplyTime&&now-m_dLastAcceptedReplyTime<=timeout;
+}
+void CNoSpreadHitscan::ExpireSamples()
+{
+    m_bSynced=false;m_vTimeDeltas.clear();m_dTimeDelta=0;m_flMantissaStep=0;
+    // Preserve the accepted timestamp as a monotonic watermark and an in-flight request.
+}
+int CNoSpreadHitscan::GetSeed(CUserCmd* pCmd,SeedMode mode)
+{
+    if(mode==SeedMode::Command)return pCmd->random_seed&255;
+    double dFloatTime=SDK::PlatFloatTime()+m_dTimeDelta;
+    float flTime=float(dFloatTime*1000.0);
+    return *reinterpret_cast<int*>((char*)&flTime)&255;
 }
 
 float CNoSpreadHitscan::CalcMantissaStep(float flV)
@@ -75,6 +100,9 @@ void CNoSpreadHitscan::AskForPlayerPerf()
 	if (!ShouldRun())
 		return Reset();
 
+    if(GetSeedMode()!=SeedMode::Time){const int seed=m_iSeed;Reset();m_iSeed=seed;return;}
+    const double now=SDK::PlatFloatTime();
+    if(!Fresh(now))ExpireSamples();
 	if (G::Choking)
 		return;
 
@@ -97,12 +125,15 @@ bool CNoSpreadHitscan::ParsePlayerPerf(const std::string& sMsg)
 
 	if (tMatch.size() == 2)
 	{
-		m_bWaitingForPlayerPerf = false;
-
-		// credits to kgb for idea
-		float flNewServerTime = std::stof(tMatch[1].str());
-		if (flNewServerTime < m_flServerTime)
-			return true;
+        float flNewServerTime=0;
+        try {flNewServerTime=std::stof(tMatch[1].str());}catch(...){return true;}
+        const double now=SDK::PlatFloatTime(),age=now-m_dRequestTime;
+        const double timeout=Vars::Aimbot::General::NoSpreadBackupInterval.Value;
+        if(GetSeedMode()!=SeedMode::Time||!m_bWaitingForPlayerPerf||!std::isfinite(flNewServerTime)
+            ||!std::isfinite(age)||age<0||!std::isfinite(timeout)||timeout<=0||age>timeout
+            ||(m_bHaveAcceptedReply&&flNewServerTime<=m_flServerTime))return true;
+        if(!Fresh(now))ExpireSamples();
+        m_bWaitingForPlayerPerf=false;m_dLastAcceptedReplyTime=now;m_bHaveAcceptedReply=true;
 
 		bool bLoopback = SDK::IsLoopback();
 		m_flServerTime = flNewServerTime;
@@ -112,7 +143,7 @@ bool CNoSpreadHitscan::ParsePlayerPerf(const std::string& sMsg)
 		else
 		{
 			m_vTimeDeltas.push_back(m_flServerTime - m_dRequestTime + TICKS_TO_TIME(1));
-			while (!m_vTimeDeltas.empty() && m_vTimeDeltas.size() > Vars::Aimbot::General::NoSpreadAverage.Value)
+			while (!m_vTimeDeltas.empty() && m_vTimeDeltas.size() > size_t(std::max(Vars::Aimbot::General::NoSpreadAverage.Value,1)))
 				m_vTimeDeltas.pop_front();
 			m_dTimeDelta = std::reduce(m_vTimeDeltas.begin(), m_vTimeDeltas.end()) / m_vTimeDeltas.size();
 		}
@@ -140,13 +171,17 @@ void CNoSpreadHitscan::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* 
 	if (!ShouldRun(pWeapon))
 		return;
 
-	m_iSeed = GetSeed(pCmd);
+    const auto mode=GetSeedMode();
+    if(mode==SeedMode::Unknown)return;
+    if(mode==SeedMode::Time){
+        if(!Fresh(SDK::PlatFloatTime())){ExpireSamples();return;}
+        if(!m_bSynced)return;
+    }
+	m_iSeed = GetSeed(pCmd,mode);
 #ifdef SEEDPRED_DEBUG
 	SDK::Output("CNoSpreadHitscan::Run", std::format("{}: {}", SDK::PlatFloatTime() + m_dTimeDelta, m_iSeed).c_str(), { 255, 0, 0 });
 #endif
 
-	if (!m_bSynced)
-		return;
 
 	// credits to cathook for average spread stuff
 	float flSpread = pWeapon->GetWeaponSpread();
@@ -204,13 +239,18 @@ void CNoSpreadHitscan::Draw(CTFPlayer* pLocal)
 {
 	if (!(Vars::Menu::Indicators.Value & Vars::Menu::IndicatorsEnum::SeedPrediction) || !ShouldRun() || !pLocal->IsAlive())
 		return;
+    const auto mode=GetSeedMode();
+    const bool commandSeed=mode==SeedMode::Command;
+    const bool ready=commandSeed||(mode==SeedMode::Time&&m_bSynced&&Fresh(SDK::PlatFloatTime()));
+    const char* state=commandSeed?"command seed":mode==SeedMode::Unknown?"seed mode unavailable":ready?"clock sample ready":"waiting for clock";
 	if (MoonlitHud::Enabled())
 	{
 		const auto pos = Vars::Menu::SeedPredictionDisplay.Value;
 		MoonlitHud::Rows rows{{"uptime", GetFormat(m_flServerTime)}, {"mantissa step", std::format("{}", m_flMantissaStep)}};
 		if (Vars::Debug::Info.Value) rows.emplace_back("delta", std::format("{:.3f}", m_dTimeDelta));
-		m_vIndicatorSize = MoonlitHud::Info(pos.x, pos.y, "seed prediction", m_bSynced ? "synced" : "not synced", rows,
-			m_bSynced ? MoonlitHud::Green : MoonlitHud::Muted);
+        if(mode!=SeedMode::Time)rows={{"source",commandSeed?"command random seed":"unknown"}};
+		m_vIndicatorSize = MoonlitHud::Info(pos.x, pos.y, "seed prediction", state, rows,
+			ready ? MoonlitHud::Green : MoonlitHud::Muted);
 		return;
 	}
 
@@ -231,8 +271,11 @@ void CNoSpreadHitscan::Draw(CTFPlayer* pLocal)
 		align = ALIGN_TOPRIGHT;
 	}
 
-	const auto& cColor = m_bSynced ? Vars::Menu::Theme::Active.Value : Vars::Menu::Theme::Inactive.Value;
+	const auto& cColor = ready ? Workspace::HudTextColour() : Workspace::HudTextColour(false);
 
+	H::Draw.StringOutlined(fFont, x, y, cColor, Vars::Menu::Theme::Background.Value, align, state);
+    if(mode!=SeedMode::Time)return;
+	y += nTall;
 	H::Draw.StringOutlined(fFont, x, y, cColor, Vars::Menu::Theme::Background.Value, align, std::format("Uptime {}", GetFormat(m_flServerTime)).c_str());
 	H::Draw.StringOutlined(fFont, x, y += nTall, cColor, Vars::Menu::Theme::Background.Value, align, std::format("Mantissa step {}", m_flMantissaStep).c_str());
 	if (Vars::Debug::Info.Value)

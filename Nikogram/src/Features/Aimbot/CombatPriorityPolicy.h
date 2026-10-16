@@ -6,6 +6,11 @@
 
 namespace CombatPriorityPolicy
 {
+    inline bool Eligible(float angle,float limit)
+    {
+        return std::isfinite(angle)&&std::isfinite(limit)&&angle>=0.f&&limit>0.f
+            &&angle<std::min(limit,180.f);
+    }
     // Optional categories break ties within explicit player-list priority.
     // Uber displacement outranks medics, which outrank burning players.
     inline int Priority(int base, bool enabled, bool medic, bool burning, bool uber)

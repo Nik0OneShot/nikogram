@@ -49,6 +49,7 @@ namespace TracePreparation
             {
                 const float rx=key.rotateX<0.f ? rotation(random) : key.rotateX;
                 const float ry=key.rotateY<0.f ? rotation(random) : key.rotateY;
+                const Rotate rotate(rx,ry);
                 auto& points=result.patterns[p];
                 points.reserve(size_t(key.samples)+1);
                 points.emplace_back(Point(0.f,0.f,-1.f)*key.radius);
@@ -62,7 +63,7 @@ namespace TracePreparation
                         const float r=sqrtf(std::max(0.f,1-y*y));
                         return Point(cosf(t)*r,y,sinf(t)*r);
                     });
-                    points.push_back(Rotate{}(unit*key.radius,rx,ry));
+                    points.push_back(rotate(unit*key.radius));
                 }
                 result.rotations[p]={rx,ry};
                 ++result.filled;

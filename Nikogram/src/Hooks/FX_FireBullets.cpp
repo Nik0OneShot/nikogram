@@ -1,8 +1,25 @@
 #include "../SDK/SDK.h"
+#include "../Features/Backtrack/NativeBulletDiagnostics.h"
+
+MAKE_HOOK(Diagnostic_TraceRay, U::Memory.GetVirtual(I::EngineTrace,4), void,
+    void* self,const Ray_t& ray,unsigned mask,ITraceFilter* filter,CGameTrace* trace)
+{
+    DEBUG_RETURN(Diagnostic_TraceRay,self,ray,mask,filter,trace);
+    CALL_ORIGINAL(self,ray,mask,filter,trace);
+    NativeBulletDiagnostics::Observe(ray,mask,nullptr,trace,reinterpret_cast<uintptr_t>(_ReturnAddress()),0);
+}
+MAKE_HOOK(Diagnostic_ClipRayToEntity, U::Memory.GetVirtual(I::EngineTrace,2), void,
+    void* self,const Ray_t& ray,unsigned mask,IHandleEntity* entity,CGameTrace* trace)
+{
+    DEBUG_RETURN(Diagnostic_ClipRayToEntity,self,ray,mask,entity,trace);
+    CALL_ORIGINAL(self,ray,mask,entity,trace);
+    NativeBulletDiagnostics::Observe(ray,mask,entity,trace,reinterpret_cast<uintptr_t>(_ReturnAddress()),1);
+}
 
 #include "../Features/Backtrack/Backtrack.h"
 #include "../Features/NoSpread/NoSpreadHitscan/NoSpreadHitscan.h"
 #include "../Features/Resolver/Resolver.h"
+#include "../Features/Triggerbot/Triggerbot.h"
 
 MAKE_SIGNATURE(FX_FireBullets, "client.dll", "48 89 5C 24 ? 48 89 74 24 ? 4C 89 4C 24 ? 55", 0x0);
 MAKE_SIGNATURE(CTFWeaponBaseGun_FireBullet_FireBullets_Call, "client.dll", "0F 28 7C 24 ? 4C 8D 9C 24 ? ? ? ? 49 8B 5B ? 49 8B 6B ? 49 8B 73 ? 41 0F 28 73 ? 49 8B E3", 0x0);
@@ -14,6 +31,9 @@ MAKE_HOOK(FX_FireBullets, S::FX_FireBullets(), void,
 
 	const auto dwRetAddr = uintptr_t(_ReturnAddress());
 	const auto dwDesired = S::CTFWeaponBaseGun_FireBullet_FireBullets_Call();
+
+	if (dwDesired && dwRetAddr == dwDesired)
+		F::Triggerbot.ObserveNativeShot(pWpn,iPlayer,iMode);
 
 	if (iPlayer != I::EngineClient->GetLocalPlayer())
 		F::Backtrack.ReportShot(iPlayer);
@@ -60,3 +80,19 @@ MAKE_HOOK(CBasePlayer_ProcessUsercmds, S::CBasePlayer_ProcessUsercmds(), void,
 	return CALL_ORIGINAL(rcx, cmds, numcmds, totalcmds, dropped_packets, paused);
 }
 #endif
+namespace TriggerAutomaticPolicy
+{
+    bool ObserverReady()
+    {
+#ifdef DEBUG_HOOKS
+        // Individually bypassable debug hooks cannot promise shot accounting.
+        return false;
+#else
+        const auto fx=U::Hooks.m_mHooks.find("FX_FireBullets");
+        const auto simulation=U::Hooks.m_mHooks.find("CPrediction_RunSimulation");
+        return S::CTFWeaponBaseGun_FireBullet_FireBullets_Call()
+            && fx!=U::Hooks.m_mHooks.end() && fx->second && fx->second->m_pOriginal
+            && simulation!=U::Hooks.m_mHooks.end() && simulation->second && simulation->second->m_pOriginal;
+#endif
+    }
+}

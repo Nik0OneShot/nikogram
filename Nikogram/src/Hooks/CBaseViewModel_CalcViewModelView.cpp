@@ -1,4 +1,5 @@
 #include "../SDK/SDK.h"
+#include "../SDK/Helpers/ProjectileDisplay.h"
 
 MAKE_SIGNATURE(CBaseViewModel_CalcViewModelView, "client.dll", "48 89 74 24 ? 55 41 56 41 57 48 8D AC 24", 0x0);
 MAKE_SIGNATURE(CBasePlayer_CalcViewModelView, "client.dll", "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC ? 49 8B F0 48 8B EA 48 8B F9 33 DB", 0x0);
@@ -17,15 +18,14 @@ MAKE_HOOK(CBaseViewModel_CalcViewModelView, S::CBaseViewModel_CalcViewModelView(
 
 	if (Vars::Visuals::Viewmodel::ViewmodelAim.Value)
 	{
-		const auto* aimPoint = G::VisualAimPoint(Vars::Visuals::Viewmodel::ViewmodelCooldown.Value,
-			Vars::Aimbot::General::AimType.Value != 0, I::GlobalVars->tickcount);
-		if (auto pLocal = H::Entities.GetLocal(); pLocal && pLocal->IsAlive() && aimPoint)
-		{
-			Vec3 vDiff = I::EngineClient->GetViewAngles() - Math::CalcAngle(eyePosition, aimPoint->m_vOrigin);
-			if (bFlip)
-				vDiff.y *= -1;
-			eyeAngles = I::EngineClient->GetViewAngles() - vDiff;
-		}
+        Vec3 displayAngles;
+        if(ProjectileDisplay::Resolve(Vars::Visuals::Viewmodel::ViewmodelCooldown.Value,
+            Vars::Aimbot::General::AimType.Value!=0,1,eyePosition,displayAngles))
+        {
+            Vec3 difference=I::EngineClient->GetViewAngles()-displayAngles;
+            if(bFlip)difference.y*=-1;
+            eyeAngles=I::EngineClient->GetViewAngles()-difference;
+        }
 	}
 
 	if (!vOffset.IsZero())

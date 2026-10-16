@@ -6,9 +6,10 @@
 // CTFHudDeathNotice::OnGameEvent(event, deathNoticeIndex).
 MAKE_SIGNATURE(Skin_PlayerResourceStreak, "client.dll", "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F9 41 8B F0 48 81 C1 C0 07 00 00 8B DA", 0x0);
 MAKE_SIGNATURE(Skin_KillstreakHUDCount, "client.dll", "48 83 EC 28 E8 ? ? ? ? 48 85 C0 74 0B 8B 80 6C 22 00 00", 0x0);
-// Include the verified killstreak_tier reference: another item meter has the
-// same instruction skeleton but queries a different player/attribute pair.
-MAKE_SIGNATURE(Skin_KillstreakHUDEnabled, "client.dll", "48 83 EC 38 E8 ? ? ? ? 48 85 C0 74 23 45 33 C9 C6 44 24 20 01 4C 8B C0 48 8D 15 C8 2D 73 00 33 C9 E8 ? ? ? ? 85 C0 0F 95 C0", 0x0);
+// Another item meter ("extra_damage_on_hit") has the same instruction skeleton, so
+// the match must reference "killstreak_tier". The lea displacement is wildcarded and
+// resolved at load instead of hard-coded (the 2026-10-17 TF2 update moved it).
+MAKE_SIGNATURE_REF(Skin_KillstreakHUDEnabled, "client.dll", "48 83 EC 38 E8 ? ? ? ? 48 85 C0 74 23 45 33 C9 C6 44 24 20 01 4C 8B C0 48 8D 15 ? ? ? ? 33 C9 E8 ? ? ? ? 85 C0 0F 95 C0", 0x0, 28, "killstreak_tier");
 MAKE_SIGNATURE(Skin_KillstreakDeathNotice, "client.dll", "48 89 5C 24 08 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 D0 48 81 EC 30 01 00 00 48 8B F2 45 8B E8", 0x0);
 // CHudBaseDeathNotice::FireGameEvent builds the initial icon BEFORE OnGameEvent.
 // Verified native entry point: scope the cosmetic event to this HUD reader only.

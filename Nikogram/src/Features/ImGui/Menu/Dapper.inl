@@ -110,7 +110,7 @@ void CMenu::DrawDapper()
                     case 0:MoonlitAim(false);break;case 1:MoonlitAntiAim();break;case 2:MoonlitAim(true);break;
                     case 3:MoonlitESP();break;case 4:MoonlitMisc();break;case 5:SkinChanger::Menu();break;
                     case 6:MoonlitPlayers();break;case 7:MoonlitConfigs();break;
-                    case 8:if(DrawInterfacePreferences())RequestedEditor=Editor::Visuals;break;
+                    case 8:if(DrawInterfacePreferences())OpenHUDSettings();break;
                 }
             }
             EndChild();

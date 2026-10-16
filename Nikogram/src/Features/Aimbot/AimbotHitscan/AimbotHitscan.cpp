@@ -1,3 +1,4 @@
+#include "../AimObserver.h"
 #include "AimbotHitscan.h"
 #include "../SmoothAim.h"
 #include "../AimRegionPolicy.h"
@@ -26,6 +27,21 @@ static bool ConfirmRecordHead(CTFPlayer* local,CTFPlayer* player,const TickRecor
     } filter;
     filter.pSkip=local;filter.target=player;
     CGameTrace trace{};SDK::Trace(eye,eye+direction*float(nearest.distance),MASK_SHOT|CONTENTS_GRATE,&filter,&trace);
+    return !trace.startsolid&&!trace.allsolid&&trace.fraction>=.9999f;
+}
+
+static bool ConfirmRecordBody(CTFPlayer*local,CTFPlayer*player,const Vec3&eye,const Vec3&direction,
+    const Vec3&mins,const Vec3&maxs,const matrix3x4&transform,float range)
+{
+    CursorBacktrackPolicy::Matrix bone{};
+    for(int row=0;row<3;++row)for(int col=0;col<4;++col)bone[row][col]=transform[row][col];
+    double distance=0;
+    if(!CursorBacktrackPolicy::HitDistance({eye.x,eye.y,eye.z},{direction.x,direction.y,direction.z},
+        {mins.x,mins.y,mins.z},{maxs.x,maxs.y,maxs.z},bone,range,distance))return false;
+    class Filter:public CTraceFilterHitscan {public:CTFPlayer*target=nullptr;
+        bool ShouldHitEntity(IHandleEntity*e,int mask)override{return reinterpret_cast<CBaseEntity*>(e)!=target&&CTraceFilterHitscan::ShouldHitEntity(e,mask);}}filter;
+    filter.pSkip=local;filter.target=player;CGameTrace trace{};
+    SDK::Trace(eye,eye+direction*float(distance),MASK_SHOT|CONTENTS_GRATE,&filter,&trace);
     return !trace.startsolid&&!trace.allsolid&&trace.fraction>=.9999f;
 }
 
@@ -424,18 +440,42 @@ void CAimbotHitscan::GetHitboxPoints(std::vector<Vec3>& vPoints, CBaseEntity* pT
 	};
 }
 
-bool CAimbotHitscan::BuildServerEstimate(CBaseEntity* pTarget, const std::vector<TickRecord*>& records)
+bool CAimbotHitscan::BuildServerEstimate(CBaseEntity* pTarget, const std::vector<TickRecord*>& records, const CUserCmd* command)
 {
-	if (!Vars::Aimbot::Hitscan::Extrapolation.Value || records.size() < 2 || pTarget->IsDormant())
+	m_tServerEstimate = {};
+	m_vEstimateOffset = {};
+	m_flEstimateSeconds = 0.f;
+	if (!Vars::Aimbot::Hitscan::Extrapolation.Value || !pTarget || !pTarget->IsPlayer()
+		|| !command || records.size() < 2 || !records[0] || !records[1] || pTarget->IsDormant())
 		return false;
 	const auto& latest = *records[0];
 	const auto& previous = *records[1];
-	if (latest.m_bInvalid || previous.m_bInvalid)
+	// A newer network update can fail SetupBones and leave older records behind.
+	// Do not project those bones as though they described the current sample.
+	const float simulation = pTarget->m_flSimulationTime();
+	if (latest.m_bInvalid || previous.m_bInvalid || !std::isfinite(simulation)
+		|| !std::isfinite(latest.m_flSimTime) || std::abs(simulation-latest.m_flSimTime)>0.0001f)
 		return false;
+	auto set = pTarget->As<CTFPlayer>()->GetHitboxSet();
+	if (!set || set->numhitboxes <= 0 || set->numhitboxes > 128) return false;
+	for (int index=0; index<set->numhitboxes; ++index)
+	{
+		const auto box=set->pHitbox(index);
+		if (!box || box->bone<0 || box->bone>=MAXSTUDIOBONES) return false;
+		for (int row=0; row<3; ++row) for (int col=0; col<4; ++col)
+			if (!std::isfinite(latest.m_aBones[box->bone][row][col])) return false;
+	}
+    const auto time=ServerEstimate::RequestedTime(command->tick_count,F::Backtrack.GetFakeInterp(),TICK_INTERVAL);
+    if(!time)return false;
 	const float scale = ServerEstimate::SampleScale(TICKS_TO_TIME(F::Backtrack.m_iTickCount),
-		latest.m_flSimTime, previous.m_flSimTime, Vars::Aimbot::Hitscan::ExtrapolationRange.Value);
+		latest.m_flSimTime, previous.m_flSimTime, Vars::Aimbot::Hitscan::ExtrapolationRange.Value,time->seconds);
 	if (scale <= 0.f)
 		return false;
+    // Timing-only probe: reuse the current eligibility/fallback allowance without
+    // storing, publishing or selecting a fabricated history record.
+    TickRecord timingProbe=latest;timingProbe.m_flSimTime=float(time->seconds);
+    std::vector<TickRecord*> timingRecords{&timingProbe};
+    if(F::Backtrack.GetValidRecords(timingRecords).empty())return false;
 	const auto finite = [](const Vec3& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); };
 	const Vec3 sample = latest.m_vOrigin - previous.m_vOrigin;
 	Vec3 offset = sample * scale;
@@ -452,14 +492,14 @@ bool CAimbotHitscan::BuildServerEstimate(CBaseEntity* pTarget, const std::vector
 	filter.pSkip = pTarget;
 	CGameTrace trace = {};
 	SDK::TraceHull(latest.m_vOrigin, latest.m_vOrigin + offset, mins, maxs, MASK_PLAYERSOLID, &filter, &trace);
-	if (trace.startsolid || trace.allsolid || !std::isfinite(trace.fraction))
+	if (trace.startsolid || trace.allsolid || !std::isfinite(trace.fraction) || trace.fraction<0.f || trace.fraction>1.f)
 		return false;
 	offset *= std::clamp(trace.fraction, 0.f, 1.f);
 	if (offset.LengthSqr() < 0.0001f)
 		return false;
 	m_tServerEstimate = latest;
 	m_vEstimateOffset = offset;
-	m_flEstimateSeconds = scale * (latest.m_flSimTime - previous.m_flSimTime) * std::clamp(trace.fraction, 0.f, 1.f);
+	m_flEstimateSeconds = float(time->seconds-latest.m_flSimTime); // collision shortens distance, not requested time
 	m_tServerEstimate.m_vOrigin += offset;
 	for (auto& bone : m_tServerEstimate.m_aBones)
 	{
@@ -486,10 +526,15 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 	std::vector<TickRecord*> vRecords = {};
 	if (F::Backtrack.GetRecords(tTarget.m_pEntity, vRecords) && !bWrangler)
 	{
-		bServerEstimate = bPlayer && pWeapon->GetWeaponID() != TF_WEAPON_MEDIGUN
-			&& BuildServerEstimate(tTarget.m_pEntity, vRecords);
-		vRecords = bServerEstimate ? std::vector<TickRecord*>{ &m_tServerEstimate }
-			: F::Backtrack.GetValidRecords(vRecords, pLocal);
+		// Extrapolation is speculative geometry, not an exemption from record
+		// firing eligibility. Preserve the validated history as the fallback.
+		auto validRecords = F::Backtrack.GetValidRecords(vRecords, pLocal);
+		const bool latestEligible = !vRecords.empty()
+			&& std::find(validRecords.begin(),validRecords.end(),vRecords.front())!=validRecords.end();
+		bServerEstimate = bPlayer && pWeapon->GetWeaponID() != TF_WEAPON_MEDIGUN && latestEligible
+			&& BuildServerEstimate(tTarget.m_pEntity, vRecords, G::CurrentUserCmd);
+		vRecords = std::move(validRecords);
+        if(bServerEstimate)vRecords.insert(vRecords.begin(),&m_tServerEstimate);
 		if (vRecords.empty())
 			return false;
 	}
@@ -561,6 +606,7 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 	std::vector<Vec3> vPoints = {};
 	for (auto pRecord : vRecords)
 	{
+        bServerEstimate=pRecord==&m_tServerEstimate;
 		std::optional<Target_t> regionHit;
 		float flBestRegionHit=std::numeric_limits<float>::max();
 		float flBestRegionHeight=std::numeric_limits<float>::max();
@@ -649,12 +695,14 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 					continue;
 
 				// for the time being, no vischecks against other hitboxes
-				Vec3 vForward; Math::AngleVectors(bRegion?vAngles+pLocal->m_vecPunchAngle():vAngles, &vForward);
+				Vec3 vForward; Math::AngleVectors(vAngles+pLocal->m_vecPunchAngle(), &vForward);
 				if ((!bChanged || Math::RayToOBB(m_vEyePos, vForward, vCheckMins, vCheckMaxs, *pTransform, flModelScale) && SDK::VisPos(pLocal, tTarget.m_pEntity, m_vEyePos, m_vEyePos + vForward * m_vEyePos.DistTo(vOrigin)))
 					&& (!pHullTransform || Math::RayToOBB(m_vEyePos, vForward, vHullMins, vHullMaxs, *pHullTransform)))
 				{
 					if(bRegion&&!SmoothPolicy::PlacementBetter(height,flRegionScore,flBestRegionHeight,flBestRegionHit))continue;
-                    if(bPlayer&&!bWrangler&&!bServerEstimate&&tHitbox.m_iHitbox==HITBOX_HEAD)
+                    if(bPlayer&&!bWrangler&&!bServerEstimate&&tHitbox.m_iHitbox!=HITBOX_HEAD
+                        &&!ConfirmRecordBody(pLocal,tTarget.m_pEntity->As<CTFPlayer>(),m_vEyePos,vForward,vMins,vMaxs,*pTransform,pWeapon->GetRange()))continue;
+                    if(bPlayer&&!bWrangler&&tHitbox.m_iHitbox==HITBOX_HEAD)
                     {
                         Vec3 shot;Math::AngleVectors(vAngles+pLocal->m_vecPunchAngle(),&shot);
                         if(!ConfirmRecordHead(pLocal,tTarget.m_pEntity->As<CTFPlayer>(),pRecord,m_vEyePos,shot,pWeapon->GetRange()))continue;
@@ -711,8 +759,7 @@ int CAimbotHitscan::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* 
 
 bool CAimbotHitscan::ShouldFire(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, const Target_t& tTarget)
 {
-	if (!Vars::Aimbot::General::AutoShoot.Value)
-		return false;
+	if (!Vars::Aimbot::General::AutoShoot.Value){AimObserver::Mark(AimObserver::Reason::Manual);return false;}
 
 	if (Vars::Aimbot::Hitscan::Modifiers.Value & Vars::Aimbot::Hitscan::ModifiersEnum::WaitForHeadshot
 		&& tTarget.m_pEntity->IsPlayer())
@@ -722,15 +769,15 @@ bool CAimbotHitscan::ShouldFire(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 		case TF_WEAPON_SNIPERRIFLE:
 		case TF_WEAPON_SNIPERRIFLE_DECAP:
 			if (!G::CanHeadshot && pLocal->InCond(TF_COND_AIMING) && pWeapon->As<CTFSniperRifle>()->GetRifleType() != RIFLE_JARATE)
-				return false;
+				{AimObserver::Mark(AimObserver::Reason::HeadshotWait);return false;}
 			break;
 		case TF_WEAPON_SNIPERRIFLE_CLASSIC:
 			if (!G::CanHeadshot)
-				return false;
+				{AimObserver::Mark(AimObserver::Reason::HeadshotWait);return false;}
 			break;
 		case TF_WEAPON_REVOLVER:
 			if (SDK::AttribHookValue(0, "set_weapon_mode", pWeapon) == 1 && !pWeapon->AmbassadorCanHeadshot())
-				return false;
+				{AimObserver::Mark(AimObserver::Reason::HeadshotWait);return false;}
 		}
 	}
 
@@ -772,7 +819,7 @@ bool CAimbotHitscan::ShouldFire(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 			else
 				break;
 			
-			return false;
+			{AimObserver::Mark(AimObserver::Reason::ChargeWait);return false;}
 		}
 		}
 	}
@@ -900,7 +947,7 @@ bool CAimbotHitscan::BuildOccludedGuide(CTFPlayer* pLocal, CTFWeaponBase* pWeapo
 		|| pWeapon->GetWeaponID() == TF_WEAPON_LASER_POINTER)
 		return false;
 	std::vector<TickRecord*> records;
-	if (!F::Backtrack.GetRecords(pTarget, records) || !BuildServerEstimate(pTarget, records))
+	if (!F::Backtrack.GetRecords(pTarget, records) || !BuildServerEstimate(pTarget, records, G::CurrentUserCmd))
 		return false;
 	for (const auto& hitbox : GetHitboxes(pLocal, pWeapon, pTarget))
 	{
@@ -922,8 +969,15 @@ bool CAimbotHitscan::BuildOccludedGuide(CTFPlayer* pLocal, CTFWeaponBase* pWeapo
 void CAimbotHitscan::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	const bool enabled = Vars::Aimbot::General::AimType.Value != 0;
+    if(!F::Aimbot.m_bRunningSecondary)m_estimateUse={};
 	m_vMainPreview.reset();
+	const Vec3 beforeAngles=pCmd->viewangles;
+	const int beforePrimary=pCmd->buttons&IN_ATTACK, beforeTick=pCmd->tick_count;
 	RunMain(pLocal, pWeapon, pCmd);
+	// Finding a target does not mean the command was assisted. Plain/Silent
+	// aim can intentionally do nothing until a shot is requested.
+	F::Aimbot.m_bHitscanAssisted |= pCmd->viewangles!=beforeAngles
+		|| (pCmd->buttons&IN_ATTACK)!=beforePrimary || pCmd->tick_count!=beforeTick;
 	const bool aimPreview = (Vars::Visuals::Viewmodel::CrosshairAim.Value && Vars::Visuals::Viewmodel::CrosshairCooldown.Value)
 		|| (Vars::Visuals::Viewmodel::ViewmodelAim.Value && Vars::Visuals::Viewmodel::ViewmodelCooldown.Value);
 	const bool guide = Vars::Aimbot::Hitscan::Extrapolation.Value && Vars::Aimbot::Hitscan::ExtrapolationGuide.Value;
@@ -974,7 +1028,7 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 		pCmd->buttons |= IN_ATTACK;
 	if (!Vars::Aimbot::General::AimType.Value
 		|| !F::AimbotGlobal.ShouldAim() && (nWeaponID != TF_WEAPON_MINIGUN || pWeapon->As<CTFMinigun>()->m_iWeaponState() == AC_STATE_FIRING || pWeapon->As<CTFMinigun>()->m_iWeaponState() == AC_STATE_SPINNING))
-		return;
+        {AimObserver::Mark(!Vars::Aimbot::General::AimType.Value?AimObserver::Reason::AimInactive:AimObserver::Reason::WeaponNotReady);return;}
 
 	switch (nWeaponID)
 	{
@@ -982,13 +1036,13 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 		if (Vars::Aimbot::Hitscan::Modifiers.Value & Vars::Aimbot::Hitscan::ModifiersEnum::AutoRev)
 			pCmd->buttons |= IN_ATTACK2;
 		if (pWeapon->As<CTFMinigun>()->m_iWeaponState() != AC_STATE_FIRING && pWeapon->As<CTFMinigun>()->m_iWeaponState() != AC_STATE_SPINNING)
-			return;
+            {AimObserver::Mark(AimObserver::Reason::Scope);return;}
 		break;
 	}
 
 	auto vTargets = F::AimbotGlobal.ManageTargets(GetTargets, pLocal, pWeapon);
-	if (vTargets.empty())
-		return;
+	if (vTargets.empty()){AimObserver::Mark(AimObserver::Reason::NoTarget);return;}
+    AimObserver::Mark(AimObserver::Reason::NoSolution);
 
 	switch (nWeaponID)
 	{
@@ -999,12 +1053,12 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 		if (Vars::Aimbot::Hitscan::Modifiers.Value & Vars::Aimbot::Hitscan::ModifiersEnum::AutoScope && !bScoped)
 		{
 			pCmd->buttons |= IN_ATTACK2;
-			return;
+            AimObserver::Mark(AimObserver::Reason::Scope);return;
 		}
 		else if (Vars::Aimbot::Hitscan::Modifiers.Value & Vars::Aimbot::Hitscan::ModifiersEnum::ScopedOnly && !bScoped)
-			return;
+            {AimObserver::Mark(AimObserver::Reason::Scope);return;}
 		else if (!bScoped && SDK::AttribHookValue(0, "sniper_only_fire_zoomed", pWeapon))
-			return;
+            {AimObserver::Mark(AimObserver::Reason::Scope);return;}
 		break;
 	}
 	case TF_WEAPON_SNIPERRIFLE_CLASSIC:
@@ -1024,16 +1078,19 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 
 		const auto iResult = CanHit(tTarget, pLocal, pWeapon);
 		if (!iResult) continue;
-        if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)) break;
-		F::Aimbot.m_bHitscanAssisted = true;
+        AimObserver::Selected(tTarget.m_pEntity->IsPlayer()?tTarget.m_pEntity->As<CTFPlayer>():nullptr);
+        AimObserver::Mark(AimObserver::Reason::Evaluating);
+        if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)){AimObserver::Mark(AimObserver::Reason::TargetDelay);break;}
 		if (iResult == 2)
 		{
+            AimObserver::Mark(AimObserver::Reason::AimOnly);
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 			Aim(pCmd, tTarget.m_vAngleTo);
 			break;
 		}
 
 		m_vMainPreview=tTarget.m_vPos;
+        const bool primaryBeforeShot=bool(pCmd->buttons&IN_ATTACK);
 		if (ShouldFire(pLocal, pWeapon, pCmd, tTarget))
 		{
 			switch (nWeaponID)
@@ -1058,10 +1115,25 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 			{
 				const float flTimeSinceLastShot = (pLocal->m_nTickBase() * TICK_INTERVAL) - pWeapon->m_flLastFireTime();
 				if (flTimeSinceLastShot <= (pWeapon->GetBulletsPerShot() > 1 ? 0.25f : 1.25f))
-					pCmd->buttons &= ~IN_ATTACK;
+                    {AimObserver::Mark(AimObserver::Reason::TapWait);pCmd->buttons &= ~IN_ATTACK;}
 			}
+            if(pCmd->buttons&IN_ATTACK)
+                F::Aimbot.AutoFireTarget(bool(Vars::Aimbot::Hitscan::Modifiers.Value&Vars::Aimbot::Hitscan::ModifiersEnum::Tapfire)
+                    &&m_vEyePos.DistToSqr(tTarget.m_vPos)>powf(Vars::Aimbot::Hitscan::TapfireDistance.Value,2));
 		}
 
+        if(!F::Aimbot.m_bRunningSecondary && tTarget.m_pRecord==&m_tServerEstimate)
+        {
+            const auto time=ServerEstimate::RequestedTime(pCmd->tick_count,F::Backtrack.GetFakeInterp(),TICK_INTERVAL);
+            if(time)
+            {
+                auto* target=tTarget.m_pEntity->As<CTFPlayer>();
+                m_estimateUse={G::OriginalCmd.command_number,pCmd->tick_count,time->lerpTicks,
+                    pLocal->m_iSpawnCounter(),I::ClientState->m_nServerCount,target->m_iSpawnCounter(),target->m_nModelIndex(),
+                    unsigned(pLocal->GetRefEHandle().ToInt()),unsigned(pWeapon->GetRefEHandle().ToInt()),target->GetRefEHandle(),
+                    target->m_flSimulationTime(),true,!primaryBeforeShot&&!(G::OriginalCmd.buttons&IN_ATTACK)&&bool(pCmd->buttons&IN_ATTACK)};
+            }
+        }
 		G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
 		if (G::Attacking == 1 && nWeaponID != TF_WEAPON_LASER_POINTER)
 		{
@@ -1088,4 +1160,30 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
 		}
 		break;
 	}
+}
+
+void CAimbotHitscan::FinalizeEstimate(CTFPlayer* local,CTFWeaponBase* weapon,CUserCmd* command)
+{
+    const auto use=m_estimateUse;m_estimateUse={};
+    if(!use.active || !command || use.input!=G::OriginalCmd.command_number)return;
+    const auto time=ServerEstimate::RequestedTime(command->tick_count,F::Backtrack.GetFakeInterp(),TICK_INTERVAL);
+    auto* entity=reinterpret_cast<CBaseEntity*>(use.target.Get());
+    auto* target=entity&&entity->IsPlayer()?entity->As<CTFPlayer>():nullptr;
+    const bool context=local&&weapon&&unsigned(local->GetRefEHandle().ToInt())==use.owner
+        &&unsigned(weapon->GetRefEHandle().ToInt())==use.weapon&&local->m_iSpawnCounter()==use.spawn
+        &&I::ClientState->m_nServerCount==use.server;
+    const bool valid=context&&time&&command->tick_count==use.commandTick&&time->lerpTicks==use.lerpTicks
+        &&target&&target->IsAlive()&&!target->IsDormant()&&target->m_iSpawnCounter()==use.targetSpawn
+        &&target->m_nModelIndex()==use.targetModel&&std::isfinite(target->m_flSimulationTime())
+        &&std::abs(target->m_flSimulationTime()-use.simulation)<=.0001f;
+    if(valid)return;
+    if(G::ExtrapolationGuide.target.ToInt()==use.target.ToInt())G::ExtrapolationGuide={};
+    // Retract only primary newly authored by this estimate. Raw input, Trigger
+    // and already-held Autofire remain independent owners. Do not rewind angles
+    // over later view writers or pretend that this undoes an existing manual shot.
+    if(context&&use.ownsPrimary&&!(G::OriginalCmd.buttons&IN_ATTACK))
+    {
+        command->buttons&=~IN_ATTACK;AimObserver::Mark(AimObserver::Reason::Withdrawn);
+        G::Attacking=SDK::IsAttacking(local,weapon,command,true);
+    }
 }

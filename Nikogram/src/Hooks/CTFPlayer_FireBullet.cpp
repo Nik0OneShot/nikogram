@@ -1,4 +1,5 @@
 #include "../SDK/SDK.h"
+#include "../Features/Backtrack/NativeBulletDiagnostics.h"
 
 #include "../Features/Visuals/Visuals.h"
 #include "../Features/SkinChanger/SkinChanger.h"
@@ -32,6 +33,7 @@ MAKE_HOOK(CTFPlayer_FireBullet, S::CTFPlayer_FireBullet(), void,
 	void* rcx, CBaseCombatWeapon* pWeapon, const FireBulletsInfo_t& info, bool bDoEffects, int nDamageType, int nCustomDamageType)
 {
 	DEBUG_RETURN(CTFPlayer_FireBullet, rcx, pWeapon, info, bDoEffects, nDamageType, nCustomDamageType);
+	NativeBulletDiagnostics::Scope diagnosticBullet(reinterpret_cast<CTFPlayer*>(rcx),pWeapon,info,bDoEffects,nDamageType,nCustomDamageType);
 
 	auto pLocal = reinterpret_cast<CTFPlayer*>(rcx);
     auto cosmeticWeapon=pWeapon;

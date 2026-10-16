@@ -257,6 +257,7 @@ void CEntities::Store()
 		
 		if (n != I::EngineClient->GetLocalPlayer())
 		{
+            auto* origins=GetOrigins(n); // Validate lifetime even when simulation time rolls back.
 			if (float flOldSimTime = m_aSimTimes[n], flSimTime = m_aSimTimes[n] = pPlayer->m_flSimulationTime();
 				m_aDeltaTimes[n] = flSimTime > flOldSimTime)
 			{
@@ -265,9 +266,11 @@ void CEntities::Store()
 
 				m_aOldAngles[n] = m_aEyeAngles[n], m_aEyeAngles[n] = pPlayer->As<CTFPlayer>()->GetEyeAngles();
 
-				m_aOrigins[n].emplace_front(pPlayer->m_vecOrigin() + Vec3(0, 0, pPlayer->GetSize().z), flSimTime);
-				if (m_aOrigins[n].size() > Vars::Aimbot::Projectile::VelocityAverageCount.Value)
-					m_aOrigins[n].pop_back();
+                if(origins)
+                {
+                    origins->emplace_front(pPlayer->m_vecOrigin()+Vec3(0,0,pPlayer->GetSize().z),flSimTime);
+                    if(origins->size()>Vars::Aimbot::Projectile::VelocityAverageCount.Value) origins->pop_back();
+                }
 
 				if (pPlayer->IsAlive())
 					F::CheatDetection.ReportChoke(pPlayer, m_aChokes[n]);
@@ -342,6 +345,8 @@ void CEntities::Clear(bool bShutdown)
 		m_aEyeAngles = {};
 		m_aLagCompensation = {};
 		m_aAvgVelocities = {};
+        m_aAvgVelocityStamps = {};
+        m_aOriginStamps = {};
 		m_aOrigins = {};
 		m_aModels = {};
 		s_mDormancy.clear();
@@ -522,9 +527,59 @@ Vec3 CEntities::GetEyeAngles(uint16_t iIndex) { return iIndex < MAX_PLAYERS ? m_
 Vec3 CEntities::GetDeltaAngles(uint16_t iIndex) { return iIndex < MAX_PLAYERS && m_aLagTimes[iIndex] ? m_aEyeAngles[iIndex].DeltaAngle(m_aOldAngles[iIndex]) / m_aLagTimes[iIndex] * (F::Backtrack.GetReal() + TICKS_TO_TIME(F::Backtrack.GetAnticipatedChoke())) : Vec3(); }
 bool CEntities::GetLagCompensation(uint16_t iIndex) { return iIndex < MAX_PLAYERS ? m_aLagCompensation[iIndex] : false; }
 void CEntities::SetLagCompensation(uint16_t iIndex, bool bLagComp) { if (iIndex < MAX_PLAYERS) m_aLagCompensation[iIndex] = bLagComp; }
-Vec3* CEntities::GetAvgVelocity(uint16_t iIndex) { return iIndex < MAX_PLAYERS && iIndex != I::EngineClient->GetLocalPlayer() ? &m_aAvgVelocities[iIndex] : nullptr; }
-void CEntities::SetAvgVelocity(uint16_t iIndex, Vec3 vAvgVelocity) { if (iIndex < MAX_PLAYERS) m_aAvgVelocities[iIndex] = vAvgVelocity; }
-std::deque<VelFixRecord>* CEntities::GetOrigins(uint16_t iIndex) { return iIndex < MAX_PLAYERS ? &m_aOrigins[iIndex] : nullptr; }
+Vec3* CEntities::GetAvgVelocity(uint16_t iIndex)
+{
+    if(iIndex>=MAX_PLAYERS || iIndex==I::EngineClient->GetLocalPlayer()) return nullptr;
+    const auto& stamp=m_aAvgVelocityStamps[iIndex];
+    if(!stamp.valid || stamp.server!=I::ClientState->m_nServerCount) return nullptr;
+    auto* entity=I::ClientEntityList->GetClientEntity(iIndex);
+    if(!entity || !entity->As<CBaseEntity>()->IsPlayer()) return nullptr;
+    auto* player=entity->As<CTFPlayer>();
+    if(stamp.handle!=player->GetRefEHandle().ToInt() || stamp.spawn!=player->m_iSpawnCounter()
+        || stamp.simulation!=player->m_flSimulationTime()) return nullptr;
+    return &m_aAvgVelocities[iIndex];
+}
+void CEntities::SetAvgVelocity(uint16_t iIndex, Vec3 vAvgVelocity)
+{
+    if(iIndex>=MAX_PLAYERS || !ValidateVelocityHistory(iIndex)) return;
+    auto& stamp=m_aAvgVelocityStamps[iIndex];
+    stamp={};
+    if(!std::isfinite(vAvgVelocity.x) || !std::isfinite(vAvgVelocity.y) || !std::isfinite(vAvgVelocity.z)) return;
+    auto* entity=I::ClientEntityList->GetClientEntity(iIndex);
+    if(!entity || !entity->As<CBaseEntity>()->IsPlayer()) return;
+    auto* player=entity->As<CTFPlayer>();
+    const float simulation=player->m_flSimulationTime();
+    if(!std::isfinite(simulation)) return;
+    m_aAvgVelocities[iIndex]=vAvgVelocity;
+    stamp={true,static_cast<unsigned long>(player->GetRefEHandle().ToInt()),player->m_iSpawnCounter(),I::ClientState->m_nServerCount,simulation};
+}
+bool CEntities::ValidateVelocityHistory(uint16_t index)
+{
+    if(index>=MAX_PLAYERS) return false;
+    auto& stamp=m_aOriginStamps[index];
+    auto* entity=I::ClientEntityList->GetClientEntity(index);
+    auto* player=entity && entity->As<CBaseEntity>()->IsPlayer()?entity->As<CTFPlayer>():nullptr;
+    if(!player || !std::isfinite(player->m_flSimulationTime()))
+    {
+        m_aOrigins[index].clear();m_aAvgVelocityStamps[index]={};stamp={};
+        return false;
+    }
+    const float simulation=player->m_flSimulationTime();
+    const auto handle=static_cast<unsigned long>(player->GetRefEHandle().ToInt());
+    const int spawn=player->m_iSpawnCounter(),server=I::ClientState->m_nServerCount;
+    if(!stamp.valid || stamp.handle!=handle || stamp.spawn!=spawn || stamp.server!=server
+        || simulation<stamp.simulation)
+    {
+        m_aOrigins[index].clear();
+        m_aAvgVelocityStamps[index]={};
+    }
+    stamp={true,handle,spawn,server,simulation};
+    return true;
+}
+std::deque<VelFixRecord>* CEntities::GetOrigins(uint16_t iIndex)
+{
+    return ValidateVelocityHistory(iIndex)?&m_aOrigins[iIndex]:nullptr;
+}
 uint32_t CEntities::GetModel(unsigned short iIndex) { return iIndex < MAX_EDICTS ? m_aModels[iIndex] : 0; }
 DormantData* CEntities::GetDormancy(unsigned short iIndex) { return s_mDormancy.contains(iIndex) ? &s_mDormancy[iIndex] : nullptr; }
 

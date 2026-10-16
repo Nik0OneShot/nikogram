@@ -13,6 +13,8 @@ MAKE_SIGNATURE(CBaseEntity_SetAbsAngles, "client.dll", "48 89 5C 24 ? 57 48 81 E
 MAKE_SIGNATURE(CBaseEntity_SetAbsVelocity, "client.dll", "48 89 5C 24 ? 57 48 83 EC ? F3 0F 10 81 ? ? ? ? 48 8B DA 0F 2E 02", 0x0);
 MAKE_SIGNATURE(CBaseEntity_EstimateAbsVelocity, "client.dll", "48 89 5C 24 ? 57 48 83 EC ? 48 8B FA 48 8B D9 E8 ? ? ? ? 48 3B D8", 0x0);
 MAKE_SIGNATURE(CBaseEntity_CreateShadow, "client.dll", "48 89 5C 24 ? 57 48 83 EC ? 48 8B 41 ? 48 8B F9 48 83 C1 ? FF 90", 0x0);
+// Verified against installed client: SetAbsOrigin calls this with POSITION_CHANGED.
+MAKE_SIGNATURE(CBaseEntity_InvalidatePhysicsRecursive, "client.dll", "40 53 55 57 48 83 EC 20 8B EA 48 89 74 24 40 83 E5 04 8B FA C1 E5 0A 48 8B F1 F6 C2 01", 0x0);
 MAKE_SIGNATURE(CBaseEntity_InvalidateBoneCache, "client.dll", "8B 05 ? ? ? ? FF C8 C7 81", 0x0);
 
 enum CollideType_t
@@ -312,6 +314,7 @@ public:
 		return vOut;
 	}
 
+	SIGNATURE_ARGS(InvalidatePhysicsRecursive, void, CBaseEntity, (int flags), this, flags);
 	int GetIntermediateDataSize();
 	Vec3 GetOrigin(float flCompression);
 	Vec3 GetSize();

@@ -114,6 +114,7 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 	const char* sError = "UNKNOWN";
 	switch (ExceptionInfo->ExceptionRecord->ExceptionCode)
 	{
+	case EXCEPTION_INT_DIVIDE_BY_ZERO: sError = "INTEGER DIVIDE BY ZERO"; break;
 	case STATUS_ACCESS_VIOLATION: sError = "ACCESS VIOLATION"; break;
 	case STATUS_HEAP_CORRUPTION: sError = "HEAP CORRUPTION"; break;
 	case STATUS_STACK_OVERFLOW: return EXCEPTION_CONTINUE_SEARCH; // No safe stack budget here.
@@ -138,7 +139,8 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 	if (ExceptionInfo->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION ||
 		ExceptionInfo->ExceptionRecord->ExceptionCode == STATUS_HEAP_CORRUPTION ||
 		ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION ||
-		ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_IN_PAGE_ERROR)
+		ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_IN_PAGE_ERROR ||
+		ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_INT_DIVIDE_BY_ZERO)
 		CrashLog::Basic(ExceptionInfo, s_lpParam, __DATE__ " " __TIME__ " " __CONFIGURATION__);
 	if (ExceptionInfo->ExceptionRecord->ExceptionCode == STATUS_HEAP_CORRUPTION)
 		return EXCEPTION_CONTINUE_SEARCH; // Do not allocate on a potentially corrupt heap.

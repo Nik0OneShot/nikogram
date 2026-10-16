@@ -64,9 +64,32 @@ void CAimbotGlobal::EndTargetSwitch()
 }
 
 std::vector<Target_t> CAimbotGlobal::ManageTargets(std::vector<Target_t>(*GetTargets)(CTFPlayer* pLocal, CTFWeaponBase* pWeapon), CTFPlayer* pLocal, CTFWeaponBase* pWeapon,
-	int iMethod, int iMaxTargets)
+	int iMethod, int iMaxTargets, bool enforceAimFOV)
 {
 	auto vTargets = GetTargets(pLocal, pWeapon);
+    if(enforceAimFOV)
+    {
+        // Lead search may collect a whole hemisphere. A priority bonus must not
+        // promote an outside-current-cone target into the limited search budget.
+        // Ordinary targets retain their existing predicted-angle lead checks.
+        const auto type=F::Aimbot.m_bRunningSecondary?G::SecondaryWeaponType:G::PrimaryWeaponType;
+        const float limit=type==EWeaponType::MELEE
+            ?CombatPriorityPolicy::FOV(true,Vars::Aimbot::General::AimFOV.Value,Vars::Aimbot::Melee::AimFOV.Value)
+            :GetConfiguredAimFOV();
+        const bool heals=pWeapon&&(pWeapon->GetWeaponID()==TF_WEAPON_CROSSBOW||pWeapon->GetWeaponID()==TF_WEAPON_LUNCHBOX);
+        std::erase_if(vTargets,[&](const Target_t& target)
+        {
+            if(!std::isfinite(target.m_flFOVTo)||target.m_flFOVTo<0.f)return true;
+            if(CombatPriorityPolicy::Eligible(target.m_flFOVTo,limit))return false;
+            if(target.m_nPriority>0)return true;
+            if(target.m_iTargetType!=TargetEnum::Player||!target.m_pEntity||!pLocal)return false;
+            const auto player=target.m_pEntity->As<CTFPlayer>();
+            const bool allowBurning=player->m_iTeamNum()!=pLocal->m_iTeamNum()||heals;
+            // Re-evaluate with base zero: category bonuses still count when an
+            // explicit negative player priority makes the combined score <= 0.
+            return GetPlayerPriority(player,0,type,allowBurning)>0;
+        });
+    }
 	SortTargetsPre(vTargets, iMethod);
 	std::stable_sort(vTargets.begin(), vTargets.end(), [&](const Target_t& a, const Target_t& b) -> bool
 	{	// keep prioritized targets when truncating

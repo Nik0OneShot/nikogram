@@ -126,6 +126,23 @@ static void Blend(const AnimFrame_t& tFrom, const AnimFrame_t& tTo, float t, Ani
 	tOut.m_vRenderAngles.y = Math::NormalizeAngle(tFrom.m_vRenderAngles.y + Math::NormalizeAngle(tTo.m_vRenderAngles.y - tFrom.m_vRenderAngles.y) * t);
 	tOut.m_vRenderAngles.z = Math::Lerp(tFrom.m_vRenderAngles.z, tTo.m_vRenderAngles.z, t);
 
+    auto& fake = tOut.m_tFake;
+    const auto& fromFake = tFrom.m_tFake;
+    if (fake.m_bValid && fromFake.m_bValid && fake.m_uGeneration == fromFake.m_uGeneration)
+    {
+        for (size_t i = 0; i < fake.m_aPoseParameters.size(); ++i)
+            if (fake.m_aOrientation[i] && fromFake.m_aOrientation[i]
+                && fabsf(fake.m_aPoseParameters[i] - fromFake.m_aPoseParameters[i]) <= 0.5f)
+                fake.m_aPoseParameters[i] = Math::Lerp(fromFake.m_aPoseParameters[i], fake.m_aPoseParameters[i], t);
+        fake.m_vRenderAngles.x = Math::Lerp(fromFake.m_vRenderAngles.x, fake.m_vRenderAngles.x, t);
+        fake.m_vRenderAngles.y = Math::NormalizeAngle(fromFake.m_vRenderAngles.y
+            + Math::NormalizeAngle(fake.m_vRenderAngles.y - fromFake.m_vRenderAngles.y) * t);
+        fake.m_vRenderAngles.z = Math::Lerp(fromFake.m_vRenderAngles.z, fake.m_vRenderAngles.z, t);
+        fake.m_vEyeAngles.x = Math::Lerp(fromFake.m_vEyeAngles.x, fake.m_vEyeAngles.x, t);
+        fake.m_vEyeAngles.y = Math::NormalizeAngle(fromFake.m_vEyeAngles.y
+            + Math::NormalizeAngle(fake.m_vEyeAngles.y - fromFake.m_vEyeAngles.y) * t);
+    }
+
 	for (size_t i = 0; i < tOut.m_aLayers.size(); i++)
 	{
 		auto& tLayerFrom = tFrom.m_aLayers[i], &tLayerTo = tTo.m_aLayers[i];
@@ -188,51 +205,59 @@ const AnimFrame_t* CAnimInterp::LocalRealFrame(CTFPlayer* pPlayer) const
 		&& I::GlobalVars->realtime - m_flLocalPoseArrival <= STALE_TIME ? &m_tLocalPose : nullptr;
 }
 
-void CAnimInterp::Record(CTFPlayer* pPlayer, int iElapsedTicks, bool bBatchEndpoint, const AnimFrame_t* pDisplayFrame)
+void CAnimInterp::Record(CTFPlayer* pPlayer, int iElapsedTicks, bool bBatchEndpoint,
+    const AnimFrame_t* pDisplayFrame, const AnimFrame_t* pFakeFrame)
 {
-	if (!pPlayer || iElapsedTicks <= 0)
-		return;
-	if (bBatchEndpoint)
-	{
-		m_pLocalPose = nullptr;
-		if (pDisplayFrame && pDisplayFrame->m_pModel == pPlayer->GetModel() && pPlayer->IsAlive())
-		{
-			m_pLocalPose = pPlayer;
-			m_tLocalPose = *pDisplayFrame;
-			m_flLocalPoseArrival = I::GlobalVars->realtime;
-		}
-	}
-	if (!Enabled())
-		return;
-
-	auto& tTimeline = m_mTimelines[pPlayer->entindex()];
-	if (tTimeline.m_pPlayer != pPlayer || !pPlayer->IsAlive() || tTimeline.m_bBatchEndpoints != bBatchEndpoint
-		|| tTimeline.m_bStarted && I::GlobalVars->realtime - tTimeline.m_flLastArrival > STALE_TIME
-		|| !tTimeline.m_vFrames.empty() && tTimeline.m_vFrames.back().m_pModel != pPlayer->GetModel())
-	{	// new entity, death, model change (class, disguise) or a long gap: start over rather than blend across it
-		tTimeline = {};
-		tTimeline.m_pPlayer = pPlayer;
-		tTimeline.m_bBatchEndpoints = bBatchEndpoint;
-		if (!pPlayer->IsAlive())
-			return;
-	}
-
-	AnimFrame_t tFrame = {};
-	if (pDisplayFrame)
-	{
-		if (pDisplayFrame->m_pModel != pPlayer->GetModel())
-			return;
-		tFrame = *pDisplayFrame;
-	}
-	else if (!Capture(pPlayer, tFrame))
-		return;
-
-	tTimeline.m_iNextTick += iElapsedTicks;
-	tFrame.m_iTick = tTimeline.m_iNextTick - 1;
-	tTimeline.m_vFrames.push_back(tFrame);
-	tTimeline.m_iBurst += iElapsedTicks;
-	while (tTimeline.m_vFrames.size() > MAX_FRAMES)
-		tTimeline.m_vFrames.pop_front();
+    if (!pPlayer || iElapsedTicks <= 0) return;
+    AnimFrame_t tFrame = {};
+    if (pDisplayFrame)
+    {
+        if (pDisplayFrame->m_pModel != pPlayer->GetModel()) return;
+        tFrame = *pDisplayFrame;
+    }
+    else if (!Capture(pPlayer, tFrame)) return;
+    tFrame.m_tFake = {};
+    if (bBatchEndpoint && pFakeFrame && pFakeFrame->m_pModel == tFrame.m_pModel
+        && F::FakeAngle.ValidSnapshot(pPlayer))
+    {
+        auto& fake = tFrame.m_tFake;
+        fake.m_bValid = true; fake.m_uGeneration = F::FakeAngle.Generation();
+        fake.m_aPoseParameters = pFakeFrame->m_aPoseParameters;
+        fake.m_vRenderAngles = pFakeFrame->m_vRenderAngles;
+        fake.m_vEyeAngles = pFakeFrame->m_vRecordedEyeAngles;
+        const auto& poses = pPlayer->m_PlayerAnimState()->m_PoseParameterData;
+        // Keep stance/body height and all animation phases from the real display.
+        // Only native orientation-dependent aim and locomotion parameters differ.
+        for (int i : {poses.m_iMoveX, poses.m_iMoveY, poses.m_iAimYaw,
+            poses.m_iAimPitch, poses.m_iMoveYaw, poses.m_iMoveScale})
+            if (i >= 0 && i < int(fake.m_aOrientation.size()) && i != poses.m_iBodyHeight
+                && (!pPlayer->IsTaunting() || i == poses.m_iAimYaw || i == poses.m_iAimPitch))
+                fake.m_aOrientation[i] = true;
+    }
+    if (bBatchEndpoint)
+    {
+        m_pLocalPose = pPlayer->IsAlive() ? pPlayer : nullptr;
+        m_tLocalPose = tFrame;
+        m_flLocalPoseArrival = I::GlobalVars->realtime;
+    }
+    if (!Enabled()) return;
+    auto& tTimeline = m_mTimelines[pPlayer->entindex()];
+    const bool changedFake = bBatchEndpoint && !tTimeline.m_vFrames.empty()
+        && tTimeline.m_vFrames.back().m_tFake.m_uGeneration != tFrame.m_tFake.m_uGeneration;
+    if (tTimeline.m_pPlayer != pPlayer || !pPlayer->IsAlive() || tTimeline.m_bBatchEndpoints != bBatchEndpoint
+        || tTimeline.m_bStarted && (I::GlobalVars->realtime < tTimeline.m_flLastArrival
+            || I::GlobalVars->realtime - tTimeline.m_flLastArrival > STALE_TIME)
+        || !tTimeline.m_vFrames.empty() && tTimeline.m_vFrames.back().m_pModel != pPlayer->GetModel()
+        || changedFake)
+    {
+        tTimeline = {}; tTimeline.m_pPlayer = pPlayer; tTimeline.m_bBatchEndpoints = bBatchEndpoint;
+        if (!pPlayer->IsAlive()) return;
+    }
+    tTimeline.m_iNextTick += iElapsedTicks;
+    tFrame.m_iTick = tTimeline.m_iNextTick - 1;
+    tTimeline.m_vFrames.push_back(tFrame);
+    tTimeline.m_iBurst += iElapsedTicks;
+    while (tTimeline.m_vFrames.size() > MAX_FRAMES) tTimeline.m_vFrames.pop_front();
 }
 
 void CAnimInterp::EndBurst(CTFPlayer* pPlayer)
@@ -359,65 +384,51 @@ bool CAnimInterp::Sample(const AnimTimeline_t& tTimeline, AnimFrame_t& tOut)
 
 void CAnimInterp::RebuildFakeAngle(CTFPlayer* pLocal, const AnimFrame_t& tFrame)
 {
-	if (!F::FakeAngle.bBonesSetup || !F::FakeAngle.bDrawChams)
-		return;
-
-	auto pAnimState = pLocal->m_PlayerAnimState();
-	if (!pAnimState)
-		return;
-
-	// same steps as CFakeAngle::Run, but on top of the smoothed pose instead of the last simulated one
-	const float flOldFrameTime = I::GlobalVars->frametime;
-	const float flOldCurTime = I::GlobalVars->curtime;
-	const float flOldTauntYaw = pLocal->m_flTauntYaw();
-	char pOldAnimState[sizeof(CTFPlayerAnimState)];
-	memcpy(pOldAnimState, pAnimState, sizeof(CTFPlayerAnimState));
-	const int nSlots = std::min(pAnimState->m_aGestureSlots.Count(), int(GESTURE_SLOT_COUNT));
-	std::array<CAnimationLayer, GESTURE_SLOT_COUNT> aOldLayers = {};
-	for (int i = 0; i < nSlots; i++)
-	{
-		if (auto pLayer = pAnimState->m_aGestureSlots[i].m_pAnimLayer)
-			aOldLayers[i] = *pLayer;
-	}
-
-	I::GlobalVars->frametime = 0.f;
-	I::GlobalVars->curtime = F::FakeAngle.flCurTime;
-	const Vec2 vAngle = F::FakeAngle.vAngles;
-	if (pLocal->IsTaunting() && pLocal->m_bAllowMoveDuringTaunt())
-		pLocal->m_flTauntYaw() = vAngle.y;
-	pAnimState->Update(pAnimState->m_flCurrentFeetYaw = vAngle.y, vAngle.x);
-
-	FakeBuildScope fakeScope(*this);
-	pLocal->InvalidateBoneCache();
-	const bool bSetup = pLocal->SetupBones(m_aFakeBones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, I::GlobalVars->curtime);
-
-	I::GlobalVars->frametime = flOldFrameTime;
-	I::GlobalVars->curtime = flOldCurTime;
-	pLocal->m_flTauntYaw() = flOldTauntYaw;
-	memcpy(pAnimState, pOldAnimState, sizeof(CTFPlayerAnimState));
-	for (int i = 0; i < nSlots; i++)
-	{	// gesture layers aren't part of the anim state memory, put them back as a whole
-		if (auto pLayer = pAnimState->m_aGestureSlots[i].m_pAnimLayer)
-			*pLayer = aOldLayers[i];
-	}
-	Apply(pLocal, tFrame); // Update() rewrote sequence, cycle and pose parameters
-	pLocal->InvalidateBoneCache();
-
-	if (!bSetup)
-		return;
-
-	// keep the fake where CFakeAngle::Run put it (the last sent position), only its pose is smoothed
-	const Vec3 vDelta = F::FakeAngle.vOrigin - pLocal->GetAbsOrigin();
-	const int nBones = std::min(pLocal->m_CachedBoneData().Count(), int(MAXSTUDIOBONES));
-	for (int i = 0; i < nBones; i++)
-	{
-		m_aFakeBones[i][0][3] += vDelta.x;
-		m_aFakeBones[i][1][3] += vDelta.y;
-		m_aFakeBones[i][2][3] += vDelta.z;
-	}
-	memcpy(m_aOriginalFakeBones, F::FakeAngle.aBones, sizeof(m_aOriginalFakeBones));
-	m_bFakeApplied = true;
-	memcpy(F::FakeAngle.aBones, m_aFakeBones, sizeof(matrix3x4) * nBones);
+    const auto& fake = tFrame.m_tFake;
+    if (!fake.m_bValid || fake.m_uGeneration != F::FakeAngle.Generation()
+        || !F::FakeAngle.ValidSnapshot(pLocal)) return;
+    auto pAnimState = pLocal->m_PlayerAnimState();
+    if (!pAnimState) return;
+    auto& cache = pLocal->m_CachedBoneData();
+    const int oldCount = cache.Count();
+    if (oldCount < 0 || oldCount > MAXSTUDIOBONES || (oldCount && !cache.Base())) return;
+    struct RestoreScope
+    {
+        CTFPlayer* player; const AnimFrame_t& frame; int count; float taunt;
+        std::array<matrix3x4, MAXSTUDIOBONES> bones{};
+        RestoreScope(CTFPlayer* p, const AnimFrame_t& f, int n) : player(p), frame(f), count(n), taunt(p->m_flTauntYaw())
+        { if (n) memcpy(bones.data(), p->m_CachedBoneData().Base(), sizeof(matrix3x4) * n); }
+        ~RestoreScope()
+        {
+            player->m_flTauntYaw() = taunt;
+            Apply(player, frame);
+            auto& cache = player->m_CachedBoneData();
+            if (cache.Count() == count)
+            { if (count) memcpy(cache.Base(), bones.data(), sizeof(matrix3x4) * count); }
+            else cache.RemoveAll();
+            player->InvalidateBoneCache();
+        }
+    };
+    bool built = false;
+    int count = 0;
+    {
+        RestoreScope restore(pLocal, tFrame, oldCount);
+        AnimFrame_t display = tFrame;
+        for (size_t i = 0; i < display.m_aPoseParameters.size(); ++i)
+            if (fake.m_aOrientation[i]) display.m_aPoseParameters[i] = fake.m_aPoseParameters[i];
+        display.m_vRenderAngles = fake.m_vRenderAngles;
+        // No native Update here: it would overwrite the sampled cycle/pose/layers.
+        Apply(pLocal, display);
+        if (pLocal->IsTaunting() && pLocal->m_bAllowMoveDuringTaunt()) pLocal->m_flTauntYaw() = fake.m_vEyeAngles.y;
+        FakeBuildScope fakeScope(*this);
+        pLocal->InvalidateBoneCache();
+        built = pLocal->SetupBones(m_aFakeBones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, I::GlobalVars->curtime);
+        count = cache.Count();
+    }
+    // SetupBones already used the current rendered origin. Never translate back
+    // to the packet endpoint. All fake passes share this one render-frame result.
+    if (built && count > 0 && count <= MAXSTUDIOBONES)
+        F::FakeAngle.PublishRender(pLocal, m_aFakeBones, count);
 }
 
 void CAnimInterp::InvalidateAllBones()
@@ -427,7 +438,7 @@ void CAnimInterp::InvalidateAllBones()
 
 bool CAnimInterp::ApplyLocalPose()
 {
-	if (!m_pLocalPose || G::Unload || !G::AntiAim || I::EngineClient->IsPlayingDemo()
+	if (!m_pLocalPose || G::Unload || I::EngineClient->IsPlayingDemo()
 		|| I::GlobalVars->realtime - m_flLocalPoseArrival > STALE_TIME)
 		return false;
 	const int iLocal = I::EngineClient->GetLocalPlayer();
@@ -450,6 +461,9 @@ bool CAnimInterp::ApplyLocalPose()
 void CAnimInterp::RenderStart()
 {
 	Restore(); // normally empty, RenderEnd already restored
+    F::FakeAngle.BeginRender();
+    auto localClient = I::ClientEntityList->GetClientEntity(I::EngineClient->GetLocalPlayer());
+    if (!F::FakeAngle.ValidSnapshot(localClient ? localClient->As<CTFPlayer>() : nullptr)) F::FakeAngle.Invalidate();
 
 	const float flNow = I::GlobalVars->realtime;
 	const float flDeltaTicks = m_flLastRender > 0.f ? std::clamp((flNow - m_flLastRender) / TICK_INTERVAL, 0.f, 8.f) : 0.f;
@@ -527,8 +541,7 @@ void CAnimInterp::RenderEnd()
 void CAnimInterp::Restore()
 {
 	const bool bInvalidate = std::exchange(m_bRendering, false) || !m_vApplied.empty();
-	if (std::exchange(m_bFakeApplied, false))
-		memcpy(F::FakeAngle.aBones, m_aOriginalFakeBones, sizeof(m_aOriginalFakeBones));
+	F::FakeAngle.BeginRender();
 
 	for (auto& tApplied : m_vApplied)
 	{
@@ -555,14 +568,14 @@ void CAnimInterp::Reset()
 	m_vApplied.clear(); // entities are going away, don't touch them
 	m_mTimelines.clear();
 	m_mDirtyPlayers.clear();
-	m_bFakeApplied = false;
+	F::FakeAngle.Invalidate();
 	m_bRendering = m_bBuildingFake = false;
 	m_flLastRender = 0.f;
 }
 
 bool CAnimInterp::ShouldTransition(CBaseEntity* pEntity)
 {
-	if (!m_bRendering || m_bBuildingFake || !Enabled() || F::Backtrack.IsSettingUpBones())
+	if (!m_bRendering || !Enabled() || F::Backtrack.IsSettingUpBones())
 		return false;
 
 	if (Vars::Visuals::Removals::Interpolation.Value && pEntity)

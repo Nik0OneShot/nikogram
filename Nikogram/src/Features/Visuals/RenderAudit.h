@@ -6,6 +6,9 @@
 #include <mutex>
 #include <fstream>
 #include <filesystem>
+#include <string_view>
+#include <bit>
+#include <cstdint>
 #include <d3d9.h>
 #include "CapturePolicy.h"
 #include "../../Utils/ExceptionHandler/CrashLog.h"
@@ -70,6 +73,10 @@ namespace RenderAudit
         float blend=0;
         std::array<float,3> color{};
         std::array<DWORD,8> device{};
+        std::array<std::uintptr_t,12> bindings{};
+        std::array<DWORD,8> sampling{};
+        std::array<DWORD,10> raster{};
+        bool presentDifference=false;
         unsigned psHash=0,vsHash=0;
         HRESULT gpuRead=S_FALSE;
         std::array<float,8> shader{};
@@ -86,7 +93,7 @@ namespace RenderAudit
         for(size_t i=0;i<n*sizeof(float);++i)result=(result^bytes[i])*16777619u;
         return result;
     }
-    inline void Gather(const char* stage,IDirect3DDevice9* device,bool readCvars)
+    inline void Gather(const char* stage,IDirect3DDevice9* device,bool readCvars,HRESULT presentResult)
     {
         if(G::Unload)return;
         Record r;r.tick=GetTickCount64();r.thread=GetCurrentThreadId();r.stage=stage;r.frame=I::GlobalVars->framecount;
@@ -123,13 +130,60 @@ namespace RenderAudit
             const auto ph=device->GetPixelShaderConstantF(0,ps.data(),224),vh=device->GetVertexShaderConstantF(0,vs.data(),256);
             if(SUCCEEDED(ph)){r.psHash=Hash(ps.data(),ps.size());std::copy_n(ps.begin(),8,r.shader.begin());}else r.gpuRead=ph;
             if(SUCCEEDED(vh))r.vsHash=Hash(vs.data(),vs.size());else r.gpuRead=vh;
+            // COM getters AddRef; diagnostics must not retain resources across Reset.
+            auto binding=[&](size_t slot,auto* object,HRESULT hr){
+                if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)r.gpuRead=hr;
+                r.bindings[slot]=reinterpret_cast<std::uintptr_t>(object);
+                if(object)object->Release();
+            };
+            for(DWORD i=0;i<2;++i){IDirect3DBaseTexture9* p=nullptr;const auto hr=device->GetTexture(i,&p);binding(i,p,hr);}
+            IDirect3DPixelShader9* pixel=nullptr;auto hr=device->GetPixelShader(&pixel);binding(2,pixel,hr);
+            IDirect3DVertexShader9* vertex=nullptr;hr=device->GetVertexShader(&vertex);binding(3,vertex,hr);
+            IDirect3DVertexDeclaration9* declaration=nullptr;hr=device->GetVertexDeclaration(&declaration);binding(4,declaration,hr);
+            D3DCAPS9 caps{};hr=device->GetDeviceCaps(&caps);if(FAILED(hr))r.gpuRead=hr;
+            for(DWORD i=0;i<std::min<DWORD>(4,caps.NumSimultaneousRTs);++i){IDirect3DSurface9* p=nullptr;hr=device->GetRenderTarget(i,&p);binding(5+i,p,hr);}
+            IDirect3DSurface9* depth=nullptr;hr=device->GetDepthStencilSurface(&depth);binding(9,depth,hr);
+            IDirect3DVertexBuffer9* stream=nullptr;UINT offset=0,stride=0;hr=device->GetStreamSource(0,&stream,&offset,&stride);binding(10,stream,hr);
+            IDirect3DIndexBuffer9* indices=nullptr;hr=device->GetIndices(&indices);binding(11,indices,hr);
+            constexpr D3DSAMPLERSTATETYPE samplerStates[]{D3DSAMP_SRGBTEXTURE,D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_ADDRESSU};
+            for(DWORD i=0;i<4;++i){hr=device->GetSamplerState(0,samplerStates[i],&r.sampling[i]);if(FAILED(hr))r.gpuRead=hr;}
+            constexpr D3DTEXTURESTAGESTATETYPE textureStates[]{D3DTSS_COLOROP,D3DTSS_COLORARG1,D3DTSS_COLORARG2};
+            for(DWORD i=0;i<3;++i){hr=device->GetTextureStageState(0,textureStates[i],&r.sampling[4+i]);if(FAILED(hr))r.gpuRead=hr;}
+            hr=device->GetFVF(&r.sampling[7]);if(FAILED(hr))r.gpuRead=hr;
+            D3DVIEWPORT9 viewport{};RECT scissor{};
+            const auto vp=device->GetViewport(&viewport),sc=device->GetScissorRect(&scissor);
+            if(FAILED(vp))r.gpuRead=vp;if(FAILED(sc))r.gpuRead=sc;
+            r.raster={viewport.X,viewport.Y,viewport.Width,viewport.Height,std::bit_cast<DWORD>(viewport.MinZ),std::bit_cast<DWORD>(viewport.MaxZ),DWORD(scissor.left),DWORD(scissor.top),DWORD(scissor.right),DWORD(scissor.bottom)};
+            static thread_local Record beforePresent;
+            static thread_local bool haveBefore=false;
+            if(std::string_view(stage)=="present.custom.after")
+            {beforePresent=r;haveBefore=SUCCEEDED(r.gpuRead);}
+            else if(std::string_view(stage)=="present.native.after")
+            {
+                r.presentDifference=SUCCEEDED(presentResult)&&haveBefore&&SUCCEEDED(r.gpuRead)&&(r.device!=beforePresent.device||r.bindings!=beforePresent.bindings
+                    ||r.sampling!=beforePresent.sampling||r.raster!=beforePresent.raster||r.psHash!=beforePresent.psHash||r.vsHash!=beforePresent.vsHash);
+                haveBefore=false;if(r.presentDifference)pendingCapture.store(true,std::memory_order_relaxed);
+            }
         }
         std::lock_guard lock(mutex);r.cvars=latestCvars;ring[next]=r;next=(next+1)%ring.size();count=std::min(count+1,ring.size());
     }
-    inline void Sample(const char* stage,IDirect3DDevice9* device=nullptr,bool readCvars=false) noexcept
+    inline void Sample(const char* stage,IDirect3DDevice9* device=nullptr,bool readCvars=false,HRESULT presentResult=S_OK) noexcept
     {
         if(disabled.load(std::memory_order_relaxed))return;
-        try{Gather(stage,device,readCvars);}catch(...){disabled.store(true,std::memory_order_relaxed);}
+        // Latch the whole Present transaction: the game thread can advance
+        // framecount while the render thread blocks in native Present.
+        static thread_local bool samplePresent=false;
+        const std::string_view phase(stage);
+        if(phase=="present.custom.before")
+            samplePresent=I::GlobalVars&&(I::GlobalVars->framecount&15)==0;
+        if(phase.starts_with("present."))
+        {
+            const bool selected=samplePresent;
+            if(phase=="present.restored.after")samplePresent=false;
+            if(!selected)return;
+        }
+        else if(!I::GlobalVars||(I::GlobalVars->framecount&15)!=0)return;
+        try{Gather(stage,device,readCvars,presentResult);}catch(...){disabled.store(true,std::memory_order_relaxed);}
     }
     inline void Write(std::ofstream& file,const Record& r)
     {
@@ -139,6 +193,10 @@ namespace RenderAudit
             r.device[0],r.device[1],r.device[2],r.device[3],r.device[4],r.device[5],r.device[6],r.device[7],r.psHash,r.vsHash,
             r.shader[0],r.shader[1],r.shader[2],r.shader[3],r.shader[4],r.shader[5],r.shader[6],r.shader[7],
             r.cvars[0],r.cvars[1],r.cvars[2],r.cvars[3],r.cvars[4],r.cvars[5],r.cvars[6],r.cvars[7],r.cvars[8],r.cvars[9]);
+        file<<"presentDifference="<<r.presentDifference<<" bindings=";
+        for(auto value:r.bindings)file<<std::format("{:X},",value);
+        file<<" sampling=";for(auto value:r.sampling)file<<value<<',';
+        file<<" raster=";for(auto value:r.raster)file<<value<<',';file<<'\n';
     }
     // I/O happens only at Present: keep a pre-capture ring, then eight seconds
     // of 250 ms snapshots. Four captures and four MiB per loaded diagnostic DLL.
@@ -146,7 +204,9 @@ namespace RenderAudit
     {
         static ULONGLONG lastEvent=0,until=0,lastFlush=0;
         static size_t bytes=0;static unsigned events=0;static bool initialized=false;
-        const auto now=GetTickCount64();const bool requested=pendingCapture.exchange(false,std::memory_order_relaxed);
+        const auto now=GetTickCount64();
+        if(bytes>=4*1024*1024||(events>=4&&now>until)){disabled.store(true,std::memory_order_relaxed);return;}
+        const bool requested=pendingCapture.exchange(false,std::memory_order_relaxed);
         const bool trigger=requested&&(lastEvent==0||now-lastEvent>1000)&&events<4;
         if(trigger){lastEvent=now;until=now+8000;++events;}
         if((!trigger&&(now>until||now-lastFlush<250))||bytes>=4*1024*1024||!CrashLog::Path[0])return;
@@ -155,8 +215,9 @@ namespace RenderAudit
         std::ofstream file(path,initialized?std::ios::app:std::ios::trunc);if(!file)return;
         if(!initialized)
         {
-            file<<"Nikogram 0.6.7 sky-photo candidate; live photo acceptance pending; 0.6.3 screenshot fix preserved. PID="<<GetCurrentProcessId()<<"\n"
+            file<<"Nikogram 0.6.29.3 animation/indicator test; Present state differences trigger bounded capture; sampling one frame in sixteen. PID="<<GetCurrentProcessId()<<"\n"
                 <<"Read-only native state. cvars: hdr,fullbright,forceTonemap,dynamicTonemap,queue,gamma,tvGamma,disableBloom,combinePost,norendering\n";
+            file<<"bindings: tex0,tex1,pixelShader,vertexShader,declaration,rt0,rt1,rt2,rt3,depth,stream0,indices; sampling: sRGB,min,mag,addressU,colorOp,arg1,arg2,FVF; raster: x,y,width,height,minZbits,maxZbits,scissorLTRB\n";
             initialized=true;
         }
         const auto start=file.tellp();
@@ -178,3 +239,4 @@ namespace RenderAudit
         try{FlushImpl();}catch(...){disabled.store(true,std::memory_order_relaxed);}
     }
 }
+

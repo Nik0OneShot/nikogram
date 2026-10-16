@@ -1,4 +1,9 @@
+#include "../AimObserver.h"
+#include "../../../SDK/Helpers/ProjectileDisplay.h"
 #include "AimbotProjectile.h"
+#include "../../NeuralMovement/NeuralMovement.h"
+#include "ProjectilePointPolicy.h"
+#include "FeetPointPolicy.h"
 #include "../SmoothAim.h"
 #include "../SplashSearchPolicy.h"
 #include "../SplashWorker.h"
@@ -9,16 +14,24 @@
 #include "../RocketSafetyGeometry.h"
 #include "../GrenadeCollisionPolicy.h"
 #include "../BowChargePolicy.h"
+#include "../BowCharge.h"
 #include "../ArcPolicy.h"
 #include "../AimbotAuditPolicy.h"
 #include "../ProjectileAimPolicy.h"
 #include "../AutoViewmodelSwitch.h"
+#include "../ProjectileGuidePolicy.h"
+#include "../ProjectileGuideCamera.h"
+#include "../ProjectileCommandDiagnostics.h"
+#include "../../ImGui/Menu/Menu.h"
+#include "../../Spectate/Spectate.h"
 
 #include "../Aimbot.h"
 #include "../AutoFlarePunch.h"
 #include "../ProjectileDiagnostics.h"
 #include "../AmmoEvidenceDiagnostics.h"
+#include "../AmmoLifetimeDiagnostics.h"
 #include "../AmmoConservation.h"
+#include "../KnockbackPrediction.h"
 #include "../PredictionObservation.h"
 #include "../LeadRestrictPolicy.h"
 #include "../../Ticks/Ticks.h"
@@ -51,12 +64,21 @@ static std::map<std::string, int> s_mTraceCount = {};
 //#include "../../Debug/Debug.h"
 #endif
 
-static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
+static inline std::vector<Target_t> CollectProjectileTargets(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool guide)
 {
 	std::vector<Target_t> vTargets;
 
-	const Vec3 vLocalPos = F::Ticks.GetShootPos();
-	const Vec3 vLocalAngles = I::EngineClient->GetViewAngles();
+	Vec3 vLocalPos = F::Ticks.GetShootPos();
+	Vec3 vLocalAngles = I::EngineClient->GetViewAngles();
+    if(guide)ProjectileGuideCamera::Ray(pLocal,vLocalPos,vLocalAngles);
+    const auto guidePoint=[&](CBaseEntity* entity,float& fov,Vec3& point,Vec3& angle)
+    {
+        Vec3 direction;Math::AngleVectors(vLocalAngles,&direction);
+        if(!ProjectileGuidePolicy::Focus(vLocalPos,direction,entity->m_vecOrigin(),entity->m_vecMins(),entity->m_vecMaxs(),point))return false;
+        angle=Math::CalcAngle(vLocalPos,point);fov=Math::CalcFov(vLocalAngles,angle);
+        return std::isfinite(fov);
+    };
+
 
 	{
 		auto eGroup = EntityEnum::Invalid;
@@ -80,11 +102,14 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 
 		for (auto pEntity : H::Entities.GetGroup(eGroup))
 		{
-			if (F::AutoFlarePunch.Target()>=0 && pEntity->entindex()!=F::AutoFlarePunch.Target()) continue;
+			if (!guide && F::AutoFlarePunch.Target()>=0 && pEntity->entindex()!=F::AutoFlarePunch.Target()) continue;
 			if (F::AimbotGlobal.ShouldIgnore(pEntity, pLocal, pWeapon, iFunctionFlags))
 				continue;
 
 			bool bTeam = pEntity->m_iTeamNum() == pLocal->m_iTeamNum();
+            // Friendly fire must not implicitly enable automatic Crossbow healing.
+            if (bTeam && pWeapon->GetWeaponID() == TF_WEAPON_CROSSBOW && !Vars::Aimbot::Healing::AutoArrow.Value)
+                continue;
 			if (bTeam && bHeal)
 			{
 				if (pEntity->As<CTFPlayer>()->m_iHealth() >= pEntity->As<CTFPlayer>()->GetMaxHealth()
@@ -93,7 +118,7 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 			}
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.PlayerBoneInFOV(pEntity->As<CTFPlayer>(), vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
+			if (!(guide ? guidePoint(pEntity,flFOVTo,vPos,vAngleTo) : F::AimbotGlobal.PlayerBoneInFOV(pEntity->As<CTFPlayer>(), vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo)))
 				continue;
 
 			float flDistTo = vLocalPos.DistToSqr(vPos);
@@ -115,7 +140,7 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 			vTargets.emplace_back(pEntity, TargetEnum::Player, vPos, vAngleTo, flFOVTo, flDistTo, iPriority);
 		}
 
-		if (pWeapon->GetWeaponID() == TF_WEAPON_LUNCHBOX || F::AutoFlarePunch.Target()>=0)
+		if (pWeapon->GetWeaponID() == TF_WEAPON_LUNCHBOX || (!guide && F::AutoFlarePunch.Target()>=0))
 			return vTargets;
 	}
 
@@ -135,7 +160,7 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
+			if (!(guide ? guidePoint(pEntity,flFOVTo,vPos,vAngleTo) : F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo)))
 				continue;
 
 			int iPriority = 0;
@@ -181,7 +206,7 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 					continue;
 
 				float flFOVTo; Vec3 vPos, vAngleTo;
-				if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
+				if (!(guide ? guidePoint(pEntity,flFOVTo,vPos,vAngleTo) : F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo)))
 					continue;
 
 				float flDistTo = vLocalPos.DistToSqr(vPos);
@@ -198,7 +223,7 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
+			if (!(guide ? guidePoint(pEntity,flFOVTo,vPos,vAngleTo) : F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo)))
 				continue;
 
 			float flDistTo = vLocalPos.DistToSqr(vPos);
@@ -210,6 +235,231 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 }
 
 
+
+static inline std::vector<Target_t> GetTargets(CTFPlayer* local,CTFWeaponBase* weapon)
+{return CollectProjectileTargets(local,weapon,false);}
+
+static float GuideChargeBegin(CTFWeaponBase* weapon)
+{
+    return weapon&&(weapon->GetWeaponID()==TF_WEAPON_COMPOUND_BOW||weapon->GetWeaponID()==TF_WEAPON_PIPEBOMBLAUNCHER)
+        ?weapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime():0.f;
+}
+static bool GuideOverheld(CTFPlayer* local,CTFWeaponBase* weapon)
+{
+    const float begin=GuideChargeBegin(weapon);
+    return weapon->GetWeaponID()==TF_WEAPON_COMPOUND_BOW&&begin>0
+        &&TICKS_TO_TIME(local->m_nTickBase())-begin>=TF_ARROW_MAX_CHARGE_TIME;
+}
+
+void CAimbotProjectile::UpdateLegitGuide(CTFPlayer* local, CTFWeaponBase* weapon, const CUserCmd* cmd)
+{
+    Guide next;
+    const auto publish=[&] {std::lock_guard lock(m_guideMutex);m_guide=std::move(next);};
+    if (!local || !weapon || !cmd || !local->IsAlive() || !local->CanAttack()
+        || AimModes::Active!=AimModes::Legit || G::PrimaryWeaponType!=EWeaponType::PROJECTILE
+        || (!Vars::AimModes::ProjectileMarker.Value && !Vars::AimModes::ProjectileImpact.Value && !Vars::AimModes::ProjectileTrajectory.Value)
+        || G::Unload || F::Menu.m_bIsOpen || I::EngineVGui->IsGameUIVisible()
+        || I::MatSystemSurface->IsCursorVisible() || !SDK::IsGameWindowInFocus()
+        || !I::EngineClient->IsInGame() || SDK::CleanScreenshot() || F::Spectate.HasTarget()
+        || cmd->weaponselect || Vars::Visuals::Trajectory::Override.Value)
+    {publish();return;}
+
+    // Prediction replaces tickcount with local tickbase until CreateMove ends.
+    // Realtime is unchanged by that scope and is shared with the render reader.
+    next.realtime=I::GlobalVars->realtime;
+    next.owner=local->GetRefEHandle().ToInt(); next.weapon=weapon->GetRefEHandle().ToInt();
+    next.spawn=local->m_iSpawnCounter();next.server=I::ClientState->m_nServerCount;next.chargeBegin=GuideChargeBegin(weapon);
+    if (Vars::AimModes::ProjectileMarker.Value)
+    {
+        auto targets=CollectProjectileTargets(local,weapon,true);
+        const Vec3 eye=local->GetShootPos();
+        std::erase_if(targets,[&](const Target_t& t) {
+            return !t.m_pEntity || t.m_pEntity->IsDormant()
+                || !std::isfinite(t.m_flFOVTo);
+        });
+        std::stable_sort(targets.begin(),targets.end(),[&](const Target_t& a,const Target_t& b) {
+            return a.m_flFOVTo!=b.m_flFOVTo ? a.m_flFOVTo<b.m_flFOVTo
+                : a.m_flDistTo!=b.m_flDistTo ? a.m_flDistTo<b.m_flDistTo
+                : a.m_pEntity->GetRefEHandle().ToInt()<b.m_pEntity->GetRefEHandle().ToInt();
+        });
+        // Reuse collision-validated prediction, never Run/Aim(CUserCmd*) or firing control.
+        struct PreviewScope
+        {
+            bool& preview; bool& guide; bool oldPreview,oldGuide;
+            PreviewScope(bool& p,bool& g):preview(p),guide(g),oldPreview(p),oldGuide(g){p=g=true;}
+            ~PreviewScope(){preview=oldPreview;guide=oldGuide;}
+        } preview(m_bPreviewOnly,m_bLegitGuide);
+        ProjectilePerformancePolicy::SearchScope budget(m_SearchBudget,cmd->command_number,true);
+        int attempts=0;
+        for (size_t i=0;i<std::min(size_t(ProjectileGuidePolicy::MaxVisibility),targets.size()) && attempts<3;++i)
+        {
+            auto& target=targets[i];
+            if(!SDK::VisPos(local,target.m_pEntity,eye,target.m_vPos))continue;
+            if(!SearchAllowed(SearchWork::Prediction))break;
+            ++attempts;
+            m_vGuideOffset=target.m_vPos-target.m_pEntity->m_vecOrigin();
+            m_vBoxes.clear();
+            const int result=CanHit(target,local,weapon,true);
+            m_vBoxes.clear();
+            if (result!=1 || !ProjectileGuidePolicy::Valid(m_vAngleTo.x,m_vAngleTo.y,m_flTimeTo)) continue;
+            Vec3 direction;Math::AngleVectors(m_vAngleTo,&direction);
+            // Project the required LAUNCH direction, not the future enemy position.
+            Vec3 cameraEye,cameraAngles;ProjectileGuideCamera::Ray(local,cameraEye,cameraAngles);
+            next.markerDistance=std::max(128.f,eye.DistTo(m_vTarget));next.launchAngles=m_vAngleTo;
+            next.marker=cameraEye+direction*next.markerDistance;
+            next.target=target.m_pEntity->GetRefEHandle().ToInt();next.valid=true;
+            next.targetSpawn=target.m_pEntity->IsPlayer()?target.m_pEntity->As<CTFPlayer>()->m_iSpawnCounter():-1;
+            next.targetModel=target.m_pEntity->GetModel();next.focusOffset=m_vGuideOffset;
+            next.targetCue=target.m_pEntity->m_vecOrigin()+Vec3(0,0,target.m_pEntity->m_vecMaxs().z+10.f);
+            next.aligned=ProjectileGuidePolicy::Aligned(cmd->viewangles.x,cmd->viewangles.y,m_vAngleTo.x,m_vAngleTo.y);
+            next.uncertain=GuideOverheld(local,weapon) || m_tMoveStorage.m_bFailed || m_flTimeTo>.5f
+                || (target.m_pEntity->IsPlayer() && target.m_pEntity->As<CTFPlayer>()->m_vecVelocity().Length()>20.f);
+            break;
+        }
+    }
+    publish();
+}
+
+void CAimbotProjectile::RefreshGuidePath(CTFPlayer* local,CTFWeaponBase* weapon)
+{
+    if(m_guidePathFrame==I::GlobalVars->framecount && m_renderPath.owner==unsigned(local->GetRefEHandle().ToInt())
+        && m_renderPath.weapon==unsigned(weapon->GetRefEHandle().ToInt()))return;
+    m_guidePathFrame=I::GlobalVars->framecount;
+    m_renderPath={};m_renderPath.owner=local->GetRefEHandle().ToInt();m_renderPath.weapon=weapon->GetRefEHandle().ToInt();
+    if(!Vars::AimModes::ProjectileImpact.Value&&!Vars::AimModes::ProjectileTrajectory.Value)return;
+    using Clock=std::chrono::steady_clock;
+    const auto start=Clock::now();
+    const auto elapsed=[&]{return std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-start).count();};
+    ProjectileInfo info;
+    const int flags=ProjSimEnum::Redirect|ProjSimEnum::InitCheck|ProjSimEnum::Interp|ProjSimEnum::NoRandomAngles|ProjSimEnum::DiagnosticDeterministic;
+    // The existing render trajectory uses Interp fire setup. No player movement
+    // prediction, command mutation, splash worker, or cached collision result here.
+    if(!F::ProjSim.GetInfo(local,weapon,I::EngineClient->GetViewAngles(),info,flags)||!F::ProjSim.Initialize(info))return;
+    CTraceFilterCollideable filter;filter.pSkip=local;
+    int mask=MASK_SOLID;F::ProjSim.SetupTrace(filter,mask,weapon,0,true);
+    Vec3 from=F::ProjSim.GetOrigin();CGameTrace trace{};
+    SDK::TraceHull(from,from,-info.m_vHull,info.m_vHull,mask,&filter,&trace);
+    if(trace.startsolid||trace.allsolid)return;
+    m_renderPath.path.push_back(from);
+    const int ticks=ProjectileGuidePolicy::PathTicks(info.m_flLifetime,TICK_INTERVAL);
+    for(int n=1;n<=ticks && ProjectileGuidePolicy::PathStep(n-1,elapsed());++n)
+    {
+        F::ProjSim.RunTick(info,false);
+        const Vec3 to=F::ProjSim.GetOrigin();
+        if(!std::isfinite(to.x)||!std::isfinite(to.y)||!std::isfinite(to.z)){m_renderPath.path.clear();break;}
+        F::ProjSim.SetupTrace(filter,mask,weapon,n,true);
+        SDK::TraceHull(from,to,-info.m_vHull,info.m_vHull,mask,&filter,&trace);
+        m_renderPath.path.push_back(trace.DidHit()?trace.endpos:to);
+        if(trace.DidHit())
+        {
+            m_renderPath.impact=trace.endpos;
+            m_renderPath.impactValid=!GuideOverheld(local,weapon)&&!trace.startsolid&&!trace.allsolid
+                &&std::isfinite(trace.endpos.x)&&std::isfinite(trace.endpos.y)&&std::isfinite(trace.endpos.z);
+            break;
+        }
+        from=to;
+    }
+}
+
+void CAimbotProjectile::DrawLegitGuide(CTFPlayer* local)
+{
+    if (!local || !local->IsAlive() || AimModes::Active!=AimModes::Legit || F::Menu.m_bIsOpen
+        || G::Unload || SDK::CleanScreenshot() || F::Spectate.HasTarget()
+        || I::EngineVGui->IsGameUIVisible() || I::MatSystemSurface->IsCursorVisible() || !SDK::IsGameWindowInFocus()
+        || !I::EngineClient->IsInGame() || !local->CanAttack() || Vars::Visuals::Trajectory::Override.Value)
+    {m_renderPath={};m_guidePathFrame=-1;m_guideDisplay={};return;}
+    Guide guide;
+    {std::lock_guard lock(m_guideMutex);guide=m_guide;}
+    auto* weapon=H::Entities.GetWeapon();
+    if (!weapon || guide.owner!=unsigned(local->GetRefEHandle().ToInt())
+        || guide.weapon!=unsigned(weapon->GetRefEHandle().ToInt())
+        || guide.spawn!=local->m_iSpawnCounter() || guide.server!=I::ClientState->m_nServerCount
+        || !ProjectileGuidePolicy::FreshTime(I::GlobalVars->realtime,guide.realtime))
+    {m_renderPath={};m_guidePathFrame=-1;m_guideDisplay={};return;}
+    RefreshGuidePath(local,weapon);
+    guide.path=m_renderPath.path;guide.impact=m_renderPath.impact;guide.impactValid=m_renderPath.impactValid;
+    if(guide.chargeBegin!=GuideChargeBegin(weapon)
+        || !ProjectileGuidePolicy::FreshTime(I::GlobalVars->realtime,guide.realtime,ProjectileGuidePolicy::MarkerLifetime(TICK_INTERVAL)))guide.valid=false;
+    if(guide.valid)
+    {
+        auto* client=I::ClientEntityList->GetClientEntityFromHandle(CBaseHandle(guide.target));
+        auto* target=client?client->As<CBaseEntity>():nullptr;
+        if(!target||target->IsDormant()||target->GetModel()!=guide.targetModel
+            || (target->IsPlayer()&&(!target->As<CTFPlayer>()->IsAlive()||target->As<CTFPlayer>()->m_iSpawnCounter()!=guide.targetSpawn))
+            || F::AimbotGlobal.ShouldIgnore(target,local,weapon)
+            || !SDK::VisPos(local,target,local->GetShootPos(),target->m_vecOrigin()+guide.focusOffset))guide.valid=false;
+    }
+    if(guide.valid)
+    {
+        Vec3 direction;Math::AngleVectors(guide.launchAngles,&direction);
+        const bool same=m_guideDisplay.target==guide.target&&m_guideDisplay.owner==guide.owner
+            &&m_guideDisplay.weapon==guide.weapon&&m_guideDisplay.spawn==guide.spawn&&m_guideDisplay.server==guide.server
+            &&m_guideDisplay.chargeBegin==guide.chargeBegin;
+        if(m_guideDisplay.frame!=I::GlobalVars->framecount||!same)
+        {
+            const float dt=I::GlobalVars->realtime-m_guideDisplay.realtime;
+            const float change=Math::CalcFov(Math::VectorAngles(m_guideDisplay.direction),guide.launchAngles);
+            if(ProjectileGuidePolicy::BlendDisplay(same,dt,change))
+                direction=(m_guideDisplay.direction+(direction-m_guideDisplay.direction)*ProjectileGuidePolicy::DisplayAlpha(dt)).Normalized();
+            m_guideDisplay={direction,guide.target,guide.owner,guide.weapon,I::GlobalVars->framecount,guide.spawn,guide.server,I::GlobalVars->realtime,guide.chargeBegin};
+        }
+        Vec3 cameraEye,cameraAngles;ProjectileGuideCamera::Ray(local,cameraEye,cameraAngles);
+        guide.marker=cameraEye+m_guideDisplay.direction*guide.markerDistance;
+        const Vec3 shotAngles=I::EngineClient->GetViewAngles();
+        guide.uncertain=guide.uncertain||GuideOverheld(local,weapon);
+        guide.aligned=!guide.uncertain&&ProjectileGuidePolicy::Aligned(shotAngles.x,shotAngles.y,guide.launchAngles.x,guide.launchAngles.y);
+    }
+    else m_guideDisplay={};
+    const float scale=ProjectileGuidePolicy::Scale(H::Draw.m_nScreenH);
+    const Color_t outline(12,16,22,240),gold(255,201,112,255);
+    const auto line=[&](int x1,int y1,int x2,int y2,Color_t color) {
+        H::Draw.Line(x1-1,y1,x2-1,y2,outline);
+        H::Draw.Line(x1+1,y1,x2+1,y2,outline);
+        H::Draw.Line(x1,y1-1,x2,y2-1,outline);
+        H::Draw.Line(x1,y1+1,x2,y2+1,outline);
+        H::Draw.Line(x1,y1,x2,y2,color);
+    };
+    if (Vars::AimModes::ProjectileTrajectory.Value)
+        for (size_t i=1;i<guide.path.size();++i)
+        {
+            Vec3 a,b;
+            if (SDK::W2S(guide.path[i-1],a)&&SDK::W2S(guide.path[i],b))
+                line(int(a.x),int(a.y),int(b.x),int(b.y),{255,201,112,180});
+        }
+    Vec3 point;
+    if (Vars::AimModes::ProjectileImpact.Value && guide.impactValid && SDK::W2S(guide.impact,point))
+    {
+        const int x=int(point.x),y=int(point.y),r=std::max(5,int(7*scale));
+        line(x,y-r,x+r,y,gold);line(x+r,y,x,y+r,gold);
+        line(x,y+r,x-r,y,gold);line(x-r,y,x,y-r,gold);
+    }
+    if (!Vars::AimModes::ProjectileMarker.Value || !guide.valid || !SDK::W2S(guide.marker,point)) return;
+    const Color_t color=Vars::AimModes::ProjectileRingColour.Value;
+    const int x=int(point.x),y=int(point.y);
+    const float r=ProjectileGuidePolicy::Radius(Vars::AimModes::ProjectileRingSize.Value,H::Draw.m_nScreenH);
+    // Dark inner and outer edges keep the ring legible over sky and dark interiors.
+    for(int band=-2;band<=2;++band) H::Draw.LineCircle(x,y,r+band,64,outline);
+    H::Draw.LineCircle(x,y,r,64,color);H::Draw.LineCircle(x,y,r-1,64,color);
+    H::Draw.FillRect(x-2,y-2,5,5,outline);H::Draw.FillRect(x-1,y-1,3,3,color);
+    if(guide.uncertain)
+        for(int n=0;n<12;++n)
+        {
+            const float a=n*6.2831853f/12.f,b=a+.15f,outer=r+4*scale;
+            line(int(x+std::cos(a)*outer),int(y+std::sin(a)*outer),int(x+std::cos(b)*outer),int(y+std::sin(b)*outer),color);
+        }
+    if(guide.aligned)
+    {
+        const int inner=int(r+7*scale),outer=int(r+12*scale);
+        line(x-inner,y,x-outer,y,color);line(x+inner,y,x+outer,y,color);
+        line(x,y-inner,x,y-outer,color);line(x,y+inner,x,y+outer,color);
+    }
+    Vec3 cue;
+    if(SDK::W2S(guide.targetCue,cue))
+    {
+        const int cx=int(cue.x),cy=int(cue.y),w=std::max(4,int(5*scale));
+        line(cx-w,cy-w,cx,cy,color);line(cx,cy,cx+w,cy-w,color);
+    }
+}
 
 float CAimbotProjectile::GetSplashRadius(CTFWeaponBase* pWeapon, CTFPlayer* pPlayer, float flScale)
 {
@@ -224,7 +474,10 @@ float CAimbotProjectile::GetSplashRadius(CTFWeaponBase* pWeapon, CTFPlayer* pPla
 		break;
 	case TF_WEAPON_FLAREGUN:
 	case TF_WEAPON_FLAREGUN_REVENGE:
-		if (pWeapon->As<CTFFlareGun>()->GetFlareGunType() == FLAREGUN_SCORCHSHOT)
+		if (pWeapon->As<CTFFlareGun>()->GetFlareGunType() == FLAREGUN_SCORCHSHOT
+            || (pWeapon->GetWeaponID()==TF_WEAPON_FLAREGUN
+                && pWeapon->As<CTFFlareGun>()->GetFlareGunType()==FLAREGUN_DETONATE
+                && (Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::AirSplash)))
 			flRadius = TF_FLARE_DET_RADIUS;
 		break;
 	case TF_WEAPON_JAR:
@@ -286,21 +539,24 @@ float CAimbotProjectile::GetSplashRadius(CBaseEntity* pProjectile, CTFWeaponBase
 	return flRadius * flScale;
 }
 
+static float PhysicalStickyArmTime(CTFWeaponBase* weapon)
+{
+    if(!weapon||weapon->GetWeaponID()!=TF_WEAPON_PIPEBOMBLAUNCHER)return 0.f;
+    static auto live=H::ConVars.FindVar("tf_grenadelauncher_livetime");
+    const float value=live?SDK::AttribHookValue(live->GetFloat(),"sticky_arm_time",weapon):std::numeric_limits<float>::infinity();
+    // A missing/invalid physical arm time cannot validate an air detonation.
+    return std::isfinite(value)&&value>=0.f?value:std::numeric_limits<float>::infinity();
+}
 static inline float ArmTime(CTFWeaponBase* pWeapon)
 {
-	if (Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::UseArmTime && pWeapon->GetWeaponID() == TF_WEAPON_PIPEBOMBLAUNCHER)
-	{
-		static auto tf_grenadelauncher_livetime = H::ConVars.FindVar("tf_grenadelauncher_livetime");
-		const float flLiveTime = tf_grenadelauncher_livetime->GetFloat();
-		return SDK::AttribHookValue(flLiveTime, "sticky_arm_time", pWeapon);
-	}
-
-	return 0.f;
+    if(!(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::UseArmTime))return 0.f;
+    const float value=PhysicalStickyArmTime(pWeapon);
+    return std::isfinite(value)?value:0.f;
 }
 
 static inline bool ShouldLob(Info_t& tInfo)
 {
-	return ArcPolicy::Eligible(bool(Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::LobAngles),tInfo.m_flGravity);
+	return !tInfo.m_bLegitGuide && ArcPolicy::Eligible(bool(Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::LobAngles),tInfo.m_flGravity);
 }
 
 static inline bool ShouldLob(MoveStorage& tMoveStorage, Info_t& tInfo)
@@ -308,19 +564,12 @@ static inline bool ShouldLob(MoveStorage& tMoveStorage, Info_t& tInfo)
 	return ShouldLob(tInfo); // Eligibility is independent of splash radius and underprediction.
 }
 
+static bool Detonator(CTFWeaponBase* weapon)
+{return weapon&&weapon->GetWeaponID()==TF_WEAPON_FLAREGUN&&weapon->As<CTFFlareGun>()->GetFlareGunType()==FLAREGUN_DETONATE;}
 static inline bool AirSplash(CTFWeaponBase* pWeapon, Info_t& tInfo)
 {
-	if (!(Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::AirSplash) || tInfo.m_pProjectile)
-		return false;
-
-	switch (pWeapon->GetWeaponID())
-	{
-	case TF_WEAPON_PIPEBOMBLAUNCHER:
-	case TF_WEAPON_FLAREGUN:
-		return true;
-	}
-
-	return false;
+    return ProjectilePointPolicy::Air(bool(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::AirSplash),
+        tInfo.m_pProjectile!=nullptr,pWeapon&&pWeapon->GetWeaponID()==TF_WEAPON_PIPEBOMBLAUNCHER,Detonator(pWeapon));
 }
 
 static bool BodyProjectile(CTFWeaponBase* weapon)
@@ -334,15 +583,36 @@ static bool BodyProjectile(CTFWeaponBase* weapon)
     }
     return false;
 }
+static bool FeetFallbackWeapon(CTFWeaponBase* weapon)
+{
+    if(!weapon) return false;
+    switch(weapon->GetWeaponID())
+    {
+    case TF_WEAPON_ROCKETLAUNCHER:
+    case TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT:
+    case TF_WEAPON_PARTICLE_CANNON:
+    case TF_WEAPON_COMPOUND_BOW: return true;
+    }
+    return false;
+}
 static bool DirectHitProjectile(const Info_t& info)
 {
     return info.m_pWeapon && (info.m_pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT
         || info.m_pWeapon->m_iItemDefinitionIndex()==Soldier_m_TheDirectHit);
 }
+static thread_local int learnedSplashMode=1;
 static int EffectiveSplash(const Info_t& info)
 {
+    if(info.m_bLegitGuide)
+    {
+        const bool airborne=info.m_pTarget && info.m_pTarget->m_pEntity->IsPlayer()
+            && !info.m_pTarget->m_pEntity->As<CTFPlayer>()->IsOnGround();
+        return ProjectileAimPolicy::Splash(ProjectileGuidePolicy::Splash(true,airborne,0),DirectHitProjectile(info),
+            bool(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::AllowDirectHitSplash));
+    }
     int mode=Vars::Aimbot::Projectile::SplashPrediction.Value;
-    if (Vars::Aimbot::Projectile::PrioritizeUbered.Value && info.m_pTarget && info.m_pTarget->m_pEntity->IsPlayer()
+    if(mode==Vars::Aimbot::Projectile::SplashPredictionEnum::Learned)mode=learnedSplashMode;
+    if (mode!=Vars::Aimbot::Projectile::SplashPredictionEnum::Only && Vars::Aimbot::Projectile::PrioritizeUbered.Value && info.m_pTarget && info.m_pTarget->m_pEntity->IsPlayer()
         && F::AimbotGlobal.IsUberTarget(info.m_pTarget->m_pEntity->As<CTFPlayer>()) && F::AimbotGlobal.CanDisplaceUber(info.m_pWeapon))
         mode=Vars::Aimbot::Projectile::SplashPredictionEnum::Prefer;
     return ProjectileAimPolicy::Splash(mode,DirectHitProjectile(info),
@@ -353,7 +623,7 @@ static_assert(ProjectileAimPolicy::SplashInclude==Vars::Aimbot::Projectile::Spla
 
 static inline int GetHitboxPriority(int nHitbox, Target_t& tTarget, Info_t& tInfo, CBaseEntity* pProjectile = nullptr)
 {
-    const int configured=Vars::Aimbot::Projectile::Hitboxes.Value;
+    const int configured=ProjectileGuidePolicy::Hitboxes(tInfo.m_bLegitGuide,Vars::Aimbot::Projectile::Hitboxes.Value);
     const bool player=tTarget.m_iTargetType==TargetEnum::Player;
     const bool bodyWeapon=BodyProjectile(tInfo.m_pWeapon);
     const bool trueFeet=player && (configured&ProjectileAimPolicy::TrueFeet);
@@ -364,9 +634,9 @@ static inline int GetHitboxPriority(int nHitbox, Target_t& tTarget, Info_t& tInf
 	int iBodyPriority = 1;
 	int iFeetPriority = 2;
 
-	if (Vars::Aimbot::Projectile::Hitboxes.Value & Vars::Aimbot::Projectile::HitboxesEnum::Auto)
+	if (configured & Vars::Aimbot::Projectile::HitboxesEnum::Auto)
 	{
-		bool bHeadshot = !trueFeet && (Vars::Aimbot::Projectile::Hitboxes.Value & Vars::Aimbot::Projectile::HitboxesEnum::Head)
+		bool bHeadshot = !trueFeet && (configured & Vars::Aimbot::Projectile::HitboxesEnum::Head)
 			&& tTarget.m_iTargetType == TargetEnum::Player;
 		if (bHeadshot)
 		{
@@ -375,13 +645,13 @@ static inline int GetHitboxPriority(int nHitbox, Target_t& tTarget, Info_t& tInf
 			else
 				bHeadshot = pProjectile->GetClassID() == ETFClassID::CTFProjectile_Arrow && pProjectile->As<CTFProjectile_Arrow>()->CanHeadshot();
 
-			if (Vars::Aimbot::Projectile::Hitboxes.Value & Vars::Aimbot::Projectile::HitboxesEnum::BodyaimIfLethal
+			if (configured & Vars::Aimbot::Projectile::HitboxesEnum::BodyaimIfLethal
 				&& bHeadshot && !pProjectile && tInfo.m_pWeapon->m_hOwner().GetEntryIndex() == I::EngineClient->GetLocalPlayer())
 			{
                 auto target=tTarget.m_pEntity->As<CTFPlayer>();
-                const float maxCharge=tInfo.m_pWeapon->ApplyFireDelay(1.f);
-                const float fraction=BowChargePolicy::Fraction(I::GlobalVars->curtime,
-                    tInfo.m_pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),maxCharge);
+                const float maxCharge=BowCharge::MaximumTime(tInfo.m_pWeapon,tInfo.m_pLocal);
+                const float fraction=BowChargePlan::Fraction(BowChargePolicy::Fraction(I::GlobalVars->curtime,
+                    tInfo.m_pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),maxCharge));
                 const bool mini=tInfo.m_pLocal->IsMiniCritBoosted() || target->InCond(TF_COND_URINE)
                     || target->InCond(TF_COND_MARKEDFORDEATH) || target->InCond(TF_COND_MARKEDFORDEATH_SILENT);
                 const float boost=tInfo.m_pLocal->IsCritBoosted()?3.f:mini?1.35f:1.f;
@@ -404,7 +674,7 @@ static inline int GetHitboxPriority(int nHitbox, Target_t& tTarget, Info_t& tInf
 		if (bHeadshot)
 			tTarget.m_nAimedHitbox = HITBOX_HEAD;
 
-		bool bLower = Vars::Aimbot::Projectile::Hitboxes.Value & Vars::Aimbot::Projectile::HitboxesEnum::PrioritizeFeet
+		bool bLower = configured & Vars::Aimbot::Projectile::HitboxesEnum::PrioritizeFeet
 			&& tTarget.m_iTargetType == TargetEnum::Player && tTarget.m_pEntity->As<CTFPlayer>()->IsOnGround() /*&& tInfo.m_flRadius*/;
 
 		iHeadPriority = bHeadshot ? 0 : 2;
@@ -415,6 +685,13 @@ static inline int GetHitboxPriority(int nHitbox, Target_t& tTarget, Info_t& tInf
     iHeadPriority=ProjectileAimPolicy::Priority(BOUNDS_HEAD,iHeadPriority,configured,bodyWeapon,player);
     iBodyPriority=ProjectileAimPolicy::Priority(BOUNDS_BODY,iBodyPriority,configured,bodyWeapon,player);
     iFeetPriority=ProjectileAimPolicy::Priority(BOUNDS_FEET,iFeetPriority,configured,bodyWeapon,player);
+    // A manual head-only bow selection needs the same head geometry as Auto.
+    // Mixed manual point sets keep their existing per-bounds behavior.
+    const int bodyParts=Vars::Aimbot::Projectile::HitboxesEnum::Head|Vars::Aimbot::Projectile::HitboxesEnum::Body|Vars::Aimbot::Projectile::HitboxesEnum::Feet;
+    if (!(configured&Vars::Aimbot::Projectile::HitboxesEnum::Auto) && player && !pProjectile
+        && tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_COMPOUND_BOW
+        && (configured&bodyParts)==Vars::Aimbot::Projectile::HitboxesEnum::Head)
+        tTarget.m_nAimedHitbox=HITBOX_HEAD;
 
 	switch (nHitbox)
 	{
@@ -426,9 +703,24 @@ static inline int GetHitboxPriority(int nHitbox, Target_t& tTarget, Info_t& tInf
 	return -1;
 };
 
+static TickRecord* ProjectileHeadRecord(CBaseEntity* entity)
+{
+    std::vector<TickRecord*> records;
+    if (!F::Backtrack.GetRecords(entity,records) || records.empty() || !records.front()
+        || records.front()->m_bInvalid || !std::isfinite(records.front()->m_flSimTime)) return nullptr;
+    auto record=records.front();
+    const auto& origin=record->m_vOrigin;
+    return std::isfinite(origin.x) && std::isfinite(origin.y) && std::isfinite(origin.z)?record:nullptr;
+}
+
 Directs_t CAimbotProjectile::GetDirects()
 {
 	Directs_t mDirects = {};
+    if(m_tInfo.m_bLegitGuide)
+    {
+        mDirects[0]={m_vGuideOffset,PointFlagsEnum::Regular};
+        return mDirects;
+    }
     if(ProjectileDiagnostics::current && ProjectileDiagnostics::current->candidates<=8)
     {
         const int configured=Vars::Aimbot::Projectile::Hitboxes.Value;
@@ -449,11 +741,12 @@ Directs_t CAimbotProjectile::GetDirects()
 		iFlags |= PointFlagsEnum::Lob;
 
 	const Vec3 vMins = tTarget.m_pEntity->m_vecMins(), vMaxs = tTarget.m_pEntity->m_vecMaxs();
-    const bool grenadeFeet=!m_tInfo.m_pProjectile && m_tInfo.m_pWeapon
+    const bool grenadeFeet=!m_tInfo.m_bLegitGuide && !m_tInfo.m_pProjectile && m_tInfo.m_pWeapon
         && m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER
         && tTarget.m_iTargetType==TargetEnum::Player
         && (Vars::Aimbot::Projectile::Hitboxes.Value & Vars::Aimbot::Projectile::HitboxesEnum::PrioritizeFeet)
         && !(Vars::Aimbot::Projectile::Hitboxes.Value & Vars::Aimbot::Projectile::HitboxesEnum::TruePrioritizeFeet);
+    int feetPriority=-1;
 	for (int i = 0; i < 3; i++)
 	{
 		int iPriority = GetHitboxPriority(i, tTarget, m_tInfo, m_tInfo.m_pProjectile);
@@ -466,15 +759,16 @@ Directs_t CAimbotProjectile::GetDirects()
 		case BOUNDS_HEAD:
 			if (tTarget.m_nAimedHitbox == HITBOX_HEAD)
 			{
-				auto aBones = F::Backtrack.GetBones(tTarget.m_pEntity);
-				if (!aBones)
+				auto pose = ProjectileHeadRecord(tTarget.m_pEntity);
+				if (!pose)
 					break;
+				auto aBones = pose->m_aBones;
 
 				//Vec3 vOff = tTarget.m_pEntity->As<CBaseAnimating>()->GetHitboxOrigin(aBones, HITBOX_HEAD) - tTarget.m_pEntity->m_vecOrigin();
 
 				// https://www.youtube.com/watch?v=_PSGD-pJUrM, might be better??
 				Vec3 vCenter, vBBoxMins, vBBoxMaxs; tTarget.m_pEntity->As<CBaseAnimating>()->GetHitboxInfo(aBones, HITBOX_HEAD, &vCenter, &vBBoxMins, &vBBoxMaxs);
-				Vec3 vOff = vCenter + (vBBoxMins + vBBoxMaxs) / 2 - tTarget.m_pEntity->m_vecOrigin();
+				Vec3 vOff = vCenter + (vBBoxMins + vBBoxMaxs) / 2 - pose->m_vOrigin;
 
 				float flLow = 0.f;
 				Vec3 vDelta = tTarget.m_vPos + m_tInfo.m_vTargetEye - m_tInfo.m_vLocalEye;
@@ -504,6 +798,7 @@ Directs_t CAimbotProjectile::GetDirects()
 			mDirects[iPriority] = { Vec3(0, 0, (vMins.z + vMaxs.z) / 2), iFlags };
 			break;
 		case BOUNDS_FEET:
+            feetPriority=iPriority;
             if (grenadeFeet)
             {
                 const auto heights=GrenadeCollisionPolicy::FeetHeights(vMins.z,vMaxs.z,m_tInfo.m_vHull.z,Vars::Aimbot::Projectile::VerticalShift.Value);
@@ -518,6 +813,23 @@ Directs_t CAimbotProjectile::GetDirects()
 			break;
 		}
 	}
+
+    // Preserve every original destination; add one lower-body direct proposal only.
+    if(feetPriority>=0 && !m_tInfo.m_pProjectile && tTarget.m_iTargetType==TargetEnum::Player
+        && FeetFallbackWeapon(m_tInfo.m_pWeapon) && tTarget.m_nAimedHitbox!=HITBOX_HEAD
+        && !(Vars::Aimbot::Projectile::Hitboxes.Value & Vars::Aimbot::Projectile::HitboxesEnum::TruePrioritizeFeet))
+    {
+        const auto primary=mDirects.at(feetPriority);
+        const auto height=FeetPointPolicy::Height({vMins.x,vMins.y,vMins.z},{vMaxs.x,vMaxs.y,vMaxs.z},
+            {m_tInfo.m_vHull.x,m_tInfo.m_vHull.y,m_tInfo.m_vHull.z},primary.m_vOffset.z);
+        if(height)
+        {
+            Directs_t expanded;
+            for(const auto& [priority,point]:mDirects) expanded[priority*2]=point;
+            expanded[feetPriority*2+1]={Vec3(0,0,*height),primary.m_iFlags,true};
+            mDirects=std::move(expanded);
+        }
+    }
 
 	return mDirects;
 }
@@ -540,8 +852,24 @@ namespace TracePreparation
 {
     struct Rotate
     {
-        Vec3 operator()(const Vec3& point,float x,float y) const
-        { return Math::RotatePoint(point,{}, {x,y}); }
+        Vec3 xBasis, yBasis, zBasis;
+        Rotate(float x,float y)
+        {
+            // Identical arithmetic to RotatePoint with a zero origin/roll,
+            // but the six trig calls and basis construction happen once per sphere.
+            float sp,sy,sr,cp,cy,cr;
+            Math::SinCos(Math::Deg2Rad(x),sp,cp);
+            Math::SinCos(Math::Deg2Rad(y),sy,cy);
+            Math::SinCos(0.f,sr,cr);
+            xBasis={cy*cp,cy*sp*sr-sy*cr,cy*sp*cr+sy*sr};
+            yBasis={sy*cp,sy*sp*sr+cy*cr,sy*sp*cr-cy*sr};
+            zBasis={-sp,cp*sr,cp*cr};
+        }
+        Vec3 operator()(const Vec3& point) const
+        {
+            const Vec3 offset=point-Vec3{};
+            return Vec3(xBasis.Dot(offset),yBasis.Dot(offset),zBasis.Dot(offset))+Vec3{};
+        }
     };
     static Pipeline<Vec3,Rotate> pipeline;
 }
@@ -598,11 +926,12 @@ static inline std::vector<Vec3> ComputePoints(float flRadius, int iSamples)
 	};
 	const auto appendPoints = [&](auto direction)
 	{
+		const TracePreparation::Rotate rotate(flRotateX,flRotateY);
 		for (int n = 0; n < iSamples; n++)
 		{
 			if (!SearchAllowed(SearchWork::Sampling)) break;
 			Vec3 vPoint = direction(n) * flRadius;
-			vPoint = Math::RotatePoint(vPoint, {}, { flRotateX, flRotateY });
+			vPoint = rotate(vPoint);
 
 			vPoints.push_back(vPoint);
 		}
@@ -795,8 +1124,10 @@ struct FaceSnapshotKey
     uint64_t epoch=0;
     int command=0, target=0, weapon=0;
     uint8_t flags=0;
-    Vec3 origin, eye, center, localEye, hull;
+    Vec3 origin, eye, center, localEye, hull, launchOffset, angleFix;
     float radius=0, density=0, cutoffSetting=0;
+    float speed=0, gravity=0, offsetTime=0, drag=0, timeScale=0;
+    bool physics=false;
     std::chrono::steady_clock::time_point created;
     bool Matches(const FaceSnapshotKey& now) const
     {
@@ -806,12 +1137,22 @@ struct FaceSnapshotKey
             && int64_t(now.command)-command>=0 && int64_t(now.command)-command<=2
             && now.created-created<std::chrono::milliseconds(50)
             && radius==now.radius && density==now.density && cutoffSetting==now.cutoffSetting
+            && speed==now.speed && gravity==now.gravity && offsetTime==now.offsetTime
+            && drag==now.drag && timeScale==now.timeScale && physics==now.physics
+            && launchOffset==now.launchOffset && angleFix==now.angleFix
             && hull==now.hull && origin.DistToSqr(now.origin)<=16.f
             && eye.DistToSqr(now.eye)<=16.f && center.DistToSqr(now.center)<=16.f
             && localEye.DistToSqr(now.localEye)<=16.f;
     }
 };
-struct FaceResult { FaceSnapshotKey key; std::vector<FaceSample> points; };
+struct FaceResult
+{
+    FaceSnapshotKey key;
+    std::vector<FaceSample> points;
+    bool complete=false;
+    // A bounded hint must not silently truncate the original unlimited search.
+    bool Usable(bool boundedSearch) const { return complete || boundedSearch; }
+};
 struct FaceJob
 {
     FaceSnapshotKey key;
@@ -825,19 +1166,25 @@ struct FaceJob
         float total=random.Float();
         const float cutoff=key.cutoffSetting*float(faces.size())*float(faces.size());
         unsigned geometry=0, samples=0;
+        bool truncated=false;
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(2);
         const auto step=[&](SearchWork work)
         {
-            if(stopping.load(std::memory_order_relaxed) || std::chrono::steady_clock::now()>=deadline) return false;
-            return work==SearchWork::Geometry ? ++geometry<=2048 : ++samples<=512;
+            if(stopping.load(std::memory_order_relaxed) || std::chrono::steady_clock::now()>=deadline)
+            { truncated=true; return false; }
+            const bool allowed=work==SearchWork::Geometry ? ++geometry<=2048 : ++samples<=512;
+            if(!allowed) truncated=true;
+            return allowed;
         };
         for(auto& face:faces)
         {
             if(geometry>=2048 || samples>=512 || stopping.load(std::memory_order_relaxed)
-                || std::chrono::steady_clock::now()>=deadline) break;
+                || std::chrono::steady_clock::now()>=deadline)
+            { truncated=true; break; }
             SampleFace(face,key.density,key.radius,cutoff,key.eye,key.center,key.origin,key.hull,
                 random,total,step,[&](const FaceSample& sample){ result.points.push_back(sample); });
         }
+        result.complete=!truncated && !stopping.load(std::memory_order_relaxed);
         return result;
     }
 };
@@ -845,10 +1192,16 @@ namespace SplashWorker
 {
     static Mailbox<FaceJob,FaceResult> worker;
     static std::atomic<uint64_t> epoch{0};
+    // The aiming thread owns this admission state. Epoch changes also permit
+    // a fresh first command after map transitions without resetting command IDs.
+    static uint64_t submittedEpoch=0;
+    static int submittedCommand=0;
+    static bool submittedOnce=false;
     void Start() { worker.Start(); TracePreparation::pipeline.Start(); }
     void Stop() { worker.Stop(); TracePreparation::pipeline.Stop(); }
     void Invalidate() { epoch.fetch_add(1,std::memory_order_relaxed); TracePreparation::pipeline.Invalidate(); }
 }
+static inline float GetDrag(float flVelocity, ProjectileInfo* pInfo, int iFlags);
 static void CheckFaceSample(const FaceSample& sample, std::vector<Setup_t>& points,
     const Vec3& targetEye, const Vec3& targetCenter, float radius, Info_t& info,
     CGameTrace& trace, ITraceFilter& filter)
@@ -878,6 +1231,8 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 	Vec3 vTargetCenter = vOrigin + m_tInfo.m_pTarget->m_pEntity->GetOffset() / 2;
 	float flRadius = m_tInfo.m_flRadius + m_tInfo.m_pTarget->m_pEntity->GetSize().Length() / 2;
 	bool bAirSplash = AirSplash(m_tInfo.m_pWeapon, m_tInfo);
+    const bool surfaceSplash=ProjectilePointPolicy::Surface(!m_tInfo.m_pProjectile&&Detonator(m_tInfo.m_pWeapon));
+    bool airCenterEmitted=false;
 
 	auto fCheckNormal = [&](const Vec3& vNormal, const Vec3& vPoint, Vec3* pAngle = nullptr)
 	{
@@ -907,7 +1262,7 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 			if (!SearchStep(SearchWork::Sampling)) break;
 			auto fCheckPointTrace = [&]()
 			{
-				if (!trace.m_pEnt || trace.fraction == 1.f || trace.surface.flags & SURF_SKY || !trace.m_pEnt->GetAbsVelocity().IsZero())
+				if (!surfaceSplash || !trace.m_pEnt || trace.fraction == 1.f || trace.surface.flags & SURF_SKY || !trace.m_pEnt->GetAbsVelocity().IsZero())
 					return false;
 
 				Vec3 vPoint = trace.endpos, vAngle;
@@ -929,10 +1284,10 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 			{
 				if (bAirSplash && !trace.DidHit())
 				{
-					if (!Vars::Aimbot::Projectile::SplashAirCount.Value)
-						vSplashPoints.emplace_back(vPoints[i] * SDK::StdRandomFloat() + vTargetCenter, PointTypeEnum::Air);
-					else for (float r = 0; r < Vars::Aimbot::Projectile::SplashAirCount.Value; r++)
-						vSplashPoints.emplace_back(vPoints[i] * r / Vars::Aimbot::Projectile::SplashAirCount.Value + vTargetCenter, PointTypeEnum::Air);
+                    ProjectilePointPolicy::AirSamples(Vars::Aimbot::Projectile::SplashAirCount.Value,airCenterEmitted,
+                        []{return SearchStep(SearchWork::Sampling);},
+                        [&](float fraction){vSplashPoints.emplace_back(vPoints[i]*fraction+vTargetCenter,PointTypeEnum::Air);},
+                        []{return SDK::StdRandomFloat();});
 				}
 				return searchMode == Vars::Aimbot::Projectile::SplashModeEnum::Face && i || !trace.DidHit();
 			};
@@ -949,7 +1304,7 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 
 	// Face
 	if (float flDensity = !m_tInfo.m_flGravity ? Vars::Aimbot::Projectile::SplashDensityDirect.Value : Vars::Aimbot::Projectile::SplashDensityArc.Value;
-		searchMode == Vars::Aimbot::Projectile::SplashModeEnum::Face && flDensity && SearchAllowed(SearchWork::Sampling))
+		surfaceSplash && searchMode == Vars::Aimbot::Projectile::SplashModeEnum::Face && flDensity && SearchAllowed(SearchWork::Sampling))
 	{
 		Vec3 vMins = vTargetCenter - flRadius, vMaxs = vTargetCenter + flRadius;
 
@@ -991,24 +1346,39 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
         key.localEye=m_tInfo.m_vLocalEye; key.hull=m_tInfo.m_vHull;
         key.radius=flRadius; key.density=flDensity;
         key.cutoffSetting=Vars::Aimbot::Projectile::SplashSamplesCutoff.Value;
+        key.speed=m_tInfo.m_flVelocity; key.gravity=m_tInfo.m_flGravity;
+        key.offsetTime=m_tInfo.m_flOffsetTime; key.launchOffset=m_tInfo.m_vOffset;
+        key.angleFix=m_tInfo.m_vAngFix; key.physics=F::ProjSim.m_bPhysics;
+        key.drag=GetDrag(key.speed,F::ProjSim.m_pCurrent,iFlags);
+        key.timeScale=Vars::Aimbot::Projectile::TimeOverride.Value;
         key.created=std::chrono::steady_clock::now();
         std::unique_ptr<FaceResult> prepared;
-        // The first rollout covers the already-budgeted ordinary rocket path.
-        // Charged, physics and reflected projectiles keep synchronous sampling.
-        const bool threaded=ProjectilePerformancePolicy::currentSearchBudget && !m_tInfo.m_pProjectile && !m_tInfo.m_flGravity
-            && (m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER || m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT)
-            && m_tInfo.m_pWeapon->m_iItemDefinitionIndex()!=Soldier_m_TheBeggarsBazooka;
+        // Sampling only reads owned geometry/scalars, including for gravity,
+        // charged and physics launches. Launch-dependent filtering stays live;
+        // exact launch-key matching rejects a result when the charge changes.
+        // Reflected projectiles retain their existing synchronous path.
+        const bool threaded=!m_tInfo.m_pProjectile && std::isfinite(key.speed) && key.speed>0.f
+            && std::isfinite(key.gravity) && key.gravity>=0.f;
         if(threaded)
         {
             prepared=SplashWorker::worker.Take([&](const FaceResult& result){return result.key.Matches(key);});
+            if(prepared && !prepared->Usable(ProjectilePerformancePolicy::currentSearchBudget!=nullptr))
+                prepared.reset(); // Run the original full synchronous sampler below.
             size_t vertices=0;
             for(const auto& face:vFaces) vertices+=face.m_vVertices.size();
-            if(vFaces.size()<=2048 && vertices<=16384 && SearchAllowed(SearchWork::Sampling) && SplashWorker::worker.Available())
+            const bool freshCommand=!SplashWorker::submittedOnce || SplashWorker::submittedEpoch!=key.epoch
+                || SplashWorker::submittedCommand!=key.command;
+            if(freshCommand && !vFaces.empty() && vFaces.size()<=2048 && vertices<=16384
+                && SearchAllowed(SearchWork::Sampling) && SplashWorker::worker.Available())
             {
                 auto job=std::make_unique<FaceJob>();
                 job->key=key; job->faces=vFaces; job->seed=uint32_t(SDK::StdRandomInt(0,INT_MAX));
-                if(SplashWorker::worker.Submit(std::move(job)) && ProjectileDiagnostics::current)
-                    ++ProjectileDiagnostics::splash.workerSubmitted;
+                if(SplashWorker::worker.Submit(std::move(job)))
+                {
+                    SplashWorker::submittedOnce=true; SplashWorker::submittedEpoch=key.epoch;
+                    SplashWorker::submittedCommand=key.command;
+                    if(ProjectileDiagnostics::current) ++ProjectileDiagnostics::splash.workerSubmitted;
+                }
             }
         }
         const size_t before=vSplashPoints.size();
@@ -1155,7 +1525,7 @@ void CAimbotProjectile::GetSplashPoints(Vec3 vOrigin, std::vector<Setup_t>& vSpl
 			}
 			continue;
 		}
-		else if (tPoint.m_iType == PointTypeEnum::Air && tPoint.m_tSolution.m_flTime < TICKS_TO_TIME(m_tInfo.m_iArmTime))
+		else if (tPoint.m_iType == PointTypeEnum::Air && !ProjectilePointPolicy::AirReady(tPoint.m_tSolution.m_flTime,m_tInfo.m_flAirArmTime))
 			continue;
 
         // An angle that cannot be used must not occupy the bounded shortlist.
@@ -1395,6 +1765,7 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 	}
 
 	int iSimFlags = (iFlags & CalculateFlagsEnum::SetupClip ? ProjSimEnum::Redirect : ProjSimEnum::None) | ProjSimEnum::NoRandomAngles | ProjSimEnum::PredictCmdNum;
+    if (m_bLegitGuide) iSimFlags |= ProjSimEnum::DiagnosticDeterministic;
 #ifdef SPLASH_DEBUG5
 	if (iSimFlags & ProjSimEnum::Redirect)
 	{
@@ -1585,6 +1956,11 @@ static bool WouldSplashLocal(CTFPlayer* local, CTFWeaponBase* weapon, const Vec3
     // Never assume future movement alone will rescue a face-range shot.
     float damage=std::max(SelfDamage::Estimate(local,weapon,impact,origin,radius,diagnosticPriority),
         SelfDamage::Estimate(local,weapon,impact,predicted,radius,diagnosticPriority));
+    // Beyond the bounded local projection, future input/impulses are unknown.
+    // Retain the configured damage threshold, but never report stationary safety.
+    // The full possible local volume includes the blast unless proven otherwise.
+    if(!usableHorizon)
+        damage=std::max(damage,SelfDamage::Estimate(local,weapon,impact,impact,radius,diagnosticPriority));
     const bool blocked=SelfDamage::Block(local,damage);
     if(SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("splash_decision",std::format("final_guard={} blocked={} damage={} protection={} hp={} maxhp={} flight={} projection_valid={} current={},{},{} predicted={},{},{}",diagnosticPriority,blocked,damage,Vars::Aimbot::Projectile::SelfDamageProtection.Value,local->m_iHealth(),local->GetMaxHealth(),flightTime,usableHorizon,origin.x,origin.y,origin.z,predicted.x,predicted.y,predicted.z),!diagnosticPriority);
     return blocked;
@@ -1643,6 +2019,7 @@ static bool OutgoingWallBlocked(CTFPlayer* local,CTFWeaponBase* weapon,const Vec
 
 bool CAimbotProjectile::ManageViewmodel(CTFPlayer* local,CTFWeaponBase* weapon,CUserCmd* cmd,bool noTargets)
 {
+    if(NeuralMovement::ForceEnabled()&&G::PrimaryWeaponType==EWeaponType::PROJECTILE)return false;
     if(!local || !weapon || !local->IsAlive() || local->IsAGhost()
         || local->IsTaunting() || cmd->weaponselect || I::EngineVGui->IsGameUIVisible()) return false;
     // Once a hitscan switch has taken effect, no projectile-side clearance is needed.
@@ -1731,7 +2108,7 @@ bool CAimbotProjectile::ManageViewmodel(CTFPlayer* local,CTFWeaponBase* weapon,C
 
 bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int iSimTime, uint8_t iType, uint8_t iFlags, bool bSecondTest)
 {
-    // Once started, a candidate runs its complete collision/safety checks.
+    // A candidate may be interrupted only at a safe boundary and is then rejected.
     if (!SearchStep(SearchWork::Validation)) return false;
     ProjectileDiagnostics::Add(ProjectileDiagnostics::Tests);
     if(iSimTime<=0) ProjectileDiagnostics::Add(ProjectileDiagnostics::NoTicks);
@@ -1744,6 +2121,7 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 	auto& tTarget = *m_tInfo.m_pTarget;
 
 	int iSimFlags = ProjSimEnum::Redirect | ProjSimEnum::InitCheck | ProjSimEnum::PredictCmdNum | (Vars::Aimbot::General::NoSpread.Value ? ProjSimEnum::CorrectRandomAngles : ProjSimEnum::NoRandomAngles);
+    if (m_bLegitGuide) iSimFlags |= ProjSimEnum::DiagnosticDeterministic;
     auto* capture=ProjectileDiagnostics::current;
     const int grenadeTest=capture && pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER ? ++capture->grenades[m_bPreviewOnly?1:0] : 0;
     const bool logGrenade=grenadeTest>0 && grenadeTest<=(m_bPreviewOnly?2:6);
@@ -1796,11 +2174,14 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
         if(logGrenade) ProjectileDiagnostics::Ledge("grenade_setup_failed",std::format("test={} entity={} type={} flags={} expected_ticks={}",grenadeTest,tTarget.m_pEntity->entindex(),iType,iFlags,iSimTime));
 		return false;
 	}
-    // A projectile cannot safely spawn through a wall, independently of splash
-    // self-damage protection. Let the caller try another point/target/side.
+    // Native arrows spawn at the offset muzzle without sweeping from the eye.
+    // Thin cover behind a clear muzzle must not reject a valid forward shot.
+    // Still require the complete arrow hull to fit there; forward collision is
+    // validated below. Other projectile spawn guards retain their behavior.
     CTraceFilterWorldAndPropsOnly muzzleFilter={}; muzzleFilter.pSkip=pLocal;
     CGameTrace muzzleTrace={};
-    SDK::TraceHull(pLocal->GetShootPos(),m_tProjInfo.m_vPos,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull,MASK_SOLID,&muzzleFilter,&muzzleTrace);
+    const Vec3 muzzleStart=reviewWeapon==TF_WEAPON_COMPOUND_BOW?m_tProjInfo.m_vPos:pLocal->GetShootPos();
+    SDK::TraceHull(muzzleStart,m_tProjInfo.m_vPos,-m_tProjInfo.m_vHull,m_tProjInfo.m_vHull,MASK_SOLID,&muzzleFilter,&muzzleTrace);
     if(muzzleTrace.startsolid || muzzleTrace.allsolid || muzzleTrace.fraction<1.f)
     {
         m_bWorldBlocked=true;
@@ -1935,6 +2316,14 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
     };
 	for (int n = 1; n <= iSimTime; n++)
 	{
+        if (!SearchStep(SearchWork::Flight))
+        {
+            // bDidHit is set only after collision, head and safety validation.
+            // Subsequent ticks extend the drawing path; a cosmetic tail must
+            // not revoke the accepted shot. Pre-hit interruptions still fail.
+            if (!bDidHit) grenadeReason="search_budget_limited";
+            break; // common exit restores the temporarily moved target
+        }
         grenadeSteps=n;
 		F::ProjSim.RunTick(m_tProjInfo);
 
@@ -2028,7 +2417,7 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 		case PointTypeEnum::Geometry:
 			bHit = trace.DidHit(); break;
 		case PointTypeEnum::Air:
-			bHit = trace.endpos.DistToSqr(vPoint) < flRadiusSqr || trace.DidHit(); break;
+			bHit = (ProjectilePointPolicy::AirReady(TICKS_TO_TIME(n),m_tInfo.m_flAirArmTime) && trace.endpos.DistToSqr(vPoint) < flRadiusSqr) || trace.DidHit(); break;
 		}
 
 		if (bHit)
@@ -2102,6 +2491,7 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 
 				for (int i = 1; i < iTicks; i++)
 				{
+                    if (!SearchStep(SearchWork::Flight)) {bValid=false;grenadeReason="search_budget_limited";break;}
 					vOld = m_tProjInfo.m_vPath[i - 1], vNew = m_tProjInfo.m_vPath[i];
 					SDK::TraceHull(vOld, vNew, -m_tProjInfo.m_vHull, m_tProjInfo.m_vHull, nMask, &filter, &trace2);
                     mergePredictedTarget(vOld,vNew,trace2,i,true);
@@ -2138,7 +2528,8 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
                 const bool logHead=reviewWeapon==TF_WEAPON_COMPOUND_BOW && capture && capture->headReviews<3;
 				if (tTarget.m_nAimedHitbox == HITBOX_HEAD && !bSecondTest && (headGate || logHead))
 				{	// loop and see if closest hitbox is head
-					auto aBones = F::Backtrack.GetBones(tTarget.m_pEntity);
+					auto pose = ProjectileHeadRecord(tTarget.m_pEntity);
+					auto aBones = pose?pose->m_aBones:nullptr;
 					auto pSet = tTarget.m_pEntity->As<CTFPlayer>()->GetHitboxSet();
                     if(!aBones || !pSet) {
                         if(logHead) { ++capture->headReviews; ProjectileDiagnostics::Ledge("huntsman_head_check",std::format("target={} available=false gate={} reason=missing_bones_or_hitboxes",tTarget.m_pEntity->entindex(),headGate)); }
@@ -2146,7 +2537,7 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
                     }
                     else {
 
-					Vec3 vOffset = tOriginal.m_vOrigin - tTarget.m_vPos;
+					Vec3 vOffset = pose->m_vOrigin - tTarget.m_vPos;
 					Vec3 vPos = trace.endpos + F::ProjSim.GetVelocity().Normalized() * 16 + vOffset;
 
 					float flLowestDistance = std::numeric_limits<float>::max(); int iClosest = -1;
@@ -2154,7 +2545,7 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 					for (int nHitbox = 0; nHitbox < pSet->numhitboxes; ++nHitbox)
 					{
 						auto pBox = pSet->pHitbox(nHitbox);
-						if (!pBox) continue;
+						if (!pBox || pBox->bone<0 || pBox->bone>=MAXSTUDIOBONES) continue;
 
                         Vec3 boneOrigin; Math::VectorTransform({},aBones[pBox->bone],boneOrigin);
                         const float boneDistance=vPos.DistToSqr(boneOrigin);
@@ -2261,6 +2652,7 @@ bool CAimbotProjectile::CandidateAngleAllowed(const Vec3& angle,const Vec3& poin
 {
     if(m_tInfo.m_pProjectile) return true; // Do not change auto-airblast behavior.
     if(!std::isfinite(angle.x)||!std::isfinite(angle.y)||!std::isfinite(angle.z)) return false;
+    if(m_bLegitGuide) return true; // Target is in the cone; gravity compensation need not be.
     if(F::AimbotGlobal.ShouldAimAtAngle(angle)) return true;
     if(SmoothAim::VisibleGuidance())return false; // no adaptive exception to the visible guidance cone
     if(!m_bAdaptivePass || m_tInfo.m_pProjectile) return false;
@@ -2274,7 +2666,7 @@ bool CAimbotProjectile::CandidateAngleAllowed(const Vec3& angle,const Vec3& poin
     return std::string_view(reason)=="close_range_exception";
 }
 
-bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flPitch, float flYaw, float flTime, const Vec3& vPoint, uint8_t iType, uint8_t iFlags)
+bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flPitch, float flYaw, float flTime, const Vec3& vPoint, uint8_t iType, uint8_t iFlags, bool learned)
 {
 	bool bReturn = false;
     auto* arcCapture=ProjectileDiagnostics::current;
@@ -2284,6 +2676,7 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
 	if(!m_tInfo.m_pProjectile&&SmoothAim::VisibleGuidance()
 		&&!CandidateAngleAllowed({flPitch,flYaw,0.f},vPoint,vOrigin))return false;
 	Vec3 vAngles; Aim(G::CurrentUserCmd->viewangles, { flPitch, flYaw, 0.f }, vAngles);
+    if(m_ImpactFixedAngle)vAngles=*m_ImpactFixedAngle;
     if(auto* capture=ProjectileDiagnostics::current;capture && !m_tInfo.m_pProjectile && m_tInfo.m_pWeapon->GetWeaponID()==TF_WEAPON_GRENADELAUNCHER && capture->points[m_bPreviewOnly?1:0]++<(m_bPreviewOnly?2:6))
         ProjectileDiagnostics::Ledge("grenade_candidate",std::format("entity={} type={} flags={} flight={} sim_ticks={} latency={} calculated_angle={},{} applied_angle={},{},{} point={},{},{} predicted_target={},{},{}",m_tInfo.m_pTarget->m_pEntity->entindex(),iType,iFlags,flTime,iSimTime,m_tInfo.m_flLatency,flPitch,flYaw,vAngles.x,vAngles.y,vAngles.z,vPoint.x,vPoint.y,vPoint.z,vOrigin.x,vOrigin.y,vOrigin.z));
     // Reject this candidate before it can replace the chosen solution or stop
@@ -2315,7 +2708,7 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
 		bReturn = m_iResult = true;
 		m_flTimeTo = flTime + m_tInfo.m_flLatency;
 	}
-	else if (!m_iResult && !m_tInfo.m_pProjectile)
+	else if (!m_iResult && !m_tInfo.m_pProjectile && !m_ImpactFixedAngle)
 	{
 		switch (Vars::Aimbot::General::AimType.Value)
 		{
@@ -2333,6 +2726,8 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
 	}
 
     if (arcLog) ProjectileDiagnostics::Ledge("arc_result",std::format("target={} result={} flight={} trace_interval={} lifetime={}",m_tInfo.m_pTarget->m_pEntity->entindex(),bReturn?m_iResult:0,flTime,ArcPolicy::TraceInterval(Vars::Aimbot::Projectile::LobTraceInterval.Value,m_tProjInfo.m_flGravity,TICK_INTERVAL),m_tProjInfo.m_flLifetime));
+	if (bReturn && !m_bUpdate && BowChargePlan::trial)
+		m_vAngleTo=vAngles,m_vTarget=vPoint,m_vPredicted=vOrigin;
 	if (bReturn && m_bUpdate)
 	{
         if(!m_bPreviewOnly) m_iObservationEntity=-1; // Splash or a later candidate must not reuse a direct sample.
@@ -2359,7 +2754,19 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
                 vOrigin.x,vOrigin.y,vOrigin.z,actual.DistTo(vOrigin),velocity.x,velocity.y,velocity.z,direct.x,direct.y,
                 vAngles.x,vAngles.y,std::remainder(vAngles.y-direct.y,360.f)));
         }
+        m_bNeuralSelected=learned;
 		m_vPlayerPath.clear(), m_vProjectilePath = m_tProjInfo.m_vPath;
+        if(m_bNeuralForced)
+        {
+            // This path was sampled directly from the network model; there is
+            // no engine target-movement path to borrow or silently substitute.
+            size_t count=0;
+            while(count<m_vNeuralPath.size()&&count<m_vNeuralFlightTicks.size()&&m_vNeuralFlightTicks[count]<=iOriginalSimTime)++count;
+            m_vPlayerPath.assign(m_vNeuralPath.begin(),m_vNeuralPath.begin()+count);
+            m_vPredicted=vOrigin;
+            if(!m_vPlayerPath.empty())m_vPlayerPath.back()=vOrigin;
+            return bReturn && m_iResult==1;
+        }
 		if (m_tMoveStorage.m_vPath.empty())
 			return true;
 
@@ -2372,7 +2779,7 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
 		{
 			size_t iCount = std::min(m_tProjInfo.m_vPath.size() + TIME_TO_TICKS(m_tInfo.m_flLatency), m_tMoveStorage.m_vPath.size());
 			m_vPlayerPath.insert(m_vPlayerPath.end(), m_tMoveStorage.m_vPath.begin(), m_tMoveStorage.m_vPath.begin() + iCount);
-			m_vPredicted = m_vPlayerPath.back();
+            m_vPredicted = m_vPlayerPath.back();
 		}
 	}
 
@@ -2465,17 +2872,33 @@ bool CAimbotProjectile::HandleDirect(DirectHistory_t& mDirectHistory, size_t* di
 				tHistory.m_iPriority = COORD_EXTENT - tHistory.m_vPoint.z;
 		}
 	}
+    if (m_bNeuralForced)
+    {
+        // Learned paths retain later crossings. Try the best arrival-time match
+        // within each point priority before spending flight traces on late poses.
+        // Keep every candidate and the existing collision/timing acceptance gates.
+        std::stable_sort(vDirectHistory.begin(), vDirectHistory.end(), [&](const Direct_t& a, const Direct_t& b) -> bool
+        {
+            if (a.m_iPriority != b.m_iPriority) return a.m_iPriority < b.m_iPriority;
+            const float aError = std::fabs(std::ceil(a.m_flTime / TICK_INTERVAL) - a.m_iSimtime);
+            const float bError = std::fabs(std::ceil(b.m_flTime / TICK_INTERVAL) - b.m_iSimtime);
+            return aError != bError ? aError < bError : a.m_flTime < b.m_flTime;
+        });
+    }
+    else
+    {
 	std::sort(vDirectHistory.begin(), vDirectHistory.end(), [&](const Direct_t& a, const Direct_t& b) -> bool
 	{
 		return a.m_iPriority!=b.m_iPriority ? a.m_iPriority<b.m_iPriority : a.m_flTime<b.m_flTime;
 	});
+    }
 	m_flTimeTo = vDirectHistory.front().m_flTime + m_tInfo.m_flLatency;
 
 	for (auto& tHistory : vDirectHistory)
 	{
 		if (!SearchAllowed()) break;
 		if (diagnosticTests) ++*diagnosticTests;
-		if (HandlePoint(tHistory.m_vOrigin, tHistory.m_iSimtime, tHistory.m_flPitch, tHistory.m_flYaw, tHistory.m_flTime, tHistory.m_vPoint, PointTypeEnum::Direct, iType))
+		if (HandlePoint(tHistory.m_vOrigin, tHistory.m_iSimtime, tHistory.m_flPitch, tHistory.m_flYaw, tHistory.m_flTime, tHistory.m_vPoint, PointTypeEnum::Direct, iType, tHistory.m_bNeural))
 		{
             if(!m_bPreviewOnly && m_iResult==1 && !m_tMoveStorage.m_bFailed) {
                 m_flObservationTime=tHistory.m_flObservationTime;
@@ -2586,7 +3009,7 @@ bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
 
                 ProjectileDiagnostics::Profile validation(ProjectileDiagnostics::SplashValidation);
                 if (ProjectileDiagnostics::current) ++ProjectileDiagnostics::splash.validations;
-				if (HandlePoint(tHistory.m_vOrigin, tHistory.m_iSimtime, tPoint.m_tSolution.m_flPitch, tPoint.m_tSolution.m_flYaw, tPoint.m_tSolution.m_flTime, tPoint.m_vPoint, tPoint.m_iType, iType))
+				if (HandlePoint(tHistory.m_vOrigin, tHistory.m_iSimtime, tPoint.m_tSolution.m_flPitch, tPoint.m_tSolution.m_flYaw, tPoint.m_tSolution.m_flTime, tPoint.m_vPoint, tPoint.m_iType, iType, tHistory.m_bNeural))
 				{
 					bReturn = !dynamic || m_iResult==1;
 					if(!dynamic || m_iResult==1) flLowestDistance = flDistance;
@@ -2623,6 +3046,283 @@ bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
 
 int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate)
 {
+    m_bImpactConsidered=false; // read by the bow probe; never reuse another target's value
+    struct ModeScope {int old=learnedSplashMode;~ModeScope(){learnedSplashMode=old;}} modeScope;
+    const bool automatic=Vars::Aimbot::Projectile::SplashPrediction.Value==Vars::Aimbot::Projectile::SplashPredictionEnum::Learned;
+    learnedSplashMode=automatic&&tTarget.m_iTargetType==TargetEnum::Player?NeuralMovement::LearnedSplash(tTarget.m_pEntity->As<CTFPlayer>(),pWeapon):1;
+    const auto original=tTarget;
+    int result=CanHitSelected(tTarget,pLocal,pWeapon,bUpdate);
+    if(automatic&&learnedSplashMode==3&&result!=1&&SearchAllowed(SearchWork::Prediction)){
+        learnedSplashMode=2;tTarget=original;result=CanHitSelected(tTarget,pLocal,pWeapon,bUpdate);
+    }
+    if(result==1)m_tInfo.m_iSelectedSplash=EffectiveSplash(m_tInfo);
+    return result;
+}
+
+int CAimbotProjectile::CanHitSelected(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate)
+{
+    // Saved per-player overrides (Force neural, fallback) are unknown until the
+    // learning database has loaded. Only wait for them when neural aiming is
+    // on; with it Off, players are aimed at with ordinary prediction.
+    if(tTarget.m_iTargetType==TargetEnum::Player&&NeuralMovement::AimingEnabled()&&!NeuralMovement::PoliciesReady()){m_iResult=0;m_bNeuralSelected=false;return 0;}
+    const bool richAuto=Vars::NeuralMovement::Use.Value&&bUpdate&&!m_bPreviewOnly&&!m_bLegitGuide&&!F::Aimbot.m_bRunningSecondary&&NeuralMovement::SupportsProjectile(pWeapon);
+    if(tTarget.m_iTargetType==TargetEnum::Player&&(NeuralMovement::TargetForced(tTarget.m_pEntity->As<CTFPlayer>())||richAuto)){
+        if(!NeuralMovement::TargetFallback(tTarget.m_pEntity->As<CTFPlayer>()))return CanHitForced(tTarget,pLocal,pWeapon,bUpdate);
+        // Preserve a complete ordinary solution before optional neural work.
+        const auto original=tTarget;const int baselineResult=CanHitOrdinary(tTarget,pLocal,pWeapon,bUpdate);
+        if(m_bImpactConsidered)return baselineResult;
+        // Auto: a valid ordinary shot is kept; the learned trial only runs when
+        // the ordinary solve found nothing. A forced player with fallback still
+        // prefers the learned shot and uses the ordinary one only as fallback.
+        if(baselineResult==1&&!NeuralMovement::TargetForced(tTarget.m_pEntity->As<CTFPlayer>())){NeuralMovement::OrdinaryKept();return baselineResult;}
+        const auto savedTarget=tTarget;const auto vectors=std::array{m_vAngleTo,m_vPredicted,m_vTarget};
+        const auto playerPath=m_vPlayerPath,projectilePath=m_vProjectilePath;const auto boxes=m_vBoxes;
+        const auto info=m_tInfo;const auto proj=m_tProjInfo;const auto time=m_flTimeTo;const bool world=m_bWorldBlocked;
+        const auto observation=std::tuple{m_flObservationFlight,m_flObservationTime,m_bObservationGround,m_bObservationStartGround,m_nObservationHandle,m_iObservationEntity};
+        tTarget=original;int trial=0;
+        {ProjectilePerformancePolicy::TracePhaseScope boundedTrial;trial=CanHitForced(tTarget,pLocal,pWeapon,bUpdate);}
+        if(trial==1)return trial;
+        tTarget=savedTarget;m_vAngleTo=vectors[0];m_vPredicted=vectors[1];m_vTarget=vectors[2];
+        m_vPlayerPath=playerPath;m_vProjectilePath=projectilePath;m_vBoxes=boxes;m_tInfo=info;m_tProjInfo=proj;m_flTimeTo=time;m_bWorldBlocked=world;m_iResult=baselineResult;m_bNeuralSelected=false;
+        std::tie(m_flObservationFlight,m_flObservationTime,m_bObservationGround,m_bObservationStartGround,m_nObservationHandle,m_iObservationEntity)=observation;
+        NeuralMovement::FallbackResult(baselineResult==1);return baselineResult;
+    }
+    // Global Force with a non-player target: unchanged, no automated solution.
+    if(NeuralMovement::ForceEnabled())return CanHitForced(tTarget,pLocal,pWeapon,bUpdate);
+    // Neither forced nor Auto-eligible: ordinary prediction only.
+    m_bNeuralSelected=false;
+    return CanHitOrdinary(tTarget,pLocal,pWeapon,bUpdate);
+}
+
+int CAimbotProjectile::CanHitForced(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate)
+{
+    AimObserver::Capture observer(tTarget.m_iTargetType==TargetEnum::Player?tTarget.m_pEntity->As<CTFPlayer>():nullptr,pWeapon,bUpdate&&!m_bPreviewOnly&&!m_bLegitGuide&&!F::Aimbot.m_bRunningSecondary,false);
+    ProjectilePerformancePolicy::SearchScope commandBudget(m_SearchBudget,G::CurrentUserCmd?G::CurrentUserCmd->command_number:G::OriginalCmd.command_number,true);
+    const auto original=tTarget;
+    m_iResult=0;m_bNeuralSelected=false;m_bAdaptivePass=false;
+    m_iObservationEntity=-1;m_vPlayerPath.clear();m_vProjectilePath.clear();m_vNeuralPath.clear();m_vNeuralFlightTicks.clear();m_vBoxes.clear();
+    m_flTimeTo=std::numeric_limits<float>::max();
+    const auto reject=[&](const char* why){tTarget=original;m_iResult=0;m_bNeuralSelected=false;m_vPlayerPath.clear();m_vProjectilePath.clear();m_vBoxes.clear();NeuralMovement::ForcedResult(false,why);return 0;};
+    if(!bUpdate||m_bPreviewOnly||m_bLegitGuide||F::Aimbot.m_bRunningSecondary
+        ||tTarget.m_iTargetType!=TargetEnum::Player||!tTarget.m_pEntity||!pLocal||!pWeapon)
+        return reject("forced mode requires a primary player-target solve");
+    if(!NeuralMovement::SupportsProjectile(pWeapon))
+        return reject("weapon or launch state unsupported by forced neural mode");
+    const bool rocket=pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER||pWeapon->GetWeaponID()==TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT;
+    if(!SearchAllowed(SearchWork::Prediction))return reject("forced neural search budget exhausted");
+    auto neural=NeuralMovement::BeginForced(tTarget.m_pEntity->As<CTFPlayer>(),pWeapon);
+    if(!neural.valid)return reject(nullptr);
+    SmoothAim::CandidateScope smoothing(tTarget.m_pEntity,true);
+    struct ForcedScope{bool& value;bool previous;ForcedScope(bool& v):value(v),previous(v){value=true;}~ForcedScope(){value=previous;}} forced(m_bNeuralForced);
+    m_bSearchedThisCommand=true;m_bUpdate=true;
+    // Scratch is explicitly invalid: shared collision handlers may inspect it,
+    // but no target engine simulation, baseline, or native restore is performed.
+    m_tMoveStorage={};m_tMoveStorage.m_bFailed=true;
+    m_tProjInfo={};
+    if(!F::ProjSim.GetInfo(pLocal,pWeapon,{},m_tProjInfo,ProjSimEnum::NoRandomAngles|ProjSimEnum::PredictCmdNum)
+        ||!F::ProjSim.Initialize(m_tProjInfo,false))return reject("projectile setup failed");
+    m_tInfo={pLocal,pWeapon,&tTarget};
+    m_tInfo.m_vLocalEye=pLocal->GetShootPos();m_tInfo.m_vTargetEye=tTarget.m_pEntity->As<CTFPlayer>()->GetViewOffset();
+    const auto& anchor=neural.baseline.anchor.past[2];
+    m_tInfo.m_flLatency=F::Backtrack.ProjectileLead(float(anchor.time),float(anchor.time));
+    const Vec3 velocity=F::ProjSim.GetVelocity();m_tInfo.m_flVelocity=velocity.Length();
+    if(!std::isfinite(m_tInfo.m_flVelocity)||m_tInfo.m_flVelocity<=0.f
+        ||!std::isfinite(m_tInfo.m_flLatency)||m_tInfo.m_flLatency<0.f||m_tInfo.m_flLatency>=1.f)
+        return reject("invalid forced projectile timing");
+    m_tInfo.m_vAngFix=Math::VectorAngles(velocity);m_tInfo.m_vHull=m_tProjInfo.m_vHull.Min(3);
+    m_tInfo.m_vOffset=m_tProjInfo.m_vPos-m_tInfo.m_vLocalEye;m_tInfo.m_vOffset.y*=-1;
+    m_tInfo.m_flOffsetTime=m_tInfo.m_vOffset.Length()/m_tInfo.m_flVelocity;
+    m_tInfo.m_flGravity=m_tProjInfo.m_flGravity;
+    if(!std::isfinite(m_tInfo.m_flGravity)||m_tInfo.m_flGravity<0.f)return reject("invalid projectile gravity");
+    if(rocket&&(m_tInfo.m_flGravity||F::ProjSim.m_bPhysics))return reject("unsupported altered rocket physics");
+    const float launchLifetime=m_tProjInfo.m_flLifetime;
+    m_tInfo.m_iSplashRestrict=m_tInfo.m_flGravity?Vars::Aimbot::Projectile::SplashRestrictArc.Value:Vars::Aimbot::Projectile::SplashRestrictDirect.Value;
+    m_tInfo.m_flRadius=GetSplashRadius(pWeapon,pLocal,Vars::Aimbot::Projectile::SplashRadius.Value/100);
+    m_tInfo.m_flBoundsTime=tTarget.m_pEntity->GetSize().Length()/m_tInfo.m_flVelocity;
+    m_tInfo.m_flRadiusTime=m_tInfo.m_flBoundsTime+m_tInfo.m_flRadius/m_tInfo.m_flVelocity;
+    m_tInfo.m_iArmTime=TIME_TO_TICKS(ArmTime(pWeapon));
+    m_tInfo.m_flAirArmTime=PhysicalStickyArmTime(pWeapon);
+    m_tInfo.m_flNormalOffset=rocket||pWeapon->GetWeaponID()==TF_WEAPON_PARTICLE_CANNON?1.f:0.f;
+    m_tInfo.m_bIgnoreTiming=false;
+    std::array<size_t,movement::trajectory::Branches> branches{0,1,2,3};
+    if(neural.distribution.valid)std::stable_sort(branches.begin(),branches.end(),[&](size_t a,size_t b){return neural.distribution.branches[a].probability>neural.distribution.branches[b].probability;});
+    const auto frozen=neural;bool incomplete=false;
+    for(size_t attempt=0;attempt<(frozen.distribution.valid?branches.size():size_t(1));++attempt){
+    neural=frozen;neural.branch=branches[attempt];m_iResult=0;m_bNeuralSelected=false;m_vNeuralPath.clear();m_vNeuralFlightTicks.clear();
+    tTarget.m_vPos={anchor.position[0],anchor.position[1],anchor.position[2]};
+    auto directs=GetDirects();const auto order=FeetPointPolicy::GenerationOrder(directs);
+    auto splashes=GetSplashes();
+    DirectHistory_t directHistory;SplashHistory_t splashHistory;
+    if(!std::isfinite(TICK_INTERVAL)||TICK_INTERVAL<=0.f)return reject("invalid forced prediction interval");
+    // Native Source coordinate bounds give a geometric range bound. The former
+    // 60-second rocket value was a simulator default, not a native rocket TTL.
+    const float physicalLimit=32768.f*std::sqrt(3.f)/m_tInfo.m_flVelocity;
+    std::vector<int> schedule;
+    if(!rocket){
+        // Curves and drag do not obey the rocket reachability quadratic. Sample
+        // the covered prediction prefix and let the existing native-family
+        // angle/flight validators decide reachability, contact and splash.
+        const float coverage=neural.distribution.valid
+            ?movement::trajectory::CoveredHorizon(neural.distribution.branches[neural.branch],Vars::NeuralMovement::MinimumPathProbability.Value/100.f,Vars::NeuralMovement::MaximumPathUncertainty.Value):1.f;
+        const int ticks=movement::trajectory::FlightTicks(launchLifetime,Vars::Aimbot::Projectile::MaxSimulationTime.Value,m_tInfo.m_flLatency,coverage,TICK_INTERVAL);
+        for(int tick=1;tick<=ticks;++tick)schedule.push_back(tick);
+    }else if(neural.distribution.valid){
+        const auto&branch=neural.distribution.branches[neural.branch];
+        if(branch.probability<Vars::NeuralMovement::MinimumPathProbability.Value/100.f)continue;
+        // A possible launch position lies within the muzzle-offset sphere.
+        // Include all reachable ticks, even if only splash contact is possible.
+        auto roots=[&](Vec3 offset){
+            const float padding=m_tInfo.m_vOffset.Length()+tTarget.m_pEntity->GetSize().Length()+m_tInfo.m_flRadius+2*m_tInfo.m_flVelocity*TICK_INTERVAL;
+            const auto intervals=movement::trajectory::ReachableIntervals(branch,anchor.position,{m_tInfo.m_vLocalEye.x,m_tInfo.m_vLocalEye.y,m_tInfo.m_vLocalEye.z},{offset.x,offset.y,offset.z},m_tInfo.m_flVelocity,m_tInfo.m_flLatency,physicalLimit,padding);
+            for(auto interval:intervals){const int first=std::max(1,int(std::floor(interval[0]/TICK_INTERVAL))),last=int(std::ceil(interval[1]/TICK_INTERVAL));
+                for(int tick=first;tick<=last;++tick){if(schedule.size()>=16384){incomplete=true;return;}if(TICKS_TO_TIME(tick)<=physicalLimit)schedule.push_back(tick);}}
+        };
+        roots({});for(auto&entry:directs)roots(entry.second.m_vOffset);
+        std::sort(schedule.begin(),schedule.end());schedule.erase(std::unique(schedule.begin(),schedule.end()),schedule.end());
+    }else{const float horizon=std::min(1.f-m_tInfo.m_flLatency,physicalLimit);for(int i=1;i<=int(std::floor(horizon/TICK_INTERVAL));++i)schedule.push_back(i);}
+    for(int i:schedule)
+    {
+        if(!SearchStep(SearchWork::Prediction)){incomplete=true;break;}
+        const double time=anchor.time+double(m_tInfo.m_flLatency)+TICKS_TO_TIME(i);
+        movement::Vec point{};const auto previous=neural.last.position;
+        if(!NeuralMovement::ForcedPoint(neural,time,point,tTarget.m_pEntity->As<CTFPlayer>()))
+        {
+            if(neural.failed)break;
+            continue; // Unsupported horizon/model output is never replaced by ordinary motion.
+        }
+        tTarget.m_vPos={point[0],point[1],point[2]};m_vNeuralPath.push_back(tTarget.m_vPos);m_vNeuralFlightTicks.push_back(i);
+        for(const auto key:order)
+        {
+            auto it=directs.find(key);if(it==directs.end())continue;
+            auto& offset=it->second;
+            if(m_tInfo.m_iArmTime>i&&movement::Vec{point[0]-previous[0],point[1]-previous[1],point[2]-previous[2]}!=movement::Vec{})continue;
+            auto aimPoint=tTarget.m_vPos+offset.m_vOffset;
+            if(!rocket&&Vars::Aimbot::Projectile::HuntsmanPullPoint.Value&&tTarget.m_nAimedHitbox==HITBOX_HEAD){
+                aimPoint=PullPoint(aimPoint,m_tInfo.m_vLocalEye,m_tInfo,tTarget.m_vPos,tTarget.m_pEntity->m_vecMins()+m_tInfo.m_vHull,tTarget.m_pEntity->m_vecMaxs()-m_tInfo.m_vHull);
+                if(Vars::Aimbot::Projectile::HuntsmanPullNoZ.Value)aimPoint.z=tTarget.m_vPos.z+offset.m_vOffset.z;
+            }
+            for(uint8_t kind:{uint8_t(PointFlagsEnum::Regular),uint8_t(PointFlagsEnum::Lob)}){
+            if(!(offset.m_iFlags&kind)||(kind==PointFlagsEnum::Lob&&(rocket||!ShouldLob(m_tInfo))))continue;
+            const uint8_t flags=CalculateFlagsEnum::Accuracy|(kind==PointFlagsEnum::Lob?CalculateFlagsEnum::LobAngle:0);
+            Solution_t solution;CalculateAngle(m_tInfo.m_vLocalEye,aimPoint,i,solution,flags);
+            if(solution.m_iCalculated==CalculateResultEnum::Good)
+            {
+                directHistory[kind].emplace_back(History_t(tTarget.m_vPos,i),solution.m_flPitch,solution.m_flYaw,solution.m_flTime,aimPoint,key);
+                directHistory[kind].back().m_bNeural=true;
+            }
+            }
+            // Later reachable roots may remain valid after this point is occluded.
+        }
+        for(auto it=splashes.begin();it!=splashes.end();)
+        {
+            if(*it!=PointFlagsEnum::Regular&&(rocket||!ShouldLob(m_tInfo))){it=splashes.erase(it);continue;}
+            const uint8_t flags=CalculateFlagsEnum::AccountDrag|(*it==PointFlagsEnum::Lob?CalculateFlagsEnum::LobAngle:0);
+            Solution_t solution;CalculateAngle(m_tInfo.m_vLocalEye,tTarget.m_vPos,i,solution,flags);
+            if(solution.m_iCalculated==CalculateResultEnum::Bad){++it;continue;}
+            const float difference=solution.m_flTime-TICKS_TO_TIME(i);
+            if(difference < -m_tInfo.m_flRadiusTime&&(!m_tInfo.m_iArmTime||m_tInfo.m_iArmTime<i)){++it;continue;}
+            if(difference<=m_tInfo.m_flRadiusTime&&m_tInfo.m_iArmTime<=i)
+            {
+                splashHistory[*it].emplace_back(History_t(tTarget.m_vPos,i),std::fabs(difference));
+                splashHistory[*it].back().m_bNeural=true;
+            }
+            ++it;
+        }
+        if(directs.empty()&&splashes.empty())break;
+    }
+    if(neural.invalidated)return reject("target snapshot changed during solve");
+    if(m_vNeuralPath.empty())continue;
+    bool preferSplash=m_tInfo.m_flRadius&&EffectiveSplash(m_tInfo)>=Vars::Aimbot::Projectile::SplashPredictionEnum::Prefer;
+    while(!directHistory.empty()||!splashHistory.empty())
+    {
+        if(preferSplash&&!DirectHitProjectile(m_tInfo)&&HandleSplash(splashHistory))break;
+        if(HandleDirect(directHistory))break;
+        if(HandleSplash(splashHistory))break;
+    }
+    if(m_iResult==1&&m_bNeuralSelected)break;
+    if(!SearchAllowed(SearchWork::Prediction)){incomplete=true;break;}
+    }
+    if(incomplete&&m_iResult!=1)return reject("incomplete neural search: command budget exhausted");
+    if(m_iResult!=1||!m_bNeuralSelected||!CandidateAngleAllowed(m_vAngleTo,m_vTarget,m_vPredicted))
+        return reject("no collision-validated forced neural solution");
+    tTarget.m_vPos=m_vTarget;tTarget.m_vAngleTo=m_vAngleTo;
+    NeuralMovement::ForcedResult(true);return 1;
+}
+
+int CAimbotProjectile::CanHitOrdinary(Target_t& target,CTFPlayer* local,CTFWeaponBase* weapon,bool update)
+{
+    m_bImpactConsidered=false;m_flImpactReserve=0;
+    auto* player=target.m_iTargetType==TargetEnum::Player?target.m_pEntity->As<CTFPlayer>():nullptr;
+    if(!update||m_bPreviewOnly||m_bLegitGuide||F::Aimbot.m_bRunningSecondary||!KnockbackPrediction::Enabled(player))
+        return CanHitOrdinaryBase(target,local,weapon,update);
+    const float observed=F::EnginePrediction.m_bInPrediction&&local->GetPredDescMap()?F::EnginePrediction.m_flOldCurrentTime:I::GlobalVars->curtime;
+    KnockbackPrediction::Snapshot snapshot(player,observed);
+    if(!snapshot.complete){m_bImpactConsidered=true;m_iObservationEntity=-1;return m_iResult=0;}
+    if(!snapshot.count)return CanHitOrdinaryBase(target,local,weapon,update);
+    const auto original=target;
+    KnockbackPrediction::Pass ordinary(snapshot,false);
+    int result=0;
+    {MovementImpact::Scope scope(KnockbackPrediction::Pass::Tick,&ordinary,false,&KnockbackPrediction::Pass::Before);result=CanHitOrdinaryBase(target,local,weapon,update);}
+    if(!ordinary.evidence.complete||!snapshot.Current())
+    {m_bImpactConsidered=true;m_iObservationEntity=-1;return m_iResult=0;}
+    if(!ordinary.evidence.Affects(m_flTimeTo))return result;
+    m_bImpactConsidered=true; // Auto cannot overwrite impact context with an unaware model path.
+    if(!ordinary.evidence.complete||!snapshot.Current()||!SearchAllowed(SearchWork::Prediction))return m_iResult=0;
+    const auto savedTarget=target;const auto vectors=std::array{m_vAngleTo,m_vPredicted,m_vTarget};
+    const auto playerPath=m_vPlayerPath,projectilePath=m_vProjectilePath;const auto boxes=m_vBoxes;
+    const auto info=m_tInfo;const auto proj=m_tProjInfo;const auto time=m_flTimeTo;const bool world=m_bWorldBlocked;
+    const auto observation=std::tuple{m_flObservationFlight,m_flObservationTime,m_bObservationGround,m_bObservationStartGround,m_nObservationHandle,m_iObservationEntity};
+    const bool uncertain=!ordinary.evidence.High();
+    // Search an impact-adjusted candidate first. An uncertain source may alter
+    // the useful angle; publishing it still requires the exact same command to
+    // pass a fresh no-impact simulation below. No midpoint path is fabricated.
+    m_bImpactPass=true;
+    struct EndPass{CAimbotProjectile& self;~EndPass(){self.m_bImpactPass=false;self.m_ImpactFixedAngle.reset();}} end{*this};
+    target=original;m_vPlayerPath.clear();m_vProjectilePath.clear();m_vBoxes.clear();m_flTimeTo=std::numeric_limits<float>::max();
+    KnockbackPrediction::Pass impacted(snapshot,true);int trial=0;
+    {MovementImpact::Scope scope(KnockbackPrediction::Pass::Tick,&impacted,true,&KnockbackPrediction::Pass::Before);trial=CanHitOrdinaryBase(target,local,weapon,update);}
+    if(uncertain){
+        if(trial!=1||!impacted.evidence.complete||!snapshot.Current()||!SearchAllowed(SearchWork::Prediction)){m_iObservationEntity=-1;return m_iResult=0;}
+        const auto impactTarget=target;const auto impactVectors=std::array{m_vAngleTo,m_vPredicted,m_vTarget};
+        const auto impactPlayerPath=m_vPlayerPath,impactProjectilePath=m_vProjectilePath;const auto impactBoxes=m_vBoxes;
+        const auto impactInfo=m_tInfo;const auto impactProj=m_tProjInfo;const auto impactTime=m_flTimeTo;const bool impactWorld=m_bWorldBlocked;
+        const auto impactObservation=std::tuple{m_flObservationFlight,m_flObservationTime,m_bObservationGround,m_bObservationStartGround,m_nObservationHandle,m_iObservationEntity};
+        m_ImpactFixedAngle=m_vAngleTo;target=original;m_vPlayerPath.clear();m_vProjectilePath.clear();m_vBoxes.clear();m_flTimeTo=std::numeric_limits<float>::max();
+        KnockbackPrediction::Pass verifiedOrdinary(snapshot,false);int verified=0;
+        {MovementImpact::Scope scope(KnockbackPrediction::Pass::Tick,&verifiedOrdinary,true,&KnockbackPrediction::Pass::Before);verified=CanHitOrdinaryBase(target,local,weapon,update);}
+        if(verified!=1||!verifiedOrdinary.evidence.complete||!snapshot.Current()){m_iObservationEntity=-1;return m_iResult=0;}
+        if(impacted.cannonEncounter){
+            // IsDoubleDonk is server-only launcher history. Revalidate this same
+            // outgoing angle with its alternate native minicrit damage force.
+            // Evidence rejects multiple uncertain contacts rather than omitting
+            // mixed combinations of independent hidden histories.
+            if(!SearchAllowed(SearchWork::Prediction)){m_iObservationEntity=-1;return m_iResult=0;}
+            target=original;m_vPlayerPath.clear();m_vProjectilePath.clear();m_vBoxes.clear();m_flTimeTo=std::numeric_limits<float>::max();
+            KnockbackPrediction::Pass donk(snapshot,true,true);int verifiedDonk=0;
+            {MovementImpact::Scope scope(KnockbackPrediction::Pass::Tick,&donk,true,&KnockbackPrediction::Pass::Before);verifiedDonk=CanHitOrdinaryBase(target,local,weapon,update);}
+            if(verifiedDonk!=1||!donk.evidence.complete||!snapshot.Current()){m_iObservationEntity=-1;return m_iResult=0;}
+        }
+        // Restore only a candidate that passed both hypotheses. Uncertain pipes
+        // never reserve expected damage or suppress future ammunition.
+        target=impactTarget;m_vAngleTo=impactVectors[0];m_vPredicted=impactVectors[1];m_vTarget=impactVectors[2];
+        m_vPlayerPath=impactPlayerPath;m_vProjectilePath=impactProjectilePath;m_vBoxes=impactBoxes;m_tInfo=impactInfo;m_tProjInfo=impactProj;m_flTimeTo=impactTime;m_bWorldBlocked=impactWorld;m_iResult=trial;
+        std::tie(m_flObservationFlight,m_flObservationTime,m_bObservationGround,m_bObservationStartGround,m_nObservationHandle,m_iObservationEntity)=impactObservation;
+        m_flImpactReserve=0;return trial;
+    }
+    const auto choice=KnockbackPolicy::Select(result==1,trial==1&&snapshot.Current(),ordinary.evidence,impacted.evidence,time);
+    if(choice==KnockbackPolicy::Choice::Reject){m_iObservationEntity=-1;return m_iResult=0;}
+    // Only near-term robust impacts, recomputed after preceding impulses, can
+    // reserve damage. Miss/uncertain branches never reserve an expected kill.
+    m_flImpactReserve=choice==KnockbackPolicy::Choice::Impact?impacted.evidence.Reserve():0.f;
+    if(choice==KnockbackPolicy::Choice::Impact)return trial;
+    target=savedTarget;m_vAngleTo=vectors[0];m_vPredicted=vectors[1];m_vTarget=vectors[2];
+    m_vPlayerPath=playerPath;m_vProjectilePath=projectilePath;m_vBoxes=boxes;m_tInfo=info;m_tProjInfo=proj;m_flTimeTo=time;m_bWorldBlocked=world;m_iResult=result;
+    std::tie(m_flObservationFlight,m_flObservationTime,m_bObservationGround,m_bObservationStartGround,m_nObservationHandle,m_iObservationEntity)=observation;
+    return result;
+}
+
+int CAimbotProjectile::CanHitOrdinaryBase(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate)
+{
     SmoothAim::CandidateScope smoothing(tTarget.m_pEntity,true);
     if (!SearchAllowed(SearchWork::Prediction)) return 0;
     if(!m_bPreviewOnly) m_bSearchedThisCommand = true;
@@ -2635,7 +3335,39 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
     const int tick=I::GlobalVars->tickcount;
     m_bAdaptiveRetained=m_iAdaptiveEntity==tTarget.m_pEntity->entindex() && tick>=m_iAdaptiveTick && tick-m_iAdaptiveTick<=TIME_TO_TICKS(.25f);
     m_bAdaptivePass=false;
+    // Knockback impact/verification passes re-simulate the hypotheses the ordinary
+    // pass of this target used (one world per encounter); every other pass starts
+    // from the primary hypotheses. Always back to 0 on exit for other movesim users.
+    struct HypothesisReset {~HypothesisReset(){F::MoveSim.m_iReversalHypothesis=0;F::MoveSim.m_iLedgeHypothesis=0;}} hypothesisReset;
+    F::MoveSim.m_iReversalHypothesis=m_bImpactPass?F::MoveSim.m_iChosenReversal:0;F::MoveSim.m_bReversalPlanned=false;
+    F::MoveSim.m_iLedgeHypothesis=m_bImpactPass?F::MoveSim.m_iChosenLedge:0;F::MoveSim.m_bLedgeEncountered=false;
+    if(!m_bImpactPass){F::MoveSim.m_iChosenReversal=0;F::MoveSim.m_iChosenLedge=0;}
+    // Learned strafe timing is a projectile-aimbot feature; other movesim users keep the corridor model.
+    struct TimingScope {bool previous;TimingScope():previous(F::MoveSim.m_bAllowLearnedTiming){F::MoveSim.m_bAllowLearnedTiming=true;}~TimingScope(){F::MoveSim.m_bAllowLearnedTiming=previous;}} timing;
     int result=CanHitPass(tTarget,pLocal,pWeapon,bUpdate);
+    // Learned strafe timing: if the median reversal time gave no shot, try the
+    // later guess (the target holds the strafe longer) before any adaptive retry.
+    // Not inside knockback impact/verification passes: those must all use the same hypothesis.
+    if(!result && !m_bImpactPass && F::MoveSim.m_bReversalPlanned && F::MoveSim.m_flPlannedFirst<1e8f && tTarget.m_iTargetType==TargetEnum::Player && SearchAllowed(SearchWork::Prediction))
+    {
+        struct HypothesisScope {~HypothesisScope(){F::MoveSim.m_iReversalHypothesis=0;}} hypothesis;
+        tTarget=original;F::MoveSim.m_iReversalHypothesis=1;
+        ProjectileDiagnostics::Stage("learned_timing_second_guess");
+        result=CanHitPass(tTarget,pLocal,pWeapon,bUpdate);
+        if(result)F::MoveSim.m_iChosenReversal=1;
+    }
+    // Ledge: the primary pass simulates the hypothesis the received motion supports
+    // (hold at the edge only after an observed slowdown/turn). If it found no shot
+    // and the target actually reached a drop, try the other hypothesis once.
+    // Not inside knockback impact/verification passes (one hypothesis per encounter).
+    if(!result && !m_bImpactPass && F::MoveSim.m_bLedgeEncountered && tTarget.m_iTargetType==TargetEnum::Player && SearchAllowed(SearchWork::Prediction))
+    {
+        struct LedgeScope {~LedgeScope(){F::MoveSim.m_iLedgeHypothesis=0;}} ledge;
+        tTarget=original;F::MoveSim.m_iLedgeHypothesis=1;
+        ProjectileDiagnostics::Stage("ledge_second_guess");
+        result=CanHitPass(tTarget,pLocal,pWeapon,bUpdate);
+        if(result)F::MoveSim.m_iChosenLedge=1;
+    }
     if(result || !SearchAllowed(SearchWork::Prediction) || Vars::Aimbot::General::LeadAndRestrict.Value!=Vars::Aimbot::General::LeadAndRestrictEnum::Adaptive || tTarget.m_iTargetType!=TargetEnum::Player)
     {
         if(result) ProjectileDiagnostics::Stage(Vars::Aimbot::General::LeadAndRestrict.Value?"strict_solution":"unrestricted_solution",result);
@@ -2659,6 +3391,10 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 
 int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate)
 {
+    AimObserver::Capture observer(tTarget.m_iTargetType==TargetEnum::Player?tTarget.m_pEntity->As<CTFPlayer>():nullptr,pWeapon,bUpdate&&!m_bPreviewOnly&&!m_bLegitGuide&&!m_bImpactPass&&!F::Aimbot.m_bRunningSecondary);
+    // The legacy/sequence baseline is the primary hypothesis only (never the second timing guess).
+    auto neural=NeuralMovement::Begin(!BowChargePlan::trial&&!m_bImpactPass&&!F::MoveSim.m_iReversalHypothesis&&!F::MoveSim.m_iLedgeHypothesis&&tTarget.m_iTargetType==TargetEnum::Player?tTarget.m_pEntity->As<CTFPlayer>():nullptr,pWeapon);
+    struct NeuralCapture {NeuralMovement::Context& c;~NeuralCapture(){NeuralMovement::End(c);}} neuralCapture{neural};
     ProjectileDiagnostics::Candidate diagnostic(tTarget.m_pEntity,pLocal,pWeapon);
     diagnostic.preview=m_bPreviewOnly; diagnostic.adaptive=m_bAdaptivePass;
     if(ProjectileDiagnostics::current) {ProjectileDiagnostics::current->preview=m_bPreviewOnly;ProjectileDiagnostics::current->adaptive=m_bAdaptivePass;}
@@ -2670,15 +3406,17 @@ int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeapo
 	//	return false;
 
 	m_tMoveStorage = {};
-	if (!F::MoveSim.Initialize(tTarget.m_pEntity, m_tMoveStorage) && tTarget.m_iTargetType == TargetEnum::Player)
+	if (!F::MoveSim.Initialize(tTarget.m_pEntity, m_tMoveStorage, !m_bLegitGuide) && tTarget.m_iTargetType == TargetEnum::Player)
 	{
         diagnostic.reason="movement_setup_failed";
 		F::MoveSim.Restore(m_tMoveStorage);
 		return false;
 	}
+    // Movesim baselines/pairs must stay plain movesim: skip them when learned timing steered this pass.
+    if(m_tMoveStorage.m_bLearnedTiming)neural.valid=false;
 
 	m_tProjInfo = {};
-	if (!F::ProjSim.GetInfo(pLocal, pWeapon, {}, m_tProjInfo, ProjSimEnum::NoRandomAngles | ProjSimEnum::PredictCmdNum)
+	if (!F::ProjSim.GetInfo(pLocal, pWeapon, {}, m_tProjInfo, ProjSimEnum::NoRandomAngles | ProjSimEnum::PredictCmdNum | (m_bLegitGuide?ProjSimEnum::DiagnosticDeterministic:0))
 		|| !F::ProjSim.Initialize(m_tProjInfo, false))
 	{
         diagnostic.reason="projectile_setup_failed";
@@ -2687,10 +3425,11 @@ int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeapo
 	}
 
 	m_tInfo = { pLocal, pWeapon, &tTarget };
+	m_tInfo.m_bLegitGuide = m_bLegitGuide;
 	m_tInfo.m_vLocalEye = pLocal->GetShootPos();
 	m_tInfo.m_vTargetEye = tTarget.m_pEntity->As<CTFPlayer>()->GetViewOffset();
 	m_tInfo.m_flLatency = F::Backtrack.ProjectileLead(m_tMoveStorage.m_flSimTime,
-        m_tMoveStorage.m_pPlayer?m_tMoveStorage.m_pPlayer->m_flSimulationTime():0.f);
+        m_tMoveStorage.m_pPlayer?m_tMoveStorage.m_pPlayer->m_flSimulationTime():0.f)+BowChargePlan::Wait();
 	tTarget.m_vPos = tTarget.m_pEntity->m_vecOrigin();
 
 	Vec3 vVelocity = F::ProjSim.GetVelocity();
@@ -2713,6 +3452,7 @@ int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeapo
 	m_tInfo.m_flBoundsTime = tTarget.m_pEntity->GetSize().Length() / m_tInfo.m_flVelocity;
 	m_tInfo.m_flRadiusTime = m_tInfo.m_flBoundsTime + m_tInfo.m_flRadius / m_tInfo.m_flVelocity;
 	m_tInfo.m_iArmTime = TIME_TO_TICKS(ArmTime(pWeapon));
+    m_tInfo.m_flAirArmTime=PhysicalStickyArmTime(pWeapon);
 	switch (pWeapon->GetWeaponID())
 	{
 	case TF_WEAPON_ROCKETLAUNCHER:
@@ -2725,6 +3465,7 @@ int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeapo
 
 
 	Directs_t mDirects = GetDirects();
+    const auto directOrder=FeetPointPolicy::GenerationOrder(mDirects);
 	Splashes_t vSplashes = GetSplashes();
 
 	DirectHistory_t mDirectHistory = {};
@@ -2739,14 +3480,19 @@ int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeapo
 		if (!m_tMoveStorage.m_bFailed)
 		{
 			F::MoveSim.RunTick(m_tMoveStorage);
-			tTarget.m_vPos = m_tMoveStorage.m_MoveData.m_vecAbsOrigin;
+            tTarget.m_vPos = m_tMoveStorage.m_MoveData.m_vecAbsOrigin;
+            observer.Point(m_tMoveStorage.m_flSimTime,tTarget.m_vPos.x,tTarget.m_vPos.y,tTarget.m_vPos.z,!m_tMoveStorage.m_bFailed);
+            // Ordinary path is recorded as the legacy-learning baseline only.
+            NeuralMovement::RecordPoint(neural,m_tMoveStorage.m_flSimTime,{tTarget.m_vPos.x,tTarget.m_vPos.y,tTarget.m_vPos.z});
 		}
 		// A zero-tick solution consumed the point without ever running a collision trace.
 		if (!TargetPolicy::HasFlightTick(i))
 			continue;
 
-		for (auto it = mDirects.begin(); it != mDirects.end();)
+		for (const auto key : directOrder)
 		{
+            auto it=mDirects.find(key);
+            if(it==mDirects.end()) continue;
 			if (m_tInfo.m_iArmTime && m_tInfo.m_iArmTime > i && !m_tMoveStorage.m_MoveData.m_vecVelocity.IsZero())
 				break;
 
@@ -2793,11 +3539,10 @@ int CAimbotProjectile::CanHitPass(Target_t& tTarget, CTFPlayer* pLocal, CTFWeapo
 				tOffset.m_iFlags &= ~iType;
 				if (!(tOffset.m_iFlags /*& (PointFlagsEnum::Regular | PointFlagsEnum::Lob)*/))
 				{
-					it = mDirects.erase(it);
+					mDirects.erase(it);
 					continue;
 				}
 			}
-			++it;
 		}
 
 		for (auto it = vSplashes.begin(); it != vSplashes.end();)
@@ -2998,7 +3743,17 @@ void CAimbotProjectile::Aim(CUserCmd* pCmd, Vec3& vAngles, int iMethod)
 	}
 }
 
-static inline void CancelShot(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, int& iLastTickCancel)
+static CTFWeaponBase* ChargeCancelWeapon(CTFPlayer* local, CTFWeaponBase* weapon)
+{
+    for (int i=0;i<MAX_WEAPONS;++i)
+    {
+        auto* alternate=local->GetWeaponFromSlot(i);
+        if (alternate && alternate!=weapon && alternate->CanBeSelected()) return alternate;
+    }
+    return nullptr;
+}
+
+static inline bool CancelShot(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, int& iLastTickCancel)
 {
 	switch (pWeapon->GetWeaponID())
 	{
@@ -3006,23 +3761,76 @@ static inline void CancelShot(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 	{
 		pCmd->buttons |= IN_ATTACK2;
 		pCmd->buttons &= ~IN_ATTACK;
-		break;
+		return true;
 	}
 	case TF_WEAPON_CANNON:
 	case TF_WEAPON_PIPEBOMBLAUNCHER:
 	{
-		for (int i = 0; i < MAX_WEAPONS; i++)
+		if (auto* pSwap=ChargeCancelWeapon(pLocal,pWeapon))
 		{
-			auto pSwap = pLocal->GetWeaponFromSlot(i);
-			if (!pSwap || pSwap == pWeapon || !pSwap->CanBeSelected())
-				continue;
-
 			pCmd->weaponselect = pSwap->entindex();
 			iLastTickCancel = pWeapon->entindex();
-			break;
+			return true;
 		}
 	}
 	}
+	return false;
+}
+
+static bool NeuralChargeEnabled()
+{ return Vars::NeuralMovement::Use.Value || NeuralMovement::ForceEnabled() || NeuralMovement::HasIndividualForce(); }
+
+struct NeuralChargeState
+{
+    bool supported=false;
+    float begin=0, now=0, duration=0;
+};
+static NeuralChargeState GetNeuralChargeState(CTFWeaponBase* weapon)
+{
+    if (!weapon) return {};
+    if (weapon->GetWeaponID()==TF_WEAPON_PIPEBOMBLAUNCHER)
+        return {true,weapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),I::GlobalVars->curtime,
+            SDK::AttribHookValue(4.f,"stickybomb_charge_rate",weapon)};
+    if (weapon->GetWeaponID()==TF_WEAPON_CANNON)
+    {
+        const float duration=SDK::AttribHookValue(0.f,"grenade_launcher_mortar_mode",weapon);
+        // Use the positive native deadline as the charge token. Translating now
+        // by the duration makes Finish's expiry test exactly now+tick>=deadline.
+        return {std::isfinite(duration)&&duration>0.f,weapon->As<CTFGrenadeLauncher>()->m_flDetonateTime(),
+            I::GlobalVars->curtime+duration,duration};
+    }
+    return {};
+}
+static bool NeuralChargeActive(CTFPlayer* local)
+{
+    return NeuralChargeEnabled() && AimModes::Active!=AimModes::Legit && local->CanAttack()
+        && !I::EngineVGui->IsGameUIVisible() && !(G::OriginalCmd.buttons&IN_USE)
+        && Vars::Aimbot::General::AimType.Value
+        && (Vars::Aimbot::General::AutoShoot.Value || bool(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon));
+}
+static void ObserveNeuralCharge(BowReleasePolicy::Ownership& ownership,CTFPlayer* local,CTFWeaponBase* weapon,CUserCmd* cmd,const NeuralChargeState& state)
+{
+    ownership.Observe({uint32_t(local->GetRefEHandle().ToInt()),uint32_t(weapon->GetRefEHandle().ToInt()),
+        local->m_iSpawnCounter(),I::ClientState->m_nServerCount},cmd->command_number,local->IsAlive()&&!local->IsAGhost(),state.begin,
+        bool(G::OriginalCmd.buttons&IN_ATTACK),bool(G::OriginalCmd.buttons&IN_ATTACK2)||G::OriginalCmd.weaponselect!=0);
+}
+static void FinishNeuralCharge(BowReleasePolicy::Ownership& ownership,CTFPlayer* local,CTFWeaponBase* weapon,CUserCmd* cmd,
+    const NeuralChargeState& state,bool validated,bool afterSearch,int& lastCancel)
+{
+    const auto action=ownership.Finish(state.begin,state.now,state.duration,TICK_INTERVAL,NeuralChargeActive(local),
+        bool(G::OriginalCmd.buttons&IN_ATTACK),bool(G::OriginalCmd.buttons&IN_ATTACK2)||G::OriginalCmd.weaponselect!=0,
+        bool(cmd->buttons&IN_ATTACK),cmd->weaponselect!=0,validated,
+        afterSearch && bool(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::CancelCharge));
+    if (action==BowReleasePolicy::Action::Unchanged) return;
+    // A swap request can be deferred. Do not turn that request into an unaimed
+    // release; ownership stays pending until a native charge/weapon transition.
+    const bool cancel=action==BowReleasePolicy::Action::Cancel;
+    if (cancel && state.begin==0.f) cmd->buttons&=~IN_ATTACK;
+    else cmd->buttons|=IN_ATTACK;
+    const bool cancelled=!cancel || state.begin==0.f || CancelShot(local,weapon,cmd,lastCancel);
+    G::Attacking=0;F::Aimbot.m_bRan=false;
+    ProjectileDiagnostics::Stage(action==BowReleasePolicy::Action::Hold?"neural_charge_hold":
+        cancelled?"neural_charge_cancel":"neural_charge_cancel_unavailable");
 }
 
 static inline void DrawVisuals(int iResult, Target_t& tTarget, std::vector<Vec3>& vPlayerPath, std::vector<Vec3>& vProjectilePath, std::vector<DrawBox_t>& vBoxes)
@@ -3032,12 +3840,12 @@ static inline void DrawVisuals(int iResult, Target_t& tTarget, std::vector<Vec3>
 		if (G::Attacking == 1)
 		{
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount };
-			G::AimPoint = { tTarget.m_vPos, I::GlobalVars->tickcount };
+			G::AimPoint = ProjectileDisplay::Make(tTarget.m_vPos,tTarget.m_pEntity,H::Entities.GetLocal(),H::Entities.GetWeapon(),32,true,tTarget.m_vAngleTo);
 		}
 		else
 		{
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
-			G::AimPoint = { tTarget.m_vPos, I::GlobalVars->tickcount, 0 };
+			G::AimPoint = ProjectileDisplay::Make(tTarget.m_vPos,tTarget.m_pEntity,H::Entities.GetLocal(),H::Entities.GetWeapon(),0,false,tTarget.m_vAngleTo);
 		}
 	}
 
@@ -3073,13 +3881,41 @@ static inline void DrawVisuals(int iResult, Target_t& tTarget, std::vector<Vec3>
 				G::BoxStorage.insert(G::BoxStorage.end(), vBoxes.begin(), vBoxes.end());
 			if (bRealPath)
 				F::Aimbot.Store(tTarget.m_pEntity, vPlayerPath.size());
+            if(iResult==1) {
+                for(auto& path:G::PathStorage)path.m_iProjectileDisplaySerial=ProjectileDisplay::serial;
+                for(auto& box:G::BoxStorage)box.m_iProjectileDisplaySerial=ProjectileDisplay::serial;
+            }
 		}
 	}
 }
 
 bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
-	const int nWeaponID = pWeapon->GetWeaponID();
+    const int nWeaponID = pWeapon->GetWeaponID();
+    const bool bowAuto=nWeaponID==TF_WEAPON_COMPOUND_BOW&&!F::Aimbot.m_bRunningSecondary
+        &&!m_BowOwnership.manual&&!(G::OriginalCmd.buttons&(IN_ATTACK|IN_ATTACK2|IN_USE))&&!G::OriginalCmd.weaponselect
+        &&Vars::Aimbot::General::AimType.Value
+        &&(Vars::Aimbot::General::AutoShoot.Value||(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon));
+    if(bowAuto&&(m_BowOwnership.cancelPending||(m_BowPlan.valid&&pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime()==0.f&&I::GlobalVars->curtime>=m_BowPlan.deadline)))return false;
+    const auto bowIdentity=BowReleasePolicy::Identity{uint32_t(pLocal->GetRefEHandle().ToInt()),uint32_t(pWeapon->GetRefEHandle().ToInt()),pLocal->m_iSpawnCounter(),I::ClientState->m_nServerCount};
+    const int bowSettings=int(Vars::Aimbot::General::AutoShoot.Value)|(Vars::Aimbot::Projectile::Modifiers.Value<<1);
+
+    if(NeuralMovement::ForceEnabled()&&!NeuralMovement::SupportsProjectile(pWeapon))return false;
+    const auto neuralCharge=GetNeuralChargeState(pWeapon);
+    const bool protectedCharge=neuralCharge.supported && (NeuralChargeEnabled() || m_NeuralChargeOwnership.owned);
+    if (protectedCharge && m_NeuralChargeOwnership.cancelPending) return false;
+    if (protectedCharge && !(G::OriginalCmd.buttons&(IN_ATTACK|IN_ATTACK2)) && !G::OriginalCmd.weaponselect
+        && (!std::isfinite(neuralCharge.duration) || neuralCharge.duration<=0.f
+            || !std::isfinite(neuralCharge.begin) || neuralCharge.begin<0.f)) return false;
+    if (protectedCharge && !(G::OriginalCmd.buttons&(IN_ATTACK|IN_ATTACK2)) && !G::OriginalCmd.weaponselect
+        && (G::OriginalCmd.buttons&IN_USE)) return false;
+    // Do not start an automated release-to-fire charge with no cancellation
+    // actuator. Existing/manual charges remain owned by their original source.
+    if (protectedCharge && neuralCharge.begin==0.f && !(G::OriginalCmd.buttons&(IN_ATTACK|IN_ATTACK2))
+        && !G::OriginalCmd.weaponselect && !ChargeCancelWeapon(pLocal,pWeapon)) return false;
+    // Use suppresses bow automation. Maintenance explicitly cancels an owned
+    // charge first; merely dropping IN_ATTACK here would launch the arrow.
+    if (nWeaponID==TF_WEAPON_COMPOUND_BOW && (G::OriginalCmd.buttons&IN_USE)) return false;
 
 	static int iStaticAimType = Vars::Aimbot::General::AimType.Value;
 	const int iLastAimType = iStaticAimType;
@@ -3107,17 +3943,18 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
         return false;
     }
 
-	if (F::AimbotGlobal.ShouldHoldAttack(pWeapon))
+	if (nWeaponID!=TF_WEAPON_COMPOUND_BOW&&!NeuralMovement::ForceEnabled()&&F::AimbotGlobal.ShouldHoldAttack(pWeapon))
 		pCmd->buttons |= IN_ATTACK;
 	if (!Vars::Aimbot::General::AimType.Value
 		|| !F::AimbotGlobal.ShouldAim() && nWeaponID != TF_WEAPON_FLAMETHROWER)
 	{
+        AimObserver::Mark(!Vars::Aimbot::General::AimType.Value?AimObserver::Reason::AimInactive:AimObserver::Reason::WeaponNotReady);
         ProjectileDiagnostics::Stage("aim_gate");
 		return false;
 	}
 
 	if (Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon && iRealAimType
-		&& (nWeaponID == TF_WEAPON_COMPOUND_BOW || nWeaponID == TF_WEAPON_PIPEBOMBLAUNCHER || nWeaponID == TF_WEAPON_CANNON && G::LastUserCmd->buttons & IN_ATTACK))
+		&& (nWeaponID == TF_WEAPON_PIPEBOMBLAUNCHER || nWeaponID == TF_WEAPON_CANNON && G::LastUserCmd->buttons & IN_ATTACK))
 	{
 		pCmd->buttons |= IN_ATTACK;
 		if (!G::CanPrimaryAttack && !G::Reloading && Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Silent)
@@ -3126,8 +3963,9 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 
 	auto vTargets = F::AimbotGlobal.ManageTargets(GetTargets, pLocal, pWeapon);
     ProjectileDiagnostics::Stage("eligible_targets",int(vTargets.size()));
-	if (vTargets.empty())
-        return !F::Aimbot.m_bRunningSecondary && ManageViewmodel(pLocal,pWeapon,pCmd,true);
+	if (vTargets.empty()){AimObserver::Mark(AimObserver::Reason::NoTarget);
+        return !F::Aimbot.m_bRunningSecondary && ManageViewmodel(pLocal,pWeapon,pCmd,true);}
+    AimObserver::Mark(AimObserver::Reason::NoSolution);
 
 #if defined(SPLASH_DEBUG1) || defined(SPLASH_DEBUG2) || defined(SPLASH_DEBUG4)
 	G::LineStorage.clear();
@@ -3141,17 +3979,20 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 #if defined(SPLASH_DEBUG2) && defined(DEBUG_TEXT)
 	F::Debug.ClearText();
 #endif
-	AmmoConservation::Context conservation(pLocal,pWeapon,pCmd);
-	const size_t originalCount=vTargets.size();
-	vTargets.reserve(originalCount+1);
-	int deferredTarget=-1;
+	AmmoConservation::Context conservation(pLocal,pWeapon,pCmd,F::EnginePrediction.m_bInPrediction && pLocal->GetPredDescMap()
+        ?F::EnginePrediction.m_flOldCurrentTime:I::GlobalVars->curtime);
+	const int& deferredTarget=conservation.deferredTarget;
 	for (size_t targetIndex=0; targetIndex<vTargets.size(); ++targetIndex)
 	{
 		if (!SearchAllowed(SearchWork::Prediction) || !SearchAllowed()) break;
 		auto& tTarget=vTargets[targetIndex];
+        // Incoming damage is independent of solving another outgoing shot.
+        // Skip covered targets before the expensive solver. If every remaining
+        // alternative fails, Finish withholds using this same command's evidence.
+        const bool impactAccounting=tTarget.m_iTargetType==TargetEnum::Player && KnockbackPrediction::Enabled(tTarget.m_pEntity->As<CTFPlayer>());
+        if(!impactAccounting && conservation.SkipCovered(tTarget.m_pEntity)) continue;
         SmoothAim::CandidateScope smoothing(tTarget.m_pEntity);
-		const bool replay=targetIndex>=originalCount;
-        bool reuseMovement=AutoViewmodelSwitch::Enabled() && AutoViewmodelSwitch::Supported(pWeapon)
+        bool reuseMovement=!NeuralMovement::ForceEnabled() && AutoViewmodelSwitch::Enabled() && AutoViewmodelSwitch::Supported(pWeapon)
             && G::CanPrimaryAttack && Vars::Aimbot::General::AutoShoot.Value && !(G::OriginalCmd.buttons&IN_ATTACK)
             && !F::Aimbot.m_bRunningSecondary && !I::ClientState->chokedcommands
             && tTarget.m_iTargetType==TargetEnum::Player && tTarget.m_pEntity!=pLocal
@@ -3210,7 +4051,42 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
                 ProjectileDiagnostics::Stage("viewmodel_alternate_result",iResult);
             }
         }
-		if (iResult != 1 && pWeapon->GetWeaponID() == TF_WEAPON_CANNON && Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon
+        // Prospective success authorizes holding only. Forced personal/global models
+        // keep their current-charge path until their future horizon is supported.
+        // The probe runs with bUpdate=false, which skips update-only gates
+        // (knockback evidence). If the current solve was vetoed by one of them,
+        // a prospective success would authorize a hold the release path can
+        // never validate (draw -> hold -> deadline cancel -> redraw).
+        if(bowAuto&&iResult!=1&&!m_bImpactConsidered&&!NeuralMovement::ForceEnabled()
+            &&!(tTarget.m_iTargetType==TargetEnum::Player&&NeuralMovement::TargetForced(tTarget.m_pEntity->As<CTFPlayer>()))
+            &&SearchAllowed(SearchWork::Prediction)&&SearchAllowed())
+        {
+            const float begin=pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime();
+            auto plan=m_BowPlan;
+            const auto handle=uint32_t(tTarget.m_pEntity->GetRefEHandle().ToInt());
+            const int targetSpawn=tTarget.m_iTargetType==TargetEnum::Player?tTarget.m_pEntity->As<CTFPlayer>()->m_iSpawnCounter():-1;
+            if(!plan.valid&&begin==0.f)
+                plan.Start(bowIdentity,handle,G::OriginalCmd.command_number,Vars::Aimbot::General::AimType.Value,bowSettings,I::GlobalVars->curtime,BowCharge::MaximumTime(pWeapon,pLocal),targetSpawn);
+            if(auto future=plan.Future(handle,I::GlobalVars->curtime,TICK_INTERVAL,targetSpawn))
+            {
+                auto prospective=tTarget;int result=0;
+                {BowChargePlan::Scope scope(*future);result=CanHit(prospective,pLocal,pWeapon,false);}
+                // bUpdate=false deliberately avoids shot/visual publication; retain
+                // the same final-angle eligibility check explicitly for this probe.
+                if(result==1&&CandidateAngleAllowed(m_vAngleTo,m_vTarget,m_vPredicted)
+                    &&F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity))
+                {
+                    m_BowPlan=plan;m_bBowPlanValidated=true;
+                    pCmd->buttons|=IN_ATTACK;G::Attacking=0;F::Aimbot.m_bRan=false;m_iObservationEntity=-1;
+                    AimObserver::Mark(AimObserver::Reason::Charging);
+                    return true;
+                }
+            }
+            // A failed future probe may replace scratch geometry. Do not publish
+            // an earlier aim-only bow result using that unrelated geometry.
+            iResult=0;m_iObservationEntity=-1;
+        }
+		if ((!protectedCharge || m_NeuralChargeOwnership.manual) && iResult != 1 && pWeapon->GetWeaponID() == TF_WEAPON_CANNON && Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon
 			&& !(G::OriginalCmd.buttons & (IN_ATTACK | IN_USE)))
 		{
 			float flTime = m_flTimeTo - GRENADE_CHECK_INTERVAL;
@@ -3231,47 +4107,28 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 				G::OriginalCmd.buttons |= IN_USE;
 			}
 		}
+		if(impactAccounting && conservation.SkipPredicted(tTarget.m_pEntity,m_flImpactReserve))continue;
 		if (!iResult) continue;
 		if (iResult == 2)
 		{
             // An aim-only alternative must not displace a fire-capable original.
-            if (deferredTarget>=0 && !replay) continue;
+            if (deferredTarget>=0) continue;
+            AimObserver::Mark(AimObserver::Reason::AimOnly);
             ProjectileDiagnostics::Stage("aim_only_no_fire",tTarget.m_pEntity->entindex());
-            if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)) break;
+            if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)){AimObserver::Mark(AimObserver::Reason::TargetDelay);break;}
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 			DrawVisuals(iResult, tTarget, m_vPlayerPath, m_vProjectilePath, m_vBoxes);
 			Aim(pCmd, tTarget.m_vAngleTo);
 			break;
 		}
 
-		if (deferredTarget>=0 && !replay && !conservation.Allow())
+		if (deferredTarget>=0 && !conservation.Allow())
 		{
-			conservation.Log("action_window_expired",deferredTarget,-1);
-			continue; // Re-solve the original instead of switching on stale evidence.
-		}
-		if (conservation.Covered(tTarget.m_pEntity) && conservation.Allow())
-		{
-			if (!replay)
-			{
-				if (deferredTarget<0)
-				{
-					deferredTarget=tTarget.m_pEntity->entindex();
-					conservation.Remember(deferredTarget);
-					// Re-run the original solver at the end if no replacement passes.
-					// Never reuse simulation/aim state overwritten by another candidate.
-					vTargets.push_back(tTarget);
-				}
-				continue;
-			}
-			if (Vars::Aimbot::Projectile::AmmoConservationFallback.Value==Vars::Aimbot::Projectile::AmmoConservationFallbackEnum::BrieflyWait && conservation.Wait())
-			{
-				G::Attacking=0; F::Aimbot.m_bRan=false;
-				m_iObservationEntity=-1;
-				return true;
-			}
+			conservation.Log("evidence_expired",deferredTarget,-1);
+			continue; // Re-evaluate on the next command; never persist a wait timer.
 		}
 		if (deferredTarget>=0)
-			conservation.Log(replay?"resume_original":"switch_validated",deferredTarget,replay?-1:tTarget.m_pEntity->entindex());
+			conservation.Log("switch_validated",deferredTarget,tTarget.m_pEntity->entindex());
         if(alternateSide)
         {
             const bool committed=AutoViewmodelSwitch::Commit(*alternateSide,pCmd->command_number);
@@ -3285,10 +4142,24 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
         if (m_bReuseCooldownPreview)
         {
             m_vCooldownPreviewPoint = tTarget.m_vPos;
+            m_CooldownDisplayPoint=ProjectileDisplay::Make(tTarget.m_vPos,tTarget.m_pEntity,pLocal,pWeapon,2,false,tTarget.m_vAngleTo);
             m_vCooldownPreviewBoxes = m_vBoxes;
         }
 		AmmoEvidenceDiagnostics::Selected(pLocal, pWeapon, tTarget.m_pEntity, pCmd);
-        if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)) break;
+        AimObserver::Selected(tTarget.m_iTargetType==TargetEnum::Player?tTarget.m_pEntity->As<CTFPlayer>():nullptr);
+        AimObserver::Mark(AimObserver::Reason::Evaluating);
+        if (!F::AimbotGlobal.AllowTargetSwitch(tTarget.m_pEntity)){AimObserver::Mark(AimObserver::Reason::TargetDelay);break;}
+        if(bowAuto)
+        {
+            const auto handle=uint32_t(tTarget.m_pEntity->GetRefEHandle().ToInt());
+            const int targetSpawn=tTarget.m_iTargetType==TargetEnum::Player?tTarget.m_pEntity->As<CTFPlayer>()->m_iSpawnCounter():-1;
+            const float begin=pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime();
+            if(begin==0.f&&!m_BowPlan.valid)m_BowPlan.Start(bowIdentity,handle,G::OriginalCmd.command_number,Vars::Aimbot::General::AimType.Value,bowSettings,I::GlobalVars->curtime,BowCharge::MaximumTime(pWeapon,pLocal),targetSpawn);
+            else if(m_BowPlan.valid){m_BowPlan.target=handle;m_BowPlan.targetSpawn=targetSpawn;}
+            // ChargeWeapon-only retains hold; only existing AutoShoot logic may release.
+            pCmd->buttons|=IN_ATTACK;
+        }
+        if(tTarget.m_iTargetType==TargetEnum::Player&&(NeuralMovement::TargetForced(tTarget.m_pEntity->As<CTFPlayer>())||m_bNeuralSelected)&&!F::Aimbot.m_bRunningSecondary)F::Aimbot.RequireFreshProjectileShot();
 		if (Vars::Aimbot::General::AutoShoot.Value)
 		{
 			switch (nWeaponID)
@@ -3305,7 +4176,7 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 				{
 					if (m_iLastTickCancel)
 						pCmd->weaponselect = m_iLastTickCancel = 0;
-					if (Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon)
+					if (!m_bNeuralSelected && (Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon))
 					{	// rerun, if we won't hit in the future, fire
 						int iResult2 = 0;
 
@@ -3354,6 +4225,10 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 			}
 		}
 
+        if(Vars::Aimbot::General::AutoShoot.Value&&(pCmd->buttons&IN_ATTACK)){
+            F::Aimbot.AutoFireTarget(false,tTarget.m_pEntity);
+            if(tTarget.m_iTargetType==TargetEnum::Player)NeuralMovement::ShotOpportunity(tTarget.m_pEntity->As<CTFPlayer>(),pWeapon,m_tInfo.m_iSelectedSplash,G::OriginalCmd.command_number);
+        }
 		if (nWeaponID != TF_WEAPON_GRAPPLINGHOOK)
 			F::Aimbot.m_bRan = G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
 		else
@@ -3371,6 +4246,12 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 		DrawVisuals(iResult, tTarget, m_vPlayerPath, m_vProjectilePath, m_vBoxes);
 
 		Aim(pCmd, tTarget.m_vAngleTo);
+		if(iResult==1 && !F::Aimbot.m_bRunningSecondary)
+			ProjectileCommandDiagnostics::Selected(pCmd,tTarget.m_pEntity,tTarget.m_vAngleTo,m_vTarget,m_vPredicted,m_flTimeTo);
+		if (nWeaponID==TF_WEAPON_COMPOUND_BOW && !F::Aimbot.m_bRunningSecondary)
+			m_bBowValidated=true;
+        if (protectedCharge && !F::Aimbot.m_bRunningSecondary)
+            m_bNeuralChargeValidated=true;
 		// Stamp the actual validated primary-shot command, not a visual target tick.
 		// Shot() still checks final attack buttons after all safety guards have run.
 		if (iResult==1 && !F::Aimbot.m_bRunningSecondary)
@@ -3392,18 +4273,123 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 		return true;
 	}
 
+	if(conservation.Finish())
+    {
+        G::Attacking=0;F::Aimbot.m_bRan=false;m_iObservationEntity=-1;
+        return true;
+    }
 	return false;
 }
 
 #include "../../LearningAccess.h"
+void CAimbotProjectile::FinalizeBowCharge(CTFPlayer*local,CTFWeaponBase*weapon,CUserCmd*cmd){
+    if(!local||!weapon||!cmd||weapon->GetWeaponID()!=TF_WEAPON_COMPOUND_BOW){m_BowReleaseCommit={};return;}
+    const bool intendedRelease=m_BowReleaseCommit.pending;
+    m_BowReleaseCommit.Seal(m_BowOwnership,{uint32_t(local->GetRefEHandle().ToInt()),uint32_t(weapon->GetRefEHandle().ToInt()),local->m_iSpawnCounter(),I::ClientState->m_nServerCount},
+        G::OriginalCmd.command_number,local->IsAlive()&&!local->IsAGhost(),weapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(),
+        bool(G::OriginalCmd.buttons&IN_ATTACK),bool(G::OriginalCmd.buttons&IN_ATTACK2),bool(cmd->buttons&IN_ATTACK),bool(cmd->buttons&IN_ATTACK2),bool(cmd->weaponselect));
+    if(intendedRelease&&m_BowOwnership.owned&&(cmd->buttons&IN_ATTACK)&&!(cmd->buttons&IN_ATTACK2))
+        AimObserver::Mark(AimObserver::Reason::ReleaseHeld);
+}
+void CAimbotProjectile::MaintainBowCharge(CTFPlayer* local, CTFWeaponBase* weapon, CUserCmd* cmd)
+{
+    m_BowReleaseCommit={};
+    if (!local || !weapon || !cmd) m_BowPlan.Clear();
+    if (!local || !weapon || !cmd) {m_BowOwnership={};m_NeuralChargeOwnership={};return;}
+    const auto charge=GetNeuralChargeState(weapon);
+    if (charge.supported && (NeuralChargeEnabled() || m_NeuralChargeOwnership.owned))
+    {
+        ObserveNeuralCharge(m_NeuralChargeOwnership,local,weapon,cmd,charge);
+        // Maintenance cannot acquire ownership or initiate a charge.
+        if (m_NeuralChargeOwnership.owned)
+            FinishNeuralCharge(m_NeuralChargeOwnership,local,weapon,cmd,charge,false,false,m_iLastTickCancel);
+    }
+    else m_NeuralChargeOwnership={};
+    if (!local || !weapon || !cmd || weapon->GetWeaponID()!=TF_WEAPON_COMPOUND_BOW)
+    {m_BowOwnership={};m_BowPlan.Clear();return;}
+    const float begin=weapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime();
+    const bool manual=bool(G::OriginalCmd.buttons&IN_ATTACK);
+    const bool cancel=bool(G::OriginalCmd.buttons&IN_ATTACK2) || cmd->weaponselect!=0;
+    m_BowOwnership.Observe({uint32_t(local->GetRefEHandle().ToInt()),uint32_t(weapon->GetRefEHandle().ToInt()),
+        local->m_iSpawnCounter(),I::ClientState->m_nServerCount},cmd->command_number,local->IsAlive() && !local->IsAGhost(),begin,manual,cancel);
+    const bool active=AimModes::Active!=AimModes::Legit && local->CanAttack() && !I::EngineVGui->IsGameUIVisible()
+        && !(G::OriginalCmd.buttons&IN_USE)
+        && Vars::Aimbot::General::AimType.Value
+        && (Vars::Aimbot::General::AutoShoot.Value || bool(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon));
+    const bool hadPlan=m_BowPlan.valid;
+    if(hadPlan)
+    {
+        auto* target=reinterpret_cast<CBaseEntity*>(I::ClientEntityList->GetClientEntityFromHandle(CBaseHandle(m_BowPlan.target)));
+        if(!target||uint32_t(target->GetRefEHandle().ToInt())!=m_BowPlan.target
+            ||(m_BowPlan.targetSpawn>=0&&(!target->IsPlayer()||!target->As<CTFPlayer>()->IsAlive()
+                ||target->As<CTFPlayer>()->IsAGhost()||target->As<CTFPlayer>()->m_iSpawnCounter()!=m_BowPlan.targetSpawn)))m_BowPlan.Clear();
+    }
+    m_BowPlan.Observe({uint32_t(local->GetRefEHandle().ToInt()),uint32_t(weapon->GetRefEHandle().ToInt()),local->m_iSpawnCounter(),I::ClientState->m_nServerCount},
+        G::OriginalCmd.command_number,Vars::Aimbot::General::AimType.Value,int(Vars::Aimbot::General::AutoShoot.Value)|(Vars::Aimbot::Projectile::Modifiers.Value<<1),
+        I::GlobalVars->curtime,begin,local->IsAlive()&&!local->IsAGhost(),active,manual,cancel);
+    if(hadPlan&&!m_BowPlan.valid&&m_BowOwnership.owned)
+    {
+        m_BowOwnership.cancelPending=begin>0.f;
+        CancelShot(local,weapon,cmd,m_iLastTickCancel);G::Attacking=0;F::Aimbot.m_bRan=false;
+        return;
+    }
+    // Establish the safe default before outer aimbot gates can skip Run. This
+    // does not start a charge; only Run may acquire one from its outgoing hold.
+    if (!m_BowOwnership.owned) return;
+    const auto action=m_BowOwnership.Finish(begin,I::GlobalVars->curtime,TF_ARROW_MAX_CHARGE_TIME,TICK_INTERVAL,
+        active,manual,cancel,bool(cmd->buttons&IN_ATTACK),bool(cmd->buttons&IN_ATTACK2),false,false);
+    if (action==BowReleasePolicy::Action::Hold) cmd->buttons|=IN_ATTACK;
+    else if (action==BowReleasePolicy::Action::Cancel) CancelShot(local,weapon,cmd,m_iLastTickCancel);
+    if (action!=BowReleasePolicy::Action::Unchanged) {G::Attacking=0;F::Aimbot.m_bRan=false;}
+}
+
 void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
-    // Initial rollout: ordinary rockets only. Charged launchers and reflected
-    // projectiles retain their existing timing/firing paths.
+    if(NeuralMovement::ForceEnabled()&&!NeuralMovement::SupportsProjectile(pWeapon))
+    {
+        // Relinquish automation without rewriting this command's manual input.
+        m_BowOwnership={};m_NeuralChargeOwnership={};m_bBowValidated=false;m_bSearchedThisCommand=false;m_bReuseCooldownPreview=false;
+        m_vCooldownPreviewPoint.reset();m_vCooldownPreviewBoxes.clear();m_iObservationEntity=-1;
+        NeuralMovement::ForcedResult(false,"weapon unsupported by forced neural mode");return;
+    }
+    // Plain/Silent ShouldAim skips RunMain's Context during weapon cooldown.
+    // Maintain network history here so the next ready command can conserve.
+    if(Vars::Aimbot::Projectile::AmmoConservation.Value)
+        AmmoConservation::ObservePlayers(F::EnginePrediction.m_bInPrediction && pLocal->GetPredDescMap()
+            ?F::EnginePrediction.m_flOldCurrentTime:I::GlobalVars->curtime);
+    // Bound bow/Crossbow searches as well as ordinary rockets. The same
+    // command budget covers targets, adaptive retries and cooldown previews.
+    // Flight validation has safe interruption points; bow ownership below keeps
+    // an interrupted search from releasing an automated charge without an aim.
     const int budgetWeapon = pWeapon->GetWeaponID();
-    const bool boundedSearch = (budgetWeapon == TF_WEAPON_ROCKETLAUNCHER || budgetWeapon == TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT)
-        && pWeapon->m_iItemDefinitionIndex() != Soldier_m_TheBeggarsBazooka;
+    const auto neuralCharge=GetNeuralChargeState(pWeapon);
+    const bool chargeProtection=neuralCharge.supported && (NeuralChargeEnabled() || m_NeuralChargeOwnership.owned);
+    const bool boundedSearch = (NeuralChargeEnabled() && NeuralMovement::SupportsProjectile(pWeapon)) || chargeProtection || ((budgetWeapon == TF_WEAPON_ROCKETLAUNCHER || budgetWeapon == TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT)
+        && pWeapon->m_iItemDefinitionIndex() != Soldier_m_TheBeggarsBazooka)
+        || budgetWeapon == TF_WEAPON_CROSSBOW || budgetWeapon == TF_WEAPON_COMPOUND_BOW
+        // Sticky searches were unbounded: every target, point and arc ran to
+        // completion each command, so FPS fell with player count and with
+        // occluded targets whose search never succeeds early.
+        || budgetWeapon == TF_WEAPON_PIPEBOMBLAUNCHER
+        || bool(Vars::Aimbot::Projectile::StrafePrediction.Value&Vars::Aimbot::Projectile::StrafePredictionEnum::Knockback);
     ProjectilePerformancePolicy::SearchScope searchScope(m_SearchBudget, pCmd->command_number, boundedSearch);
+    m_bBowValidated=false;
+    m_bBowPlanValidated=false;
+    m_bNeuralChargeValidated=false;
+    if (!F::Aimbot.m_bRunningSecondary)
+    {
+        if (chargeProtection) ObserveNeuralCharge(m_NeuralChargeOwnership,pLocal,pWeapon,pCmd,neuralCharge);
+        else m_NeuralChargeOwnership={};
+    }
+    const bool bow=budgetWeapon==TF_WEAPON_COMPOUND_BOW;
+    const float bowBegin=bow?pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime():0.f;
+    const bool rawBowAttack=bool(G::OriginalCmd.buttons&IN_ATTACK);
+    const bool rawBowCancel=bool(G::OriginalCmd.buttons&IN_ATTACK2) || pCmd->weaponselect!=0;
+    if (bow && !F::Aimbot.m_bRunningSecondary)
+        m_BowOwnership.Observe({uint32_t(pLocal->GetRefEHandle().ToInt()),uint32_t(pWeapon->GetRefEHandle().ToInt()),
+            pLocal->m_iSpawnCounter(),I::ClientState->m_nServerCount},pCmd->command_number,pLocal->IsAlive() && !pLocal->IsAGhost(),
+            bowBegin,rawBowAttack,rawBowCancel);
+    else if (!F::Aimbot.m_bRunningSecondary) m_BowOwnership={};
     m_bSearchedThisCommand = false;
     m_bReuseCooldownPreview = false;
     m_vCooldownPreviewPoint.reset();
@@ -3429,7 +4415,27 @@ void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd*
         && rawAngles && !mutableLaunch && !F::Aimbot.m_bRunningSecondary;
 	SelfDamageDiagnostics::Snapshot("projectile_entry",pLocal,pWeapon,pCmd);
 	const bool bSuccess = RunMain(pLocal, pWeapon, pCmd);
-    if (pWeapon->GetWeaponID()==TF_WEAPON_PIPEBOMBLAUNCHER)
+    if (chargeProtection && !F::Aimbot.m_bRunningSecondary)
+        FinishNeuralCharge(m_NeuralChargeOwnership,pLocal,pWeapon,pCmd,neuralCharge,m_bNeuralChargeValidated,true,m_iLastTickCancel);
+    if (bow && !F::Aimbot.m_bRunningSecondary)
+    {
+        const bool automatic=bAimEnabled && !(G::OriginalCmd.buttons&IN_USE)
+            && (Vars::Aimbot::General::AutoShoot.Value || bool(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon));
+        const auto beforeRelease=m_BowOwnership;
+        const auto action=m_BowOwnership.Finish(bowBegin,I::GlobalVars->curtime,TF_ARROW_MAX_CHARGE_TIME,TICK_INTERVAL,
+            automatic,rawBowAttack,rawBowCancel,bool(pCmd->buttons&IN_ATTACK),bool(pCmd->buttons&IN_ATTACK2),
+            m_bBowValidated||m_bBowPlanValidated,m_BowPlan.valid||bool(Vars::Aimbot::Projectile::Modifiers.Value&Vars::Aimbot::Projectile::ModifiersEnum::CancelCharge));
+        m_BowReleaseCommit.Stage(beforeRelease,m_BowOwnership,G::OriginalCmd.command_number,m_bBowValidated,bool(pCmd->buttons&IN_ATTACK),bool(pCmd->buttons&IN_ATTACK2));
+        if(action==BowReleasePolicy::Action::Cancel||(!m_BowOwnership.owned&&!m_BowReleaseCommit.pending))m_BowPlan.Clear();
+        if (action==BowReleasePolicy::Action::Hold){AimObserver::Mark(AimObserver::Reason::Charging);pCmd->buttons|=IN_ATTACK;}
+        else if (action==BowReleasePolicy::Action::Cancel){AimObserver::Mark(AimObserver::Reason::Cancelling);CancelShot(pLocal,pWeapon,pCmd,m_iLastTickCancel);}
+        if (action!=BowReleasePolicy::Action::Unchanged)
+        {
+            G::Attacking=0;F::Aimbot.m_bRan=false;
+            ProjectileDiagnostics::Stage(action==BowReleasePolicy::Action::Hold?"bow_auto_hold":"bow_auto_cancel");
+        }
+    }
+    if (pWeapon->GetWeaponID()==TF_WEAPON_PIPEBOMBLAUNCHER || pWeapon->GetWeaponID()==TF_WEAPON_COMPOUND_BOW)
         AmmoConservationPolicy::chargeOwnership.Record(bool(pCmd->buttons&IN_ATTACK),
             Vars::Aimbot::General::AutoShoot.Value && bAimEnabled && F::AimbotGlobal.ShouldAim()
             && !(G::OriginalCmd.buttons&(IN_ATTACK|IN_ATTACK2|IN_USE)));
@@ -3442,6 +4448,7 @@ void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd*
         && AutoViewmodelSwitch::Immediate(pWeapon) && OutgoingWallBlocked(pLocal,pWeapon,pCmd->viewangles))
     {
         pCmd->buttons&=~IN_ATTACK;G::Attacking=0;F::Aimbot.m_bRan=false;
+        AimObserver::Mark(AimObserver::Reason::Wall);
         ProjectileDiagnostics::Stage("outgoing_wall_guard_blocked");
     }
 	SelfDamageDiagnostics::Snapshot("after_aim",pLocal,pWeapon,pCmd);
@@ -3488,7 +4495,8 @@ void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd*
 				from=to;
 			}
 		}
-		if(unsafe) { pCmd->buttons&=~IN_ATTACK; G::Attacking=0; F::Aimbot.m_bRan=false; }
+		if(unsafe) {
+            AimObserver::Mark(AimObserver::Reason::Safety); pCmd->buttons&=~IN_ATTACK; G::Attacking=0; F::Aimbot.m_bRan=false; }
 		if(SelfDamageDiagnostics::Enabled()) SelfDamageDiagnostics::Write("guard_result",std::format("cmd={} blocked={} collided={} collision_tick={} outgoing_attack={}",pCmd->command_number,unsafe,collided,collisionTick,bool(pCmd->buttons&IN_ATTACK)));
 	}
 #ifdef NIKOGRAM_PRIVATE_LEARNING
@@ -3516,9 +4524,9 @@ void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd*
         ProjectileDiagnostics::Stage("preview_skipped_cooldown_search",m_vCooldownPreviewPoint.has_value());
         if (m_vCooldownPreviewPoint)
         {
-            if (bAimPreview) G::CooldownAimPoint={*m_vCooldownPreviewPoint,I::GlobalVars->tickcount,2};
+            if (bAimPreview) G::CooldownAimPoint=m_CooldownDisplayPoint;
             G::CooldownBoxStorage=m_vCooldownPreviewBoxes;
-            for (auto& box:G::CooldownBoxStorage) box.m_flTime=I::GlobalVars->curtime+TICKS_TO_TIME(2);
+            for (auto& box:G::CooldownBoxStorage) {box.m_flTime=I::GlobalVars->curtime+TICKS_TO_TIME(2);box.m_iProjectileDisplaySerial=ProjectileDisplay::serial;}
             ProjectileDiagnostics::Stage("cooldown_preview_reused",int(m_vCooldownPreviewBoxes.size()));
         }
     }
@@ -3535,10 +4543,11 @@ void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd*
 			m_flTimeTo = std::numeric_limits<float>::max();
 			if (CanHit(target, pLocal, pWeapon) != 1) continue;
 			if (bAimPreview)
-				G::CooldownAimPoint = { target.m_vPos, I::GlobalVars->tickcount, 2 };
+				G::CooldownAimPoint = ProjectileDisplay::Make(target.m_vPos,target.m_pEntity,pLocal,pWeapon,2,false,target.m_vAngleTo);
 			G::CooldownBoxStorage = m_vBoxes;
-			for (auto& box : G::CooldownBoxStorage)
-				box.m_flTime = I::GlobalVars->curtime + TICKS_TO_TIME(2);
+			for (auto& box : G::CooldownBoxStorage) {
+                box.m_flTime = I::GlobalVars->curtime + TICKS_TO_TIME(2);box.m_iProjectileDisplaySerial=ProjectileDisplay::serial;
+            }
 			break;
 		}
 		m_bPreviewOnly = false;
@@ -3571,7 +4580,10 @@ void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd*
 
 	if (pWeapon->GetWeaponID() == TF_WEAPON_PIPEBOMBLAUNCHER && G::OriginalCmd.buttons & IN_ATTACK && Vars::Aimbot::Projectile::AutoRelease.Value && flAmount > Vars::Aimbot::Projectile::AutoRelease.Value / 100)
 		pCmd->buttons &= ~IN_ATTACK;
-	else if (G::CanPrimaryAttack && Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::CancelCharge)
+	else if (pWeapon->GetWeaponID()!=TF_WEAPON_COMPOUND_BOW
+        && !(chargeProtection && !m_NeuralChargeOwnership.manual && !(G::OriginalCmd.buttons&(IN_ATTACK|IN_ATTACK2)) && !G::OriginalCmd.weaponselect)
+        && G::CanPrimaryAttack
+        && Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::CancelCharge)
 	{
 		if (m_bLastTickHeld && (G::LastUserCmd->buttons & IN_ATTACK && !(pCmd->buttons & IN_ATTACK) && !bSuccess || flAmount > 0.95f))
 			CancelShot(pLocal, pWeapon, pCmd, m_iLastTickCancel);
@@ -3748,6 +4760,7 @@ bool CAimbotProjectile::TestAngle(CBaseEntity* pProjectile, const Vec3& vPoint, 
 
 bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CBaseEntity* pProjectile)
 {
+    if(NeuralMovement::ForceEnabled())return 0; // No hidden ordinary reflected-target prediction.
     SmoothAim::CandidateScope smoothing(tTarget.m_pEntity,true);
 	m_tMoveStorage = {};
 	if (!F::MoveSim.Initialize(tTarget.m_pEntity, m_tMoveStorage) && tTarget.m_iTargetType == TargetEnum::Player)
@@ -3974,7 +4987,9 @@ bool CAimbotProjectile::AutoAirblast(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, 
     // Returning false preserves the caller's ordinary airblast fallback.
     if(!pProjectile || pProjectile->GetClassID()==ETFClassID::CTFGrenadePipebombProjectile)
         return false;
-	auto vTargets = F::AimbotGlobal.ManageTargets(GetTargets, pLocal, pWeapon);
+    const bool ignoreFOV=Vars::Aimbot::Projectile::AutoAirblast.Value&Vars::Aimbot::Projectile::AutoAirblastEnum::IgnoreFOV;
+	auto vTargets = F::AimbotGlobal.ManageTargets(GetTargets, pLocal, pWeapon,
+        Vars::Aimbot::General::TargetSelection.Value,Vars::Aimbot::General::MaxTargets.Value,!ignoreFOV);
 	if (vTargets.empty())
 		return false;
 

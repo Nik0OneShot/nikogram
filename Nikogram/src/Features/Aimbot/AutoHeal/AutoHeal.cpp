@@ -1,4 +1,5 @@
 #include "AutoHeal.h"
+#include "../../ImGui/HudTextStyle.h"
 
 #include "../../Players/PlayerUtils.h"
 #include "../../Backtrack/Backtrack.h"
@@ -782,7 +783,7 @@ void CAutoHeal::Draw(CTFPlayer* pLocal)
 	for (int iResist = MEDIGUN_BULLET_RESIST; iResist < MEDIGUN_NUM_RESISTS; iResist++)
 	{
 		float flDanger = vResistDangers[iResist];
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, std::format("{}: {:.3f}", iResist == MEDIGUN_BULLET_RESIST ? "Bullet" : iResist == MEDIGUN_BLAST_RESIST ? "Blast" : "Fire", flDanger).c_str());
+		H::Draw.StringOutlined(fFont, x, y += nTall, Workspace::HudTextColour(), Vars::Menu::Theme::Background.Value, ALIGN_TOP, std::format("{}: {:.3f}", iResist == MEDIGUN_BULLET_RESIST ? "Bullet" : iResist == MEDIGUN_BLAST_RESIST ? "Blast" : "Fire", flDanger).c_str());
 	}
 }
 #endif

@@ -770,7 +770,7 @@ int SDK::IsAttacking(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, const CUserCmd* 
 	case TF_WEAPON_SNIPERRIFLE_CLASSIC:
 		return !(pCmd->buttons & IN_ATTACK) && pWeapon->As<CTFSniperRifle>()->m_flChargedDamage() > 0.f;
 	case TF_WEAPON_COMPOUND_BOW:
-		return !(pCmd->buttons & IN_ATTACK) && pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() > 0.f;
+		return !(pCmd->buttons & (IN_ATTACK | IN_ATTACK2)) && pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() > 0.f;
 	case TF_WEAPON_PARTICLE_CANNON:
 		if (float flChargeBeginTime = pWeapon->As<CTFParticleCannon>()->m_flChargeBeginTime(); flChargeBeginTime > 0)
 		{

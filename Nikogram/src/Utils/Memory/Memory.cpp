@@ -2,6 +2,7 @@
 
 #include <format>
 #include <Psapi.h>
+#include <cstring>
 
 std::vector<byte> CMemory::PatternToByte(const char* szPattern)
 {
@@ -87,6 +88,51 @@ uintptr_t CMemory::FindSignature(const char* szModule, const char* szPattern)
 		return 0x0;
 	}
 
+	return 0x0;
+}
+
+uintptr_t CMemory::FindSignatureWithReference(const char* szModule, const char* szPattern, int iReferenceOffset, const char* szReference)
+{
+	if (!szReference || iReferenceOffset < 0)
+		return 0x0;
+	const auto hModule = GetModuleHandle(szModule);
+	if (!hModule)
+		return 0x0;
+	MODULEINFO lpModuleInfo;
+	if (!GetModuleInformation(GetCurrentProcess(), hModule, &lpModuleInfo, sizeof(MODULEINFO)) || !lpModuleInfo.SizeOfImage)
+		return 0x0;
+
+	const auto vPattern = PatternToInt(szPattern);
+	const size_t iPatternSize = vPattern.size();
+	const size_t dwImageSize = lpModuleInfo.SizeOfImage;
+	const size_t iReferenceLength = strlen(szReference) + 1; // include the terminator: exact string only
+	if (!iPatternSize || iPatternSize > dwImageSize || size_t(iReferenceOffset) + 4 > iPatternSize)
+		return 0x0;
+
+	const auto pImageBytes = reinterpret_cast<const byte*>(hModule);
+	for (size_t i = 0; i <= dwImageSize - iPatternSize; ++i)
+	{
+		bool bFound = true;
+		for (size_t j = 0; j < iPatternSize; ++j)
+		{
+			if (vPattern[j] != -1 && pImageBytes[i + j] != vPattern[j])
+			{
+				bFound = false;
+				break;
+			}
+		}
+		if (!bFound)
+			continue;
+
+		// Resolve the operand and check it stays inside this module before reading.
+		int32_t iDisplacement;
+		memcpy(&iDisplacement, pImageBytes + i + iReferenceOffset, sizeof(iDisplacement));
+		const int64_t iTarget = int64_t(i) + iReferenceOffset + 4 + iDisplacement;
+		if (iTarget < 0 || uint64_t(iTarget) + iReferenceLength > dwImageSize)
+			continue;
+		if (!memcmp(pImageBytes + iTarget, szReference, iReferenceLength))
+			return uintptr_t(pImageBytes + i);
+	}
 	return 0x0;
 }
 

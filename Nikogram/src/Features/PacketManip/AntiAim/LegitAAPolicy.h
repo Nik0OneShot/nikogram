@@ -1,7 +1,7 @@
 #pragma once
 
-// User-supplied class/held-weapon rules. This only selects desired directions;
-// BodyYawPolicy retains the accepted 0.4.9 native-command steering behavior.
+// User-supplied class/held-weapon eligibility. All enabled presets use the
+// existing real Edge/fake Forward solver, with no fixed class-specific yaw.
 namespace LegitAAPolicy
 {
     // Native TF2 class order, not the menu's presentation order.
@@ -9,22 +9,22 @@ namespace LegitAAPolicy
         Medic=5, Heavy=6, Pyro=7, Spy=8, Engineer=9 };
     enum class Weapon { Unavailable, Other, Medigun, SniperRifle, SMG, Melee,
         Revolver, Sapper, Knife, DisguiseKit };
-    struct Preset { bool enabled=false;float real=0.f,fake=0.f; };
+    struct Preset { bool enabled=false; };
     inline Preset Select(int playerClass,Weapon held)
     {
         if(held==Weapon::Unavailable)return {};
         switch(playerClass)
         {
         case Scout: case Soldier: case Pyro: case Demoman: case Heavy: case Engineer:
-            return {true,90.f,0.f};
+            return {true};
         case Medic:
-            return held==Weapon::Medigun?Preset{}:Preset{true,90.f,0.f};
+            return held==Weapon::Medigun?Preset{}:Preset{true};
         case Sniper:
-            if(held==Weapon::SniperRifle)return {true,-90.f,0.f}; // Scoped or unscoped.
-            if(held==Weapon::Melee)return {true,90.f,0.f};
+            if(held==Weapon::SniperRifle)return {true}; // Scoped or unscoped.
+            if(held==Weapon::Melee)return {true};
             return {}; // SMG and unlisted weapons have no approved preset.
         case Spy:
-            if(held==Weapon::Knife||held==Weapon::DisguiseKit)return {true,90.f,0.f};
+            if(held==Weapon::Knife||held==Weapon::DisguiseKit)return {true};
             return {}; // Revolver, sapper, and unlisted weapons stay off.
         default: return {};
         }
