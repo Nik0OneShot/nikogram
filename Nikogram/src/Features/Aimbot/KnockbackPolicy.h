@@ -54,8 +54,55 @@ inline V Force(V explosion,V center,V hull,float damage,float scale,float multip
     const float magnitude=std::min(1000.f,damage*(48.f*48.f*82.f)/volume*scale)*multiplier;
     return Mul(away,magnitude/length);
 }
+// Pill fuse (Valve TF source): Spawn sets m_flDetonateTime = created + fuse
+// (2.0 x fuse_mult). DetonateThink first runs TIME_TO_TICKS(0.2) ticks after
+// creation, repeats at that period, and explodes on the first run with
+// curtime > m_flDetonateTime. Returns that delay after creation (seconds).
+// low=true gives the earlier reading when the fuse sits on a period boundary.
+inline float FuseDelay(float fuse,float tick,bool low=false){
+    if(!std::isfinite(fuse)||!std::isfinite(tick)||fuse<=0||tick<=0)return std::numeric_limits<float>::quiet_NaN();
+    const int period=std::max(1,int(.5f+.2f/tick));const float step=float(period)*tick;
+    const int k=int(std::floor(fuse/step+(low?-1e-4f:1e-4f)))+1;
+    return float(std::max(1,k))*step;
+}
+// Explosion window in server time from the creation bounds. An unknown
+// earliest creation (-inf) means the pill could explode at any moment.
+// Both edges are padded by PillClockPad ticks: the pill is created inside the
+// thrower's usercmd, whose tickbase may run ahead of server tick time
+// (sv_clockcorrection_msecs, ~60 ms), and the padding also covers the few
+// ticks past a shot's solution that the target simulation may not reach.
+inline constexpr int PillClockPad=4;
+inline void FuseWindow(float fuse,float tick,float earliestCreated,float latestCreated,float& earliest,float& latest){
+    const float lo=FuseDelay(fuse,tick,true),hi=FuseDelay(fuse,tick,false),pad=PillClockPad*tick;
+    latest=std::isfinite(hi)&&std::isfinite(latestCreated)?latestCreated+hi+pad:std::numeric_limits<float>::infinity();
+    earliest=std::isfinite(lo)&&std::isfinite(earliestCreated)?earliestCreated+lo-pad:-std::numeric_limits<float>::infinity();
+}
+// Age of an untouched airborne pill from its vertical velocity lost to gravity
+// since launch. Drag shifts this a little either way, so the caller pads it.
+// NaN if unusable.
+inline float PillAge(float initialZ,float currentZ,float gravity){
+    if(!std::isfinite(initialZ)||!std::isfinite(currentZ)||!std::isfinite(gravity)||gravity<=0)return std::numeric_limits<float>::quiet_NaN();
+    const float age=(initialZ-currentZ)/gravity;
+    return age>=-.02f?std::max(0.f,age):std::numeric_limits<float>::quiet_NaN();
+}
+// Can a pill push the target at `time`? A touched pill no longer explodes on
+// contact (native PipebombTouch returns once m_bTouched), so only its fuse
+// window counts; an untouched pill may also explode on contact until its fuse.
+inline bool PillCanPush(bool touched,float time,float earliest,float latest)
+{return std::isfinite(time)&&time<=latest&&(!touched||time>=earliest);}
+// How far from its last known point a pill's blast can reach after dt seconds.
+// A touched pill at rest does not start falling again; a moving one may.
+inline float PillReach(float radius,float speed,float dt,bool touched,float gravity)
+{
+    dt=std::max(0.f,dt);const bool moving=!touched||speed>=20.f;
+    return radius+16.f+speed*dt+(moving?.5f*gravity*dt*dt:0.f);
+}
 struct Evidence {
     float first=std::numeric_limits<float>::infinity(), last=0, lowerDamage=0;
+    // First time (relative to the anchor) an unmodelled pill could push the
+    // target. A shot that resolves before it is unaffected by that pill.
+    float hazardFrom=std::numeric_limits<float>::infinity();
+    bool Hazard(float shotTime,float margin)const{return std::isfinite(hazardFrom)&&(!std::isfinite(shotTime)||hazardFrom<=shotTime+margin);}
     unsigned impacts=0, uncertain=0;bool complete=true;
     void Add(float time,bool strong,float damage){
         first=std::min(first,time);last=std::max(last,time);++impacts;if(!strong)++uncertain;

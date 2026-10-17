@@ -28,6 +28,35 @@ namespace AutoDetonatePolicy
         if(arm<=.5f&&at-created<arm)at=std::nextafter(at,INFINITY);
         return at;
     }
+    // Smart detonation. Per enemy: blast damage at the server-receive time
+    // ("now") and a short lookahead ("next"), using native half falloff over
+    // min(distance to centre, distance to origin). Detonate at once when any
+    // enemy would die, has reached its closest approach, or is leaving; wait
+    // only while every exposed enemy is still getting closer (or a flare is
+    // about to hit one directly), and never longer than maxWait.
+    struct Exposure { float now=0, next=0; bool lethal=false, directSoon=false; };
+    enum class Timing { Detonate, Wait };
+    inline float HalfFalloff(float base,float distance,float radius)
+    {
+        if(!std::isfinite(base)||!std::isfinite(distance)||!std::isfinite(radius)||base<=0||distance<0||radius<=0)return 0;
+        return base*(1.f-.5f*std::clamp(distance/radius,0.f,1.f));
+    }
+    template<class Range>
+    inline Timing Decide(const Range& exposures,bool worldSoon,float waited,float maxWait)
+    {
+        bool any=false,wait=false;
+        for(const Exposure& e:exposures)
+        {
+            if(!(e.now>0)&&!e.directSoon)continue;
+            any=true;
+            if(e.lethal)return Timing::Detonate;
+            if(e.directSoon){wait=true;continue;}
+            if(e.next>e.now*1.02f)wait=true;
+            else return Timing::Detonate; // closest approach reached, or leaving
+        }
+        if(!any||worldSoon||!wait)return Timing::Detonate;
+        return std::isfinite(waited)&&waited>=0&&waited<maxWait?Timing::Wait:Timing::Detonate;
+    }
     inline float AirScale(float age,float live,float ramp,float air)
     {
         if(!std::isfinite(age)||!std::isfinite(live)||!std::isfinite(ramp)||!std::isfinite(air)

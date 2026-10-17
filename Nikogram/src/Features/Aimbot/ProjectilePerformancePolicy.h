@@ -49,7 +49,9 @@ namespace ProjectilePerformancePolicy
 
     inline thread_local SearchBudget* currentSearchBudget = nullptr;
     // A short local phase can end without exhausting/resetting its parent's
-    // command budget. Dynamic uses this to reserve work for its Face fallback.
+    // command budget. The neural Auto trial runs inside one so it cannot starve
+    // the ordinary result. (Dynamic splash no longer uses it: since 0.7.0.37 it
+    // is a single merged search with persistent candidates.)
     struct TracePhaseBudget
     {
         using Clock=SearchBudget::Clock;

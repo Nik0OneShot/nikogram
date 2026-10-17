@@ -9,6 +9,7 @@
 #include "../Features/Misc/Misc.h"
 #include "../Features/Visuals/Visuals.h"
 #include "../Features/Output/Output.h"
+#include "../Features/NoSpread/NoSpreadHitscan/NoSpreadHitscan.h"
 
 MAKE_SIGNATURE(CL_Move, "engine.dll", "40 55 53 48 8D AC 24 ? ? ? ? B8 ? ? ? ? E8 ? ? ? ? 48 2B E0 83 3D", 0x0);
 
@@ -16,6 +17,10 @@ MAKE_HOOK(CL_Move, S::CL_Move(), void,
 	float accumulated_extra_samples, bool bFinalTick)
 {
 	DEBUG_RETURN(CL_Move, accumulated_extra_samples, bFinalTick);
+
+	// One call per engine tick, recharge and doubletap included: no-spread counts its
+	// packets in these, command numbers jump with tick shifting.
+	F::NoSpreadHitscan.OnEngineTick();
 
 	if (G::Unload)
 		return CALL_ORIGINAL(accumulated_extra_samples, bFinalTick);

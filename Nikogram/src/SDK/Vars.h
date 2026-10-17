@@ -318,10 +318,12 @@ NAMESPACE_BEGIN(Vars)
 			CVarEnum(AimHoldsFire, "Aim holds fire", 2, NOSAVE | DEBUGVAR, nullptr,
 				VA_LIST("False", "Minigun only", "Always"),
 				False, MinigunOnly, Always);
-			CVar(NoSpreadOffset, "No spread offset", 0.f, NOSAVE | DEBUGVAR | SLIDER_PRECISION, -1.f, 1.f, 0.1f);
-			CVar(NoSpreadAverage, "No spread average", 5, NOSAVE | DEBUGVAR | SLIDER_MIN, 1, 25);
-			CVar(NoSpreadInterval, "No spread interval", 0.1f, NOSAVE | DEBUGVAR | SLIDER_MIN, 0.05f, 5.f, 0.1f, "%gs");
-			CVar(NoSpreadBackupInterval, "No spread backup interval", 2.f, NOSAVE | DEBUGVAR | SLIDER_MIN, 2.f, 10.f, 0.1f, "%gs");
+			// Seed clock (0.7.0.31): playerperf request spacing, how long to wait for a reply,
+			// the smallest seed step worth correcting, and the observation log.
+			CVar(NoSpreadInterval, "No spread interval", 0.5f, NOSAVE | DEBUGVAR | SLIDER_MIN, 0.2f, 5.f, 0.1f, "%gs");
+			CVar(NoSpreadBackupInterval, "No spread reply timeout", 2.f, NOSAVE | DEBUGVAR | SLIDER_MIN, 1.f, 10.f, 0.1f, "%gs");
+			CVar(NoSpreadMinimumStep, "No spread minimum seed step", 0.25f, NOSAVE | DEBUGVAR | SLIDER_PRECISION, 0.f, 4.f, 0.05f, "%g ms");
+			CVar(NoSpreadDiagnostics, "No spread seed log", false, NOSAVE | DEBUGVAR);
 		NAMESPACE_END(Global)
 
 		NAMESPACE_BEGIN(Hitscan)
@@ -370,8 +372,9 @@ NAMESPACE_BEGIN(Vars)
 				VA_LIST("Auto", "##Divider", "Head", "Body", "Feet", "##Divider", "Bodyaim if lethal", "Prioritize feet", "True prioritize feet"),
 				Auto = 1 << 0, Head = 1 << 1, Body = 1 << 2, Feet = 1 << 3, BodyaimIfLethal = 1 << 4, PrioritizeFeet = 1 << 5, TruePrioritizeFeet = 1 << 6);
 			CVarEnum(Modifiers, VA_LIST("Modifiers", "Projectile modifiers"), 0b0010, DROPDOWN_MULTI, nullptr,
-				VA_LIST("Charge weapon", "Cancel charge", "Use arm time", "Air splash", "Lob angles", "Target dormant", "Prevent self damage", "Allow splashbot on Direct Hit", "Automatic viewmodel switching"),
-				ChargeWeapon = 1 << 0, CancelCharge = 1 << 1, UseArmTime = 1 << 2, AirSplash = 1 << 3, LobAngles = 1 << 4, TargetDormant = 1 << 5, PreventSelfDamage = 1 << 6, AllowDirectHitSplash = 1 << 7, AutomaticViewmodelSwitch = 1 << 8);
+				// 1 << 2 was "Use arm time" (stickies now always use arm time); "##Hidden" keeps later bits stable.
+				VA_LIST("Charge weapon", "Cancel charge", "##Hidden", "Air splash", "Lob angles", "Target dormant", "Prevent self damage", "Allow splashbot on Direct Hit", "Automatic viewmodel switching"),
+				ChargeWeapon = 1 << 0, CancelCharge = 1 << 1, AirSplash = 1 << 3, LobAngles = 1 << 4, TargetDormant = 1 << 5, PreventSelfDamage = 1 << 6, AllowDirectHitSplash = 1 << 7, AutomaticViewmodelSwitch = 1 << 8);
 			CVar(MaxSimulationTime, "Max simulation time", 1.f, SLIDER_MIN | SLIDER_PRECISION, 0.1f, 2.5f, 0.25f, "%gs");
 			CVar(HitChance, "Hit chance", 0.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
 			CVar(AutodetRadius, "Autodet radius", 90.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
@@ -421,14 +424,19 @@ NAMESPACE_BEGIN(Vars)
 			CVarEnum(SplashMode, "Splash search", 0, 0, nullptr,
 				VA_LIST("Trace", "Face", "Dynamic"),
 				Trace, Face, Dynamic);
+			// 0.7.0.43: Amalgam's original face sampler and unbudgeted splash search.
+			CVar(SplashDensityDirect, "Splash density direct", 40.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 100.f, 1.f);
+			CVar(SplashDensityArc, "Splash density arc", 40.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 100.f, 1.f);
+			CVar(SplashSamplesCutoff, "Splash samples cutoff", 0.0000001f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 0.000001f, 0.00000001f);
 			CVar(SplashAirCount, "Splash air count", 0, NOSAVE | DEBUGVAR | SLIDER_MIN, 0, 10);
 			CVar(SplashPointsDirect, "Splash points direct", 100, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0, 400, 5);
 			CVar(SplashPointsArc, "Splash points arc", 100, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0, 400, 5);
 			CVar(SplashRotateX, "Splash Rx", -1.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, -1.f, 360.f);
 			CVar(SplashRotateY, "Splash Ry", -1.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, -1.f, 360.f);
-			CVar(SplashDensityDirect, "Splash density direct", 40.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 100.f, 1.f);
-			CVar(SplashDensityArc, "Splash density arc", 40.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 100.f, 1.f);
-			CVar(SplashSamplesCutoff, "Splash samples cutoff", 0.0000001f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 0.000001f, 0.00000001f);
+			// 0.7.0.46: trace budget per command for the corner/edge search (about 1 us per trace).
+			CVar(SplashEdgeSamples, "Splash corner/edge traces", 300, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 16, 2000, 8);
+			// 0.7.0.49: full validations per command spent scanning around a near miss (explosion blocked).
+			CVar(SplashRefineProbes, "Splash refine probes", 100, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0, 441, 10);
 			CVar(SplashRestrictDirect, "Splash restrict direct", 100, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 1, 400, 5);
 			CVar(SplashRestrictArc, "Splash restrict arc", 5, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 1, 400, 5);
 			CVar(SplashRestrictFirst, "Splash restrict first", 25, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 1, 400, 5);

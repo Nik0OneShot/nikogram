@@ -39,12 +39,7 @@ void CNoSpreadProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 		switch (pWeapon->GetWeaponID())
 		{
 		case TF_WEAPON_COMPOUND_BOW:
-			if (pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() > 0.f
-				&& I::GlobalVars->curtime - pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() > TF_ARROW_MAX_CHARGE_TIME)
-			{
-				vAngAdd.x -= float(SDK::RandomInt()) / VALVE_RAND_MAX * 12.f - 6.f;
-				vAngAdd.y -= float(SDK::RandomInt()) / VALVE_RAND_MAX * 12.f - 6.f;
-			}
+			// Overcharge error comes from the server's CRT rand(): not predictable.
 			break;
 		case TF_WEAPON_SYRINGEGUN_MEDIC:
 			vAngAdd.x -= SDK::RandomFloat(-1.5f, 1.5f);

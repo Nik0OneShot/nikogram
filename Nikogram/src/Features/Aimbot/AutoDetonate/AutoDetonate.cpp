@@ -192,6 +192,175 @@ bool CAutoDetonate::CheckEntities(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUs
 	return false;
 }
 
+// --- Smart detonation -------------------------------------------------------
+static float SmartLookahead() { return 2 * TICK_INTERVAL; }
+static constexpr float StickyMaxWait = .3f, FlareMaxWait = .12f;
+static float HullDistance(const Vec3& point, const Vec3& origin, const Vec3& mins, const Vec3& maxs)
+{
+	const Vec3 delta = point - origin;
+	const Vec3 nearest = { std::clamp(delta.x, mins.x, maxs.x), std::clamp(delta.y, mins.y, maxs.y), std::clamp(delta.z, mins.z, maxs.z) };
+	return (delta - nearest).Length();
+}
+// Native radius damage: inside if the hull's nearest point is within the radius;
+// damage uses min(distance to centre, distance to origin) with half falloff.
+static float BlastAt(const Vec3& source, float base, float radius, const Vec3& origin, const Vec3& mins, const Vec3& maxs)
+{
+	if (HullDistance(source, origin, mins, maxs) > radius) return 0.f;
+	const float distance = std::min(source.DistTo(origin), source.DistTo(origin + (mins + maxs) * .5f));
+	return AutoDetonatePolicy::HalfFalloff(base, distance, radius);
+}
+// Native ApplyToEntity traces explosion -> BodyTarget (world/props only).
+static bool BlastVisible(const Vec3& source, const Vec3& spot, CBaseEntity* skip)
+{
+	CGameTrace trace = {}; CTraceFilterWorldAndPropsOnly filter = {}; filter.pSkip = skip;
+	SDK::Trace(source, spot, MASK_SHOT & ~CONTENTS_HITBOX, &filter, &trace);
+	return trace.fraction >= 1.f;
+}
+static bool SmartEnemy(CBaseEntity* entity, CTFPlayer* local, CTFWeaponBase* weapon)
+{
+	if (entity == local || !entity->IsPlayer()) return false;
+	auto player = entity->As<CTFPlayer>();
+	if (!player->IsAlive() || player->IsAGhost() || player->IsDormant()) return false;
+	if (!SDK::FriendlyFire() && player->m_iTeamNum() == local->m_iTeamNum()) return false;
+	if (F::AimbotGlobal.ShouldIgnore(player, local, weapon)) return false;
+	if (Vars::Aimbot::Projectile::AutoDetonate.Value & Vars::Aimbot::Projectile::AutoDetonateEnum::IgnoreInvisible
+		&& player->IsInvisible(Vars::Aimbot::General::IgnoreInvisible.Value / 100.f)) return false;
+	return true;
+}
+
+// A wait is continuous while it was renewed within the last 0.1 s (time-based,
+// so skipped commands can't reset it and stretch the maximum wait).
+float CAutoDetonate::Waited(int key, int)
+{
+	const float now = I::GlobalVars->curtime;
+	for (auto& state : m_aWait)
+		if (state.key == key && now - state.last <= .1f && now >= state.since)
+			return now - state.since;
+	return 0.f;
+}
+
+void CAutoDetonate::MarkWait(int key, int, bool waiting)
+{
+	const float now = I::GlobalVars->curtime;
+	WaitState* slot = nullptr;
+	for (auto& state : m_aWait)
+		if (state.key == key) { slot = &state; break; }
+	if (!waiting) { if (slot) *slot = {}; return; }
+	if (slot && now - slot->last <= .1f && now >= slot->since) { slot->last = now; return; }
+	if (!slot)
+	{
+		slot = &m_aWait[0];
+		for (auto& state : m_aWait)
+			if (state.key < 0 || state.last < slot->last) slot = &state;
+	}
+	*slot = { key, now, now };
+}
+
+// All armed stickies go off together (native DetonateStickies), so the decision
+// sums every armed sticky's blast per enemy.
+bool CAutoDetonate::StickyWait(CTFPlayer* pLocal, float flRadiusScale)
+{
+	struct Sticky { Vec3 origin; float radius, damage; CBaseEntity* entity; };
+	std::vector<Sticky> stickies;
+	CTFWeaponBase* pWeapon = nullptr;
+	for (auto pProjectile : H::Entities.GetGroup(EntityEnum::LocalStickies))
+	{
+		if (!ValidProjectile(pLocal, pProjectile, EntityEnum::LocalStickies)) continue;
+		float flRadius = flRadiusScale; CTFWeaponBase* pLauncher = nullptr;
+		if (!GetRadius(EntityEnum::LocalStickies, pProjectile, flRadius, pLauncher) || !pLauncher) continue;
+		// Scottish Resistance detonates the stickies it looks at: keep its timing.
+		if (pLauncher->As<CTFPipebombLauncher>()->GetDetonateType() == TF_DETONATE_MODE_DOT) return false;
+		auto pipe = pProjectile->As<CTFGrenadePipebombProjectile>();
+		float damage = pipe->m_flDamage();
+		if (pipe->m_bCritical()) damage *= 3.f;
+		if (!std::isfinite(damage) || damage <= 0.f) continue;
+		stickies.push_back({ GetOrigin(pProjectile, EntityEnum::LocalStickies, Lead(pProjectile)), flRadius, damage, pProjectile });
+		pWeapon = pLauncher;
+	}
+	if (stickies.empty() || !pWeapon) return false;
+	// A building in range is never worth waiting on: detonate as before.
+	for (auto entity : H::Entities.GetGroup(EntityEnum::BuildingEnemy))
+	{
+		if (!entity || entity->IsDormant()) continue;
+		for (const auto& sticky : stickies)
+		{
+			Vec3 nearest; entity->m_Collision()->CalcNearestPoint(sticky.origin, &nearest);
+			if (sticky.origin.DistTo(nearest) <= sticky.radius) return false;
+		}
+	}
+
+	std::vector<AutoDetonatePolicy::Exposure> exposures;
+	for (auto entity : H::Entities.GetGroup(EntityEnum::PlayerAll))
+	{
+		if (!SmartEnemy(entity, pLocal, pWeapon)) continue;
+		auto player = entity->As<CTFPlayer>();
+		const Vec3 mins = player->m_vecMins(), maxs = player->m_vecMaxs(), velocity = player->m_vecVelocity();
+		const Vec3 now = SDK::PredictOrigin(player->m_vecOrigin(), velocity, Lead(player), true,
+			mins + PLAYER_ORIGIN_COMPRESSION, maxs - PLAYER_ORIGIN_COMPRESSION, player->SolidMask());
+		const Vec3 next = SDK::PredictOrigin(now, velocity, SmartLookahead(), true,
+			mins + PLAYER_ORIGIN_COMPRESSION, maxs - PLAYER_ORIGIN_COMPRESSION, player->SolidMask());
+		AutoDetonatePolicy::Exposure exposure;
+		for (const auto& sticky : stickies)
+		{
+			const float a = BlastAt(sticky.origin, sticky.damage, sticky.radius, now, mins, maxs);
+			const float b = BlastAt(sticky.origin, sticky.damage, sticky.radius, next, mins, maxs);
+			if ((a <= 0.f && b <= 0.f) || !BlastVisible(sticky.origin, now + (mins + maxs) * .5f, sticky.entity)) continue;
+			exposure.now += a; exposure.next += b;
+		}
+		// Conservative lethal estimate (distance/resistance modifiers unknown here).
+		exposure.lethal = exposure.now * .9f >= float(player->m_iHealth());
+		if (exposure.now > 0.f) exposures.push_back(exposure);
+	}
+	const int command = G::CurrentUserCmd ? G::CurrentUserCmd->command_number : 0;
+	constexpr int key = -2; // the whole sticky group
+	const bool wait = AutoDetonatePolicy::Decide(exposures, false, Waited(key, command), StickyMaxWait) == AutoDetonatePolicy::Timing::Wait;
+	MarkWait(key, command, wait);
+	if (wait) AD::Event(AD::SmartWait, -1, Waited(key, command));
+	return wait;
+}
+
+// Detonator: hold for a coming direct hit (full damage, burning mini-crit);
+// otherwise go off at the flare's closest approach or before it hits the world.
+bool CAutoDetonate::FlareWait(CTFPlayer* pLocal, CBaseEntity* pFlare, float flRadius)
+{
+	const Vec3 origin = GetOrigin(pFlare, EntityEnum::LocalFlares, Lead(pFlare));
+	const Vec3 velocity = pFlare->GetAbsVelocity(), next = origin + velocity * SmartLookahead();
+	CGameTrace world = {}; CTraceFilterWorldAndPropsOnly filter = {}; filter.pSkip = pFlare;
+	SDK::Trace(origin, next, MASK_SHOT, &filter, &world);
+	const bool worldSoon = world.DidHit() || world.startsolid;
+	std::vector<AutoDetonatePolicy::Exposure> exposures;
+	for (auto entity : H::Entities.GetGroup(EntityEnum::PlayerAll))
+	{
+		if (!SmartEnemy(entity, pLocal, H::Entities.GetWeapon())) continue;
+		auto player = entity->As<CTFPlayer>();
+		const Vec3 mins = player->m_vecMins(), maxs = player->m_vecMaxs(), playerVelocity = player->m_vecVelocity();
+		const Vec3 now = SDK::PredictOrigin(player->m_vecOrigin(), playerVelocity, Lead(player), true,
+			mins + PLAYER_ORIGIN_COMPRESSION, maxs - PLAYER_ORIGIN_COMPRESSION, player->SolidMask());
+		const Vec3 then = now + playerVelocity * SmartLookahead();
+		AutoDetonatePolicy::Exposure exposure;
+		exposure.now = BlastAt(origin, 1.f, flRadius, now, mins, maxs);
+		exposure.next = BlastAt(next, 1.f, flRadius, then, mins, maxs);
+		if (exposure.now > 0.f && !BlastVisible(origin, now + (mins + maxs) * .5f, pFlare)) exposure.now = 0.f;
+		// The flare's path enters the target's (moving) hull before the lookahead ends.
+		for (int step = 1; step <= 4 && !exposure.directSoon; ++step)
+		{
+			const float f = step / 4.f;
+			// Only if the target is reached before any world contact on the way.
+			if (worldSoon && world.fraction < f) break;
+			exposure.directSoon = HullDistance(origin + (next - origin) * f, now + (then - now) * f, mins, maxs) <= 1.f;
+		}
+		if (exposure.now > 0.f || exposure.directSoon) exposures.push_back(exposure);
+	}
+	const int command = G::CurrentUserCmd ? G::CurrentUserCmd->command_number : 0;
+	const int key = pFlare->entindex();
+	const bool direct = std::any_of(exposures.begin(), exposures.end(), [](const auto& e) { return e.directSoon; });
+	// Hitting the world first ends the flare: detonate now unless a direct hit comes first.
+	const bool wait = AutoDetonatePolicy::Decide(exposures, worldSoon && !direct, Waited(key, command), FlareMaxWait) == AutoDetonatePolicy::Timing::Wait;
+	MarkWait(key, command, wait);
+	if (wait) AD::Event(AD::SmartWait, pFlare->entindex(), Waited(key, command));
+	return wait;
+}
+
 bool CAutoDetonate::CheckTargets(CTFPlayer* pLocal, EntityEnum::EntityEnum eGroup, float flRadiusScale, CUserCmd* pCmd)
 {
 	auto& vProjectiles = H::Entities.GetGroup(eGroup);
@@ -220,7 +389,16 @@ bool CAutoDetonate::CheckTargets(CTFPlayer* pLocal, EntityEnum::EntityEnum eGrou
 		}
 		RestorePlayers();
 		if (bCheck)
+		{
+			// Someone is in range: is this the best moment, or are they still coming closer?
+			if (eGroup == EntityEnum::LocalStickies ? StickyWait(pLocal, flRadiusScale) : FlareWait(pLocal, pProjectile, flRadius))
+			{
+				m_vAimPos.reset();
+				if (eGroup == EntityEnum::LocalStickies) return false; // one decision for the whole group
+				continue;
+			}
 			return true;
+		}
 	}
 
 	return false;

@@ -6,6 +6,7 @@
 #include "../Features/AntiCheatCompatibility/AntiCheatCompatibility.h"
 #include "../Features/Visuals/Visuals.h"
 #include "../Features/PacketManip/AntiAim/AntiAim.h"
+#include "../Features/NoSpread/NoSpreadHitscan/NoSpreadHitscan.h"
 
 MAKE_SIGNATURE(CNetChannel_SendNetMsg, "engine.dll", "48 89 5C 24 ? 48 89 74 24 ? 48 89 7C 24 ? 41 56 48 83 EC ? 48 8B F1 45 0F B6 F1", 0x0);
 
@@ -96,6 +97,14 @@ MAKE_HOOK(CNetChannel_SendNetMsg, S::CNetChannel_SendNetMsg(), bool,
 			int nExtraCommands = nCommands - pMsg->m_nNewCommands;
 			pMsg->m_nBackupCommands = std::clamp(nExtraCommands, 2, MAX_BACKUP_COMMANDS);
 
+			// Hitscan no-spread: the packet, its send time and its engine tick are exact
+			// now. Settle the seed of every shot in it and rewrite those commands before
+			// they are written below (doubletap bursts share one seed and one view). All
+			// nCommands are new to the server, including those beyond MAX_NEW_COMMANDS that
+			// ride as backups (the choked-packet count below makes the server run them).
+			// Commands beyond new + backup (fakelag over 21 chokes) are not sent at all.
+			F::NoSpreadHitscan.FinalizePacket(nNextCommandNr, std::min(nCommands, pMsg->m_nNewCommands + pMsg->m_nBackupCommands));
+
 			bool bOk = true;
 			int nNumCmds = pMsg->m_nNewCommands + pMsg->m_nBackupCommands;
 			for (int nFrom = -1, nTo = nNextCommandNr - nNumCmds + 1; nTo <= nNextCommandNr; nTo++)
@@ -115,6 +124,9 @@ MAKE_HOOK(CNetChannel_SendNetMsg, S::CNetChannel_SendNetMsg(), bool,
 			}
 			F::AntiAim.AuditSerialized(nNextCommandNr, newest, queued);
 			if (!queued) return false;
+			// The packet's sequence number is its last command; the server prints one
+			// playerperf line per packet with this many new commands.
+			F::NoSpreadHitscan.NotePacketSent(nNextCommandNr, pMsg->m_nNewCommands);
 		}
 
 		if (!F::Ticks.m_bSpeedhack)

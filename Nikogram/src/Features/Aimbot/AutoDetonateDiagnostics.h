@@ -5,10 +5,10 @@
 namespace AutoDetonateDiagnostics
 {
     enum Reason { Gate, Disabled, Empty, NoLauncher, Unarmed, Filtered, Invisible, Range, Visibility,
-        SelectiveBusy, Accepted, PredictedMiss, CurrentMiss, SelfBlocked, Requested, Count };
+        SelectiveBusy, Accepted, PredictedMiss, CurrentMiss, SelfBlocked, Requested, SmartWait, Count };
     inline constexpr const char* names[] = {"entry_gate","source_disabled","no_projectiles","no_launcher","unarmed",
         "target_filtered","invisible","out_of_range","visibility_blocked","selective_busy","entity_pass",
-        "predicted_miss","current_miss","self_damage_veto","request"};
+        "predicted_miss","current_miss","self_damage_veto","request","smart_wait"};
     struct Capture { int command=0, source=0, projectile=-1, details=0, queries=0; const char* phase="entry"; std::array<int,Count> counts{}; };
     inline thread_local Capture* current=nullptr;
     inline void Event(Reason reason, int entity=-1, float value=0)

@@ -1703,6 +1703,17 @@ namespace ImGui
 				}
 			}
 		}
+		// "##Hidden" entries reserve a retired option's value (later options keep
+		// their saved bits) but are never shown or kept set.
+		if (iFlags & FDropdownEnum::Multi)
+		{
+			size_t value = 0; for (auto& sEntry : vEntries)
+			{
+				if (FNV1A::Hash32(sEntry) == FNV1A::Hash32Const("##Divider")) continue;
+				if (FNV1A::Hash32(sEntry) == FNV1A::Hash32Const("##Hidden") && value < vValues.size()) *pVar &= ~vValues[value];
+				value++;
+			}
+		}
 
 		std::string sPreview = "";
 		if (!(iFlags & FDropdownEnum::Multi) || *pVar)
@@ -1711,6 +1722,7 @@ namespace ImGui
 			{
 				while (FNV1A::Hash32(vEntries[i]) == FNV1A::Hash32Const("##Divider"))
 					i++;
+				if (FNV1A::Hash32(vEntries[i]) == FNV1A::Hash32Const("##Hidden")) { i++; continue; }
 
 				if (iFlags & FDropdownEnum::Multi && *pVar & iValue)
 					sPreview += std::format("{}, ", StripDoubleHash(vEntries[i]).c_str());
@@ -1779,6 +1791,7 @@ namespace ImGui
 					DebugDummy({});
 					continue;
 				}
+				if (FNV1A::Hash32(sEntry) == FNV1A::Hash32Const("##Hidden")) { i++; continue; }
 
 				std::string sStripped = StripDoubleHash(sEntry);
 				if (iFlags & FDropdownEnum::Multi)

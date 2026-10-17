@@ -138,6 +138,7 @@ namespace G
 
 	inline bool AntiAim = false;
 	inline bool Choking = false;
+	inline bool EngineSendPacket = true; // CL_Move's own bSendPacket for the command being built
 
 	inline bool UpdatingAnims = false;
 	inline bool FlipViewmodels = false;

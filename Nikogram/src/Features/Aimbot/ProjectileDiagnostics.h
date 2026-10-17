@@ -8,11 +8,11 @@
 namespace ProjectileDiagnostics
 {
     enum Counter { Tests, SetupFailed, Obstructed, NoTicks, VisibilityFailed, SafetyRejected, Hit, Miss, AngleRejected, Count };
-    struct Capture { int command=0, candidates=0, traces=0, angles=0,movement=0,steps=0,weaponReviews=0,headReviews=0,arcCandidates=0,targetReviews=0; int grenades[2]={},points[2]={},transitions[2]={},angleDetails[2]={},blockedDetails[2]={}; int ledge[3]={}; bool preview=false,adaptive=false; std::array<int,Count> counts{}; };
+    struct Capture { int command=0, candidates=0, traces=0, angles=0,movement=0,steps=0,weaponReviews=0,headReviews=0,arcCandidates=0,targetReviews=0; int grenades[2]={},points[2]={},transitions[2]={},angleDetails[2]={},blockedDetails[2]={}; int ledge[3]={}; int splashDetails=0,visibilityDetails=0; bool preview=false,adaptive=false; std::array<int,Count> counts{}; };
     enum ProfileStage { MovementInit, MovementTick, SplashSetup, DirectSearch, SplashSearch, SplashGeometry, SplashSampling, SplashSelection, SplashAngles, SplashValidation, MovementReuseCapture, MovementReuseReplay, ProfileCount };
     struct ReuseCounts { int hits=0,captures=0,invalidations=0,validations=0,mismatches=0; size_t bytes=0; };
     inline thread_local ReuseCounts reuse{};
-    struct SplashCounts { int faces=0, generated=0, considered=0, radiusRejected=0, angleSolves=0, shortlisted=0, validations=0, setupTraces=0, angleFiltered=0; int workerSubmitted=0,workerReady=0,workerFallbackFaces=0; int traceWorkerSubmitted=0,traceWorkerReady=0,traceWorkerFallback=0; int dynamicTrace=0,dynamicFace=0; };
+    struct SplashCounts { int faces=0, generated=0, considered=0, radiusRejected=0, angleSolves=0, shortlisted=0, validations=0, setupTraces=0, angleFiltered=0; int facePoints=0,chosenSource=-1; int traceWorkerSubmitted=0,traceWorkerReady=0,traceWorkerFallback=0; int poolRegenerated=0,regenerated=0; int edgeSamples=0,edgePoints=0,unreachable=0,corners=0,cornerTraces=0,refineMisses=0,refineValidations=0,refineHits=0; float edgeStep=0.f; };
     inline thread_local SplashCounts splash{};
     struct ProfileData { std::array<long long,ProfileCount> microseconds{}; std::array<int,ProfileCount> calls{}; };
     inline thread_local ProfileData profile{};
@@ -53,6 +53,19 @@ namespace ProjectileDiagnostics
         if(current) SelfDamageDiagnostics::Write(event,std::format("cmd={} preview={} adaptive={} {}",current->command,current->preview,current->adaptive,detail));
     }
     inline void Add(Counter counter) { if(current) ++current->counts[counter]; }
+    // 0.7.0.39: per-command detail on splash candidates (bounded).
+    inline void SplashCandidate(int source,const Vec3& point,const Vec3& normal)
+    {
+        if(!current || current->splashDetails++>=16) return;
+        Ledge("splash_candidate",std::format("source={} point={},{},{} normal={},{},{}",source,point.x,point.y,point.z,normal.x,normal.y,normal.z));
+    }
+    inline void SplashVisibility(const Vec3& aim,const Vec3& impact,const Vec3& normal,const Vec3& start,const Vec3& eye,const CGameTrace& trace)
+    {
+        if(!current || current->visibilityDetails++>=6) return;
+        Ledge("splash_visibility_failed",std::format("aim={},{},{} impact={},{},{} impact_normal={},{},{} start={},{},{} eye={},{},{} end={},{},{} fraction={} hit_entity={} hit_class={} contents={} surface={} startsolid={}",
+            aim.x,aim.y,aim.z,impact.x,impact.y,impact.z,normal.x,normal.y,normal.z,start.x,start.y,start.z,eye.x,eye.y,eye.z,
+            trace.endpos.x,trace.endpos.y,trace.endpos.z,trace.fraction,trace.m_pEnt?trace.m_pEnt->entindex():-1,trace.m_pEnt?int(trace.m_pEnt->GetClassID()):-1,trace.contents,trace.surface.name?trace.surface.name:"",trace.startsolid));
+    }
     inline void AngleRejection(int target,int type,const Vec3& angle,const Vec3& point,const Vec3& origin,const char* phase)
     {
         if(!current || current->angleDetails[current->preview?1:0]++>=3) return;
@@ -93,7 +106,7 @@ namespace ProjectileDiagnostics
         ~Command()
         {
             if(current==&data) SelfDamageDiagnostics::Write("movement_reuse_profile",std::format("cmd={} version=136 hits={} captures={} invalidations={} validations={} mismatches={} captured_bytes={} capture_us={} replay_us={} note=included_in_movement_tick",data.command,reuse.hits,reuse.captures,reuse.invalidations,reuse.validations,reuse.mismatches,reuse.bytes,profile.microseconds[MovementReuseCapture],profile.microseconds[MovementReuseReplay]));
-            if(current==&data) SelfDamageDiagnostics::Write("splash_profile",std::format("cmd={} version=136 inclusive=1 geometry_us={} sampling_us={} selection_us={} angles_us={} validation_us={} faces={} generated={} considered={} radius_rejected={} angle_solves={} shortlisted={} validations={} setup_traces={} angle_filtered={} worker_submitted={} worker_ready={} worker_fallback_faces={} trace_worker_submitted={} trace_worker_ready={} trace_worker_fallback={} dynamic_trace={} dynamic_face={}",data.command,profile.microseconds[SplashGeometry],profile.microseconds[SplashSampling],profile.microseconds[SplashSelection],profile.microseconds[SplashAngles],profile.microseconds[SplashValidation],splash.faces,splash.generated,splash.considered,splash.radiusRejected,splash.angleSolves,splash.shortlisted,splash.validations,splash.setupTraces,splash.angleFiltered,splash.workerSubmitted,splash.workerReady,splash.workerFallbackFaces,splash.traceWorkerSubmitted,splash.traceWorkerReady,splash.traceWorkerFallback,splash.dynamicTrace,splash.dynamicFace));
+            if(current==&data) SelfDamageDiagnostics::Write("splash_profile",std::format("cmd={} version=149 inclusive=1 geometry_us={} sampling_us={} selection_us={} angles_us={} validation_us={} faces={} generated={} considered={} radius_rejected={} angle_solves={} shortlisted={} validations={} setup_traces={} angle_filtered={} face_points={} chosen_source={} trace_worker_submitted={} trace_worker_ready={} trace_worker_fallback={} pool_regenerated={} regenerated={} edge_samples={} edge_points={} edge_step={} unreachable={} corners={} corner_traces={} refine_misses={} refine_validations={} refine_hits={}",data.command,profile.microseconds[SplashGeometry],profile.microseconds[SplashSampling],profile.microseconds[SplashSelection],profile.microseconds[SplashAngles],profile.microseconds[SplashValidation],splash.faces,splash.generated,splash.considered,splash.radiusRejected,splash.angleSolves,splash.shortlisted,splash.validations,splash.setupTraces,splash.angleFiltered,splash.facePoints,splash.chosenSource,splash.traceWorkerSubmitted,splash.traceWorkerReady,splash.traceWorkerFallback,splash.poolRegenerated,splash.regenerated,splash.edgeSamples,splash.edgePoints,splash.edgeStep,splash.unreachable,splash.corners,splash.cornerTraces,splash.refineMisses,splash.refineValidations,splash.refineHits));
             if(current==&data) SelfDamageDiagnostics::Write("projectile_profile",std::format("cmd={} inclusive=1 movement_init_us={} movement_init_calls={} movement_tick_us={} movement_tick_calls={} splash_setup_us={} splash_setup_calls={} direct_search_us={} direct_search_calls={} splash_search_us={} splash_search_calls={}",data.command,profile.microseconds[MovementInit],profile.calls[MovementInit],profile.microseconds[MovementTick],profile.calls[MovementTick],profile.microseconds[SplashSetup],profile.calls[SplashSetup],profile.microseconds[DirectSearch],profile.calls[DirectSearch],profile.microseconds[SplashSearch],profile.calls[SplashSearch]));
             if(current==&data) SelfDamageDiagnostics::Write("projectile_end",std::format("cmd={} candidates={} buttons={} attacking={} can_fire={}",data.command,data.candidates,cmd->buttons,G::Attacking,G::CanPrimaryAttack));
             current=previous;

@@ -24,6 +24,7 @@
 #include "../Features/Visuals/Glow/Glow.h"
 #include "../Features/Visuals/Groups/Groups.h"
 #include "../Features/Visuals/OffscreenArrows/OffscreenArrows.h"
+#include "../Features/NoSpread/NoSpreadHitscan/NoSpreadHitscan.h"
 
 MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 	void* rcx, ClientFrameStage_t curStage)
@@ -41,7 +42,7 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 	}
 
 	// Restore before engine callbacks can consume animation data or apply network updates.
-	if (curStage == FRAME_START) { NeuralMovement::Frame(); RealLag::Update(); Statistics::Tick(); PrivateLearning::Pulse(); SkinChanger::Tick(); }
+	if (curStage == FRAME_START) { NeuralMovement::Frame(); RealLag::Update(); Statistics::Tick(); PrivateLearning::Pulse(); SkinChanger::Tick(); F::NoSpreadHitscan.FrameStart(); }
 	if (curStage == FRAME_NET_UPDATE_START || curStage == FRAME_RENDER_START || curStage == FRAME_RENDER_END)
 		F::AnimInterp.Restore();
 	CALL_ORIGINAL(rcx, curStage);
@@ -58,6 +59,7 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 	}
 	case FRAME_NET_UPDATE_END:
 	{
+		F::NoSpreadHitscan.ObserveNetUpdate(); // this snapshot's tick and the command it acknowledged
         AimObserver::Network();
         NeuralMovement::ObserveNetwork(); // Before entity/resolver/movesim mutation.
 		H::Entities.Store();

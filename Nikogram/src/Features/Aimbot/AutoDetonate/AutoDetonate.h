@@ -24,6 +24,13 @@ private:
 	std::optional<Vec3> m_vAimPos = {};
 	float m_flSafetyTime = 0.f;
 	bool ValidProjectile(CTFPlayer* local,CBaseEntity* projectile,EntityEnum::EntityEnum group);
+	// Smart detonation (wait for a better moment while targets approach).
+	bool StickyWait(CTFPlayer* pLocal, float flRadiusScale);
+	bool FlareWait(CTFPlayer* pLocal, CBaseEntity* pFlare, float flRadius);
+	float Waited(int key, int command);
+	void MarkWait(int key, int command, bool waiting);
+	struct WaitState { int key=-1; float since=0.f, last=-1.f; };
+	std::array<WaitState,8> m_aWait = {};
 	float Lead(CBaseEntity* entity);
 
 public:

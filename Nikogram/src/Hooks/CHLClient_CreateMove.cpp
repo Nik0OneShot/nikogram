@@ -167,6 +167,7 @@ void __fastcall Hooks::CHLClient_CreateMove::Func(void* rcx, int sequence_number
 			SDK::Output("Nikogram", "CL_Move layout changed, packet choking (fakelag, anti-aim) is disabled", { 255, 100, 100, 255 });
 	}
 	const bool bEngineSendPacket = s_bSendPacket;
+	G::EngineSendPacket = bEngineSendPacket; // cl_cmdrate choke: this command leaves with the next packet
 	bool* pSendPacket = &s_bSendPacket;
 	CUserCmd* pCmd = &I::Input->m_pCommands[sequence_number % MULTIPLAYER_BACKUP];
 

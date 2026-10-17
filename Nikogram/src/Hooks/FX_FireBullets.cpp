@@ -36,9 +36,15 @@ MAKE_HOOK(FX_FireBullets, S::FX_FireBullets(), void,
 		F::Triggerbot.ObserveNativeShot(pWpn,iPlayer,iMode);
 
 	if (iPlayer != I::EngineClient->GetLocalPlayer())
+	{
 		F::Backtrack.ReportShot(iPlayer);
-	else if (Vars::Aimbot::General::NoSpread.Value && dwRetAddr == dwDesired)
-		iSeed = F::NoSpreadHitscan.m_iSeed;
+		// Another player's shot arrives as TE_FireBullets with the seed the server
+		// really used for a command read in this snapshot's tick: a free, exact
+		// reading of the server's seed clock for hitscan no-spread.
+		F::NoSpreadHitscan.ObserveEcho(iPlayer, iSeed);
+	}
+	else if (Vars::Aimbot::General::NoSpread.Value && dwRetAddr == dwDesired && F::NoSpreadHitscan.SeedActive())
+		iSeed = F::NoSpreadHitscan.m_iSeed; // our predicted shot drawn with the seed the server will use
 
 	return CALL_ORIGINAL(pWpn, iPlayer, vecOrigin, vecAngles, iWeapon, iMode, iSeed, flSpread, flDamage, bCritical);
 }

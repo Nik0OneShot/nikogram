@@ -2,18 +2,18 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace SplashSearchPolicy
 {
     enum Mode { Trace=0, Face=1, Dynamic=2 };
     inline int NormalizeMode(int mode) {return mode>=Trace && mode<=Dynamic ? mode : Trace;}
-    template<class TraceSearch,class FaceSearch,class AllowFace>
-    bool TryDynamic(TraceSearch trace,FaceSearch face,AllowFace allowFace)
-    {
-        if(trace()) return true;
-        return allowFace() && face();
-    }
+    // Dynamic is one merged search: trace candidates and face candidates share a
+    // pool and are validated in rank order. Nothing runs "after" anything else.
+    inline bool WantsTrace(int mode) {return mode!=Face;}
+    inline bool WantsFace(int mode) {return mode!=Trace;}
+
     inline float SphereY(int index, int samples)
     {
         return samples <= 1 ? 0.f : 1.f - (index / (samples - 1.f)) * 2.f;
@@ -63,6 +63,52 @@ namespace SplashSearchPolicy
         size_t next = 0;
     };
 
+    // ------------------------------------------------------------------
+    // Candidate bookkeeping. Candidates are regenerated every command; each
+    // one remembers how it did so a shot found last command is re-validated
+    // first (steady aim) and recent failures are not re-tried every tick.
+    // ------------------------------------------------------------------
+    enum Source : uint8_t
+    {
+        SourceTrace = 0,      // ray from the target outward hit a surface
+        SourceAir = 1,        // mid-air detonation point
+        SourceFace = 2,       // face sampler (random jittered samples per face)
+        SourceShooterRay = 3, // ray from the muzzle toward the target's surroundings
+        SourceEdge = 4,       // systematic sample along an occluder's edge, judged with the terminal test (0.7.0.45/.46)
+        SourceCorner = 5,     // sample at an occluder's corner, judged with every face normal meeting there (0.7.0.46)
+        SourceRefined = 6     // found by refining a near miss around its impact (0.7.0.47)
+    };
+
+    // Validation order classes. Lower runs first.
+    enum Priority { PriorityPassed = 0, PriorityUntested = 1, PriorityFailed = 2 };
+    // A pass older than this many commands no longer jumps the queue.
+    constexpr int PassMemoryCommands = 33;
+    // Once a command has a validated shot, a nearer candidate that failed within
+    // this many commands is left alone (it is re-tried later, not every tick).
+    constexpr int RetryAfterPassCommands = 8;
+
+    inline int PriorityOf(int attempts, int lastPass, int lastFail, int command)
+    {
+        if (lastPass >= 0 && lastPass >= lastFail && command - lastPass <= PassMemoryCommands) return PriorityPassed;
+        if (attempts <= 0) return PriorityUntested;
+        return PriorityFailed;
+    }
+
+    // Shortlist ordering: priority class, then (failed only) fewest attempts and
+    // oldest failure, then nearest to the target, then generation order.
+    template<class Point>
+    inline bool RankBefore(const Point& a, const Point& b, float da, float db)
+    {
+        if (a.m_iPriority != b.m_iPriority) return a.m_iPriority < b.m_iPriority;
+        if (a.m_iPriority == PriorityFailed)
+        {
+            if (a.m_iAttempts != b.m_iAttempts) return a.m_iAttempts < b.m_iAttempts;
+            if (a.m_iLastFail != b.m_iLastFail) return a.m_iLastFail < b.m_iLastFail;
+        }
+        if (da != db) return da < db;
+        return a.m_iSearchOrder < b.m_iSearchOrder;
+    }
+
     template<class Point, class Origin>
     size_t NextNearestBatch(std::vector<Point>& points, const Origin& origin, size_t offset, int limit)
     {
@@ -72,8 +118,7 @@ namespace SplashSearchPolicy
         // this batch and checked its remaining work budget.
         std::partial_sort(points.begin() + offset, points.begin() + end, points.end(), [&](const auto& a, const auto& b)
         {
-            const float da = a.m_vPoint.DistToSqr(origin), db = b.m_vPoint.DistToSqr(origin);
-            return da != db ? da < db : a.m_iSearchOrder < b.m_iSearchOrder;
+            return RankBefore(a, b, a.m_vPoint.DistToSqr(origin), b.m_vPoint.DistToSqr(origin));
         });
         return end;
     }

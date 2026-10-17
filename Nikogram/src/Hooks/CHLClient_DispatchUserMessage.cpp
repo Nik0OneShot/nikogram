@@ -47,7 +47,12 @@ MAKE_HOOK(CHLClient_DispatchUserMessage, U::Memory.GetVirtual(I::Client, 36), bo
 		{
 			sMsg.erase(sMsg.begin());
 
-			if (F::NoSpreadHitscan.ParsePlayerPerf(sMsg))
+			// playerperf prints several lines per message; the seed clock wants all of them.
+			char rawLines[256]; msgData.ReadString(rawLines, sizeof(rawLines), false);
+			msgData.Seek(0);
+			std::string sLines = rawLines;
+			if (!sLines.empty()) sLines.erase(sLines.begin());
+			if (F::NoSpreadHitscan.ParsePlayerPerf(sLines))
 				return true;
 
 #ifdef DEBUG_VISUALS

@@ -1,5 +1,6 @@
 #include "../AimObserver.h"
 #include "AimbotHitscan.h"
+#include "../../NoSpread/NoSpreadHitscan/NoSpreadHitscan.h"
 #include "../SmoothAim.h"
 #include "../AimRegionPolicy.h"
 #include "HeadRecordPolicy.h"
@@ -1147,6 +1148,10 @@ void CAimbotHitscan::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd
             }
 		}
 		DrawVisuals(pLocal, tTarget, nWeaponID);
+		// No spread places the known pellet pattern on this target's record (same
+		// pose the server will rewind to), so most pellets land, not just one.
+		if (tTarget.m_pRecord && tTarget.m_pEntity->IsPlayer())
+			F::NoSpreadHitscan.SetTarget(tTarget.m_pEntity, tTarget.m_pRecord->m_aBones, tTarget.m_vPos, pCmd->command_number);
 
 		Aim(pCmd, tTarget.m_vAngleTo);
 		if (G::SilentAngles)

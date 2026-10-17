@@ -841,10 +841,10 @@ void CMenu::MenuAimbot(int iTab)
 						if (FPopupButton("Debug", { 0, -5 }, -8))
 						{
 							FDropdown(Vars::Aimbot::General::AimHoldsFire);
-							FSlider(Vars::Aimbot::General::NoSpreadOffset);
-							FSlider(Vars::Aimbot::General::NoSpreadAverage);
 							FSlider(Vars::Aimbot::General::NoSpreadInterval);
 							FSlider(Vars::Aimbot::General::NoSpreadBackupInterval);
+							FSlider(Vars::Aimbot::General::NoSpreadMinimumStep);
+							FToggle(Vars::Aimbot::General::NoSpreadDiagnostics);
 
 							EndPopup();
 						}
@@ -963,7 +963,7 @@ void CMenu::MenuAimbot(int iTab)
 					FTooltip("Counter strafe predict: follows a single observed reversal; repeated reversals use a moving recent corridor. Snake prediction: recognizes world-space zigzag travel in either direction. They share one lateral estimate and release it when current evidence breaks the pattern; no added aim smoothing.\nLedge aware prediction: prefers supported movement near uncertain edges, monitors jump/fall landing support and yields to observed impulses. Future inputs remain unknown. Native falling, collisions and projectile safety remain active.\nApplies to ordinary prediction, including Auto fallback. Knockback prediction: bounded received rocket, regular grenade, Cannon, Cleaver and Scorch Shot impact hypotheses. Grenade world/player bounces are considered where supported. Uncertain encounters require the same shot to validate without the impact; Cannon also checks hidden double-donk damage. Coverage is partial. Unknown fuse timing, future sticky detonation and unknown airblast input are not guessed. Observed impulses override stale movement patterns. Force neural excludes all four heuristics, including its optional ordinary fallback. Each option saves separately in this list; existing saved choices are preserved.", predictHovered);
 					FDropdown(Vars::Aimbot::Projectile::SplashPrediction, FDropdownEnum::Right);
 					FDropdown(Vars::Aimbot::Projectile::SplashMode);
-                    if(IsItemHovered()) SetTooltip("Trace: sample outward around the predicted target. Face: sample nearby collision surfaces and edges. Dynamic: a short Trace attempt, then Face if no fully validated shot was found, within one shared budget. Takes the first valid Dynamic shot; never waits for workers. Saves with your config. Does not bypass visibility or self-damage checks. Reflected projectiles use Trace when Dynamic is selected.");
+                    if(IsItemHovered()) SetTooltip("Trace: rays outward from the predicted target find surfaces that see it, plus rays from your muzzle toward the target's surroundings. Face: every collision surface inside the blast radius that faces you is sampled (Amalgam's sampler), which finds wall and corner shots. Dynamic: both in one search. The corners and edges of the surfaces hiding the target are searched systematically every command, which is where wall and corner shots are. The search is not time-budgeted.");
                     if(AimModes::Editing!=AimModes::Legit)FDropdown(Vars::Aimbot::Projectile::AutoDetonate, FDropdownEnum::Left);
                     else TextDisabled("Auto detonate is unavailable in Legitbot.");
 					FDropdown(Vars::Aimbot::Projectile::AutoAirblast, FDropdownEnum::Right);
@@ -1031,6 +1031,8 @@ void CMenu::MenuAimbot(int iTab)
 							PopTransparent();
 							PushTransparent(Vars::Aimbot::Projectile::SplashMode.Value == Vars::Aimbot::Projectile::SplashModeEnum::Trace);
 							{
+								FSlider(Vars::Aimbot::Projectile::SplashEdgeSamples, FSliderEnum::Left);
+								FSlider(Vars::Aimbot::Projectile::SplashRefineProbes, FSliderEnum::Right);
 								FSlider(Vars::Aimbot::Projectile::SplashDensityDirect, FSliderEnum::Left);
 								FSlider(Vars::Aimbot::Projectile::SplashDensityArc, FSliderEnum::Right);
 								FSlider(Vars::Aimbot::Projectile::SplashSamplesCutoff);

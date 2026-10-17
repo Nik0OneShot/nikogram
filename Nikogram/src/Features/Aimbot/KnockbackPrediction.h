@@ -46,6 +46,45 @@ inline DamageMode Mode(bool critical,CTFPlayer* attacker,CTFPlayer* target,int d
     return m;
 }
 inline float ModeScale(bool crit,bool minicrit){return crit?3.f:minicrit?1.35f:1.f;}
+// Pill creation clock. A pill's creation time is not networked, so it is
+// bounded from the first sighting: created <= first received simulation time.
+// When it was first seen fresh out of the thrower's launcher, the earliest
+// creation is known too, which gives a narrow fuse explosion window.
+// Observe runs every command (also while not aiming); Snapshot falls back to it.
+struct PillClock {
+    struct Entry{unsigned handle=0;float seen=0,earliest=-std::numeric_limits<float>::infinity();};
+    int server=-1;void* channel=nullptr;std::array<Entry,256> entries{};
+    static PillClock& Get(){static PillClock clock;return clock;}
+    const Entry& Observe(CBaseEntity* entity){
+        auto* channelNow=I::EngineClient->GetNetChannelInfo();
+        if(server!=I::ClientState->m_nServerCount||channel!=channelNow){entries={};server=I::ClientState->m_nServerCount;channel=channelNow;}
+        const unsigned handle=unsigned(entity->GetRefEHandle().ToInt());
+        auto& e=entries[handle%entries.size()];
+        const float sim=entity->m_flSimulationTime();
+        if(e.handle==handle&&sim>=e.seen)return e;
+        e={};e.handle=handle;e.seen=sim;
+        auto* pipe=entity->As<CTFGrenadePipebombProjectile>();auto* thrower=pipe->m_hThrower().Get();
+        if(!pipe->m_bTouched()&&!pipe->m_iDeflected()&&thrower&&thrower->IsPlayer()&&!thrower->IsDormant()){
+            const Vec3 initial=pipe->m_vInitialVelocity(),velocity=pipe->CBaseGrenade::m_vecVelocity();
+            const float speed=initial.Length();
+            const float distance=pipe->m_vecOrigin().DistTo(thrower->As<CTFPlayer>()->GetShootPos());
+            // Two independent age estimates must agree that it just left the
+            // muzzle: distance from the thrower (spawn offset + movement allowance)
+            // and the vertical velocity lost to gravity since launch. A pill lobbed
+            // straight up and first seen late fails the second one.
+            const float byDistance=std::isfinite(speed)&&speed>=100.f?(distance+64.f)/speed:std::numeric_limits<float>::infinity();
+            const float byVelocity=KnockbackPolicy::PillAge(initial.z,velocity.z,Cvar("sv_gravity",800.f));
+            if(std::isfinite(distance)&&byDistance<=.3f&&std::isfinite(byVelocity)&&byVelocity<=.25f)
+                e.earliest=sim-std::max(byDistance,byVelocity*1.5f+.05f)-TICK_INTERVAL;
+        }
+        return e;
+    }
+};
+inline void ObservePills(){
+    for(auto entity:H::Entities.GetGroup(EntityEnum::WorldProjectile))
+        if(entity&&!entity->IsDormant()&&entity->GetClassID()==ETFClassID::CTFGrenadePipebombProjectile
+            &&entity->As<CTFGrenadePipebombProjectile>()->m_iType()==TF_GL_MODE_REGULAR)PillClock::Get().Observe(entity);
+}
 // All native calls run synchronously inside the command's existing solver scope.
 // No server entity is mutated, no command-only projectile is invented, and no
 // cross-command damage promise survives a despawn, deflection or new snapshot.
@@ -60,7 +99,8 @@ struct Snapshot {
         // charged: Cow Mangler charged shot (native push x1.25). arrow/bolt: Huntsman
         // arrow (push has no Z) / Crusader's Crossbow bolt (damage grows with age).
         bool charged=false,arrow=false,bolt=false;float seen=0;
-        float fuseDeadline=std::numeric_limits<float>::infinity();Vec3 inflictorCenter;std::shared_ptr<const ReceivedProjectileFlight::Path> flight;
+        // Pill fuse explosion window (server time); fuseDeadline is its latest end.
+        float fuseDeadline=std::numeric_limits<float>::infinity(),fuseEarliest=-std::numeric_limits<float>::infinity();Vec3 inflictorCenter;std::shared_ptr<const ReceivedProjectileFlight::Path> flight;
         ReceivedProjectileFlight::Key flightKey;
     };
     CTFPlayer* target=nullptr;unsigned handle=0;int spawn=0,server=0;void* channel=nullptr;
@@ -118,8 +158,12 @@ struct Snapshot {
         }
         const Vec3 start=pipe->m_vecOrigin(),velocity=pipe->CBaseGrenade::m_vecVelocity();
         const float sim=pipe->m_flSimulationTime();
-        if(!KnockbackPolicy::Fresh(now-sim)||!KnockbackPolicy::Finite(P(start))||!KnockbackPolicy::Finite(P(velocity))
-            ||velocity.Length()>4000||std::abs(sim-anchor)>.1f)return;
+        // Native SetAbsOrigin/SetAbsAngles only refresh m_flSimulationTime when the
+        // pill moves, so a resting (touched) pill legitimately carries an old sim
+        // time. It is still live and still explodes on its fuse: keep it.
+        const bool resting=!cannon&&pipe->m_bTouched();
+        if((!resting&&(!KnockbackPolicy::Fresh(now-sim)||std::abs(sim-anchor)>.1f))||(resting&&sim>anchor+.1f)
+            ||!KnockbackPolicy::Finite(P(start))||!KnockbackPolicy::Finite(P(velocity))||velocity.Length()>4000)return;
         if(start.DistTo(origin)>velocity.Length()*(KnockbackPolicy::Horizon+.1f)+600.f)return;
         if(count==rockets.size()){complete=false;return;}
         Rocket r;r.pipe=true;r.cannon=cannon;r.touched=pipe->m_bTouched();r.entity=entity;r.handle=entity->GetRefEHandle().ToInt();
@@ -146,17 +190,25 @@ struct Snapshot {
         if(cannon){if(auto* rules=I::TFGameRules();rules&&rules->m_bTruceActive())return;}
         r.flightKey=key;r.flight=ReceivedProjectileFlight::Pipe(key,entity,attacker,weapon);
         // A pill resting or rolling on the ground often has no resolvable
-        // path (a single node). Keep it: Pass bounds where it can still be.
+        // path. Keep it as a single known point: Pass bounds where it can be.
+        if(!cannon&&(!r.flight||r.flight->count<1)){
+            auto point=std::make_shared<ReceivedProjectileFlight::Path>();
+            point->nodes[0]={0,start,velocity,pipe->m_angRotation(),{},r.touched};point->count=1;r.flight=point;
+        }
         if(!r.flight||r.flight->count<1){complete=false;return;}
-        // Native fuse: SetDetonateTimerLength(2.0) scaled by fuse_mult
-        // (server.dll). It was created no later than we first saw it, so it
-        // has exploded by firstSeen+fuse. Cannon fuses follow the owner's
-        // charge and get no deadline.
+        // Native fuse: SetDetonateTimerLength(2.0 x fuse_mult), polled by
+        // DetonateThink every TIME_TO_TICKS(0.2) ticks. Creation is bounded by
+        // the pill clock, giving the window in which it can explode. Cannon
+        // fuses follow the owner's charge and get no window.
         if(!cannon){
             const float fuse=2.f*SDK::AttribHookValue(1.f,"fuse_mult",weapon);
-            const float seen=FirstSeen(unsigned(r.handle),sim);
-            if(std::isfinite(fuse)&&fuse>0.f&&fuse<10.f&&std::isfinite(seen))r.fuseDeadline=seen+fuse+TICK_INTERVAL;
-            if(sim>r.fuseDeadline)return; // already past its fuse: stale, cannot push
+            if(!std::isfinite(fuse)||fuse<=0.f||fuse>=10.f){complete=false;return;}
+            const auto& clock=PillClock::Get().Observe(entity);
+            KnockbackPolicy::FuseWindow(fuse,TICK_INTERVAL,clock.earliest,clock.seen,r.fuseEarliest,r.fuseDeadline);
+            // Still in this snapshot after its computed latest explosion: the
+            // creation bound was wrong (e.g. missed sightings). It may go off
+            // at any poll from now on.
+            if(anchor>r.fuseDeadline){r.fuseEarliest=-std::numeric_limits<float>::infinity();r.fuseDeadline=anchor+.2f+2.f*TICK_INTERVAL;}
         }
         rockets[count++]=std::move(r);
     }
@@ -420,23 +472,30 @@ struct Pass {
     std::array<bool,KnockbackPolicy::MaxProjectiles> consumed{};KnockbackPolicy::Evidence evidence;
     struct FlightState{std::shared_ptr<const ReceivedProjectileFlight::Path> path;float start=0;unsigned bounces=0;
         // Unresolved remainder of a pipe path: last known point and speed.
-        bool bounded=false;float boundedFrom=0,boundedSpeed=0;Vec3 boundedPos;};
+        bool bounded=false,boundedTouched=false;float boundedFrom=0,boundedSpeed=0;Vec3 boundedPos;};
     // A pipe whose path ends without a native explanation (resting/rolling pill,
     // unexplained world contact) may still roll and will explode by its fuse.
     // Instead of refusing every shot, refuse only while the target could be
     // inside its blast: reach grows with the pill's last speed and gravity,
     // and ends at its fuse deadline.
+    // The hazard is time-scoped (evidence.hazardFrom), not a blanket refusal:
+    // a shot that resolves before the pill can go off is unaffected by it.
     bool BoundedHazard(const Snapshot::Rocket& r,FlightState& flight,float time,const Vec3& current){
         if(!flight.bounded){
             flight.bounded=true;flight.boundedFrom=flight.start+flight.path->end;
             const auto& last=flight.path->nodes[flight.path->count-1];
-            flight.boundedPos=last.position;flight.boundedSpeed=last.velocity.Length();
+            flight.boundedPos=last.position;flight.boundedSpeed=last.velocity.Length();flight.boundedTouched=r.touched||last.touched;
         }
-        if(time>r.fuseDeadline)return false;
-        const float dt=std::max(0.f,time-flight.boundedFrom);
-        const float reach=r.radius+16.f+flight.boundedSpeed*dt+.5f*Cvar("sv_gravity",800.f)*dt*dt;
+        if(!KnockbackPolicy::PillCanPush(flight.boundedTouched,time,r.fuseEarliest,r.fuseDeadline))return false;
+        const float reach=KnockbackPolicy::PillReach(r.radius,flight.boundedSpeed,time-flight.boundedFrom,flight.boundedTouched,Cvar("sv_gravity",800.f));
         return KnockbackPolicy::HullDistance(P(flight.boundedPos),P(current),P(snapshot.mins),P(snapshot.maxs))<=reach;
     }
+    // Fuse explosion while the pill is still on its resolved path.
+    bool FuseHazard(const Snapshot::Rocket& r,const FlightState& flight,float time,const Vec3& current)const{
+        if(!r.pipe||r.cannon||!flight.path||time<r.fuseEarliest||time>r.fuseDeadline)return false;
+        return KnockbackPolicy::HullDistance(P(flight.path->Position(time-flight.start)),P(current),P(snapshot.mins),P(snapshot.maxs))<=r.radius+16.f;
+    }
+    void Hazard(size_t i,float time){evidence.hazardFrom=std::min(evidence.hazardFrom,time-snapshot.anchor);consumed[i]=true;}
     std::array<FlightState,KnockbackPolicy::MaxProjectiles> flights{};
     explicit Pass(const Snapshot& s,bool hit,bool donk=false):cannonDonk(donk),snapshot(s),apply(hit),previousTime(s.anchor),previousOrigin(s.origin){
         evidence.complete=s.complete;
@@ -455,7 +514,25 @@ struct Pass {
         if(time<previousTime){cannonEncounter=false;knockedIntoAir=receivedKnocked;uncertainAfter=std::numeric_limits<float>::infinity();stunExpires=0;ticks=0;previousTime=snapshot.anchor;previousOrigin=snapshot.origin;consumed.fill(false);flights={};evidence={};evidence.complete=snapshot.complete;}
         if(time>=uncertainAfter)evidence.complete=false;
         if(time<=previousTime)return;
-        if(++ticks>KnockbackPolicy::MaxTicks||elapsed>KnockbackPolicy::Horizon)return;
+        if(++ticks>KnockbackPolicy::MaxTicks||elapsed>KnockbackPolicy::Horizon){
+            // Beyond the push-modelling horizon a pill's fuse is still known:
+            // keep flagging (cheap distance checks only) so a long shot is not
+            // published across a pill that goes off before it lands.
+            const Vec3 current=storage.m_MoveData.m_vecAbsOrigin;
+            for(size_t i=0;i<snapshot.count;++i){
+                const auto& r=snapshot.rockets[i];auto& flight=flights[i];
+                if(consumed[i]||!r.pipe||r.cannon||!flight.path||time<r.sim)continue;
+                if(time>r.fuseDeadline){consumed[i]=true;continue;}
+                const bool unresolved=flight.bounded||(!flight.path->terminal&&time>=flight.start+flight.path->end);
+                bool hazard=unresolved?BoundedHazard(r,flight,time,current):FuseHazard(r,flight,time,current);
+                // An untouched pill still on its path can also explode on contact;
+                // its push is not modelled out here, so treat blast reach as a hazard.
+                if(!hazard&&!unresolved&&!r.touched&&!flight.path->State(time-flight.start).touched)
+                    hazard=KnockbackPolicy::HullDistance(P(flight.path->Position(time-flight.start)),P(current),P(snapshot.mins),P(snapshot.maxs))<=r.radius+16.f;
+                if(hazard)Hazard(i,time);
+            }
+            return;
+        }
         auto* target=storage.m_pPlayer;auto& move=storage.m_MoveData;const Vec3 current=move.m_vecAbsOrigin;
         if(knockedIntoAir&&target->IsOnGround())knockedIntoAir=false; // native: airborne conditions end on ground contact
         struct Event{size_t index;float time;Vec3 point,target;bool direct,strong;};
@@ -465,14 +542,17 @@ struct Pass {
             if(!snapshot.Current(r)){evidence.complete=false;consumed[i]=true;continue;}
             if(time<r.sim)continue;
             auto& flight=flights[i];if(r.flight&&!flight.path){flight.path=r.flight;flight.start=r.sim;}
+            // Past its latest fuse explosion the pill is gone (it was in reach
+            // then, or it would have been flagged at that tick).
+            if(r.pipe&&!r.cannon&&time>r.fuseDeadline){consumed[i]=true;continue;}
             if(flight.bounded){
-                if(time>r.fuseDeadline){consumed[i]=true;continue;}
-                if(BoundedHazard(r,flight,time,current)){evidence.complete=false;consumed[i]=true;}
+                if(BoundedHazard(r,flight,time,current))Hazard(i,time);
                 continue;
             }
+            if(FuseHazard(r,flight,time,current)){Hazard(i,time);continue;}
             const float begin=std::max(previousTime,r.flight?flight.start:r.sim),end=std::min(time,r.flight?flight.start+flight.path->end:r.world?r.worldTime:time);
             if(end<begin){
-                if(r.flight&&r.pipe&&!flight.path->terminal){if(BoundedHazard(r,flight,time,current)){evidence.complete=false;consumed[i]=true;}continue;}
+                if(r.flight&&r.pipe&&!flight.path->terminal){if(BoundedHazard(r,flight,time,current))Hazard(i,time);continue;}
                 if(r.flight&&!flight.path->terminal)evidence.complete=false;consumed[i]=true;continue;
             }
             const Vec3 a=r.flight?flight.path->Position(begin-flight.start):r.origin+r.velocity*(begin-r.sim),b=r.flight?flight.path->Position(end-flight.start):r.origin+r.velocity*(end-r.sim);
@@ -511,7 +591,7 @@ struct Pass {
                 const bool core=KnockbackPolicy::Entry(P(a-ta),P(b-tb),P(snapshot.mins),P(snapshot.maxs),pad)>=0;
                 events[count++]={i,contact,pos,victim,true,!r.hypothesis&&!r.pipe&&!r.direct&&core&&r.stationaryAttacker&&elapsed<=.15f&&snapshot.observed-r.sim<=.05f};consumed[i]=true;
             }else if(r.flight&&time>=flight.start+flight.path->end){
-                if(r.pipe&&!flight.path->terminal){if(BoundedHazard(r,flight,time,current)){evidence.complete=false;consumed[i]=true;}}
+                if(r.pipe&&!flight.path->terminal){if(BoundedHazard(r,flight,time,current))Hazard(i,time);}
                 else{if(!flight.path->terminal)evidence.complete=false;consumed[i]=true;}
             }else if(r.world&&r.worldTime<=time){
                 consumed[i]=true;const float f=std::clamp((r.worldTime-previousTime)/span,0.f,1.f);const auto victim=previousOrigin+delta*f;

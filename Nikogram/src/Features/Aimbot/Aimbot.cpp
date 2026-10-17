@@ -254,6 +254,7 @@ void CAimbot::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
     // This never selects a weapon or bypasses attack safety checks.
     F::AutoFlarePunch.Maintain(pLocal,pWeapon,pCmd);
     F::AimbotProjectile.MaintainBowCharge(pLocal,pWeapon,pCmd);
+    F::AimbotProjectile.ObservePills(); // pill fuse clock: every command, aiming or not
     const bool visualProjectile=AimModes::Active==AimModes::Legit&&G::PrimaryWeaponType==EWeaponType::PROJECTILE;
     if (visualProjectile) F::AimbotProjectile.m_iLastTickCancel=0;
     const bool viewmodelWait=!visualProjectile&&F::AimbotProjectile.ManageViewmodel(pLocal,pWeapon,pCmd);
